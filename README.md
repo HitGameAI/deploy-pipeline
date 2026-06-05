@@ -1,6 +1,22 @@
 # deploy-pipeline
 
-可复用的 GitHub Actions 工作流集合，用于 Go 项目的 CI/CD 和 Kubernetes 部署。
+可复用的 GitHub Actions 工作流集合，用于 Go 项目的 CI/CD 和 Kubernetes 部署
+
+## 目录结构
+
+```bash
+deploy-pipeline/
+├── .github/workflows/       # 可复用工作流
+│   ├── build-binary.yml     # 编译 Go 二进制
+│   ├── build-docker.yml     # 构建推送 Docker 镜像
+│   ├── code-quality.yml     # 代码质量检查
+│   ├── cleanup-images.yml   # GHCR 旧镜像清理
+│   └── deploy-k8s.yml       # K8s 部署
+└── scripts/                 # 公共脚本
+    ├── build-linux.sh       # Go 构建脚本
+    ├── common.sh            # 通用函数库
+    └── notify.sh            # 飞书/Telegram 通知
+```
 
 ## 工作流列表
 
@@ -33,8 +49,8 @@ jobs:
       binary-source-dir: 'deployments'
       binary-output: 'deployments/your-service'
       version: 'v1.0.0'
-      build-time: '2024-01-01_00:00:00'
-      git-commit: 'abc1234'
+      build-time: '2026-01-01_00:00:00'
+      git-commit: 'abc12356'
     secrets: inherit
 
   build-docker:
@@ -48,14 +64,14 @@ jobs:
       docker-registry: 'ghcr.io'
       binary-source-dir: 'deployments'
       image-base: 'ghcr.io/your-org/your-service'
-      image-name: 'ghcr.io/your-org/your-service:main-abc1234'
+      image-name: 'ghcr.io/your-org/your-service:main-abc12356'
     secrets: inherit
 
   deploy-k8s:
     uses: kamalyes/deploy-pipeline/.github/workflows/deploy-k8s.yml@master
     with:
       environment: 'dev'
-      image-name: 'ghcr.io/your-org/your-service:main-abc1234'
+      image-name: 'ghcr.io/your-org/your-service:main-abc12356'
       binary-source-dir: 'deployments'
       binary-name: 'your-service'
       http-port: '8080'
@@ -70,7 +86,7 @@ jobs:
 
 ### Code Quality
 
-代码质量检查：gofmt + go vet + 单元测试 + 覆盖率报告。
+代码质量检查：gofmt + go vet + 单元测试 + 覆盖率报告
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -79,7 +95,7 @@ jobs:
 
 ### Build Binary
 
-编译 Go 二进制文件，支持交叉编译和 UPX 压缩。
+编译 Go 二进制文件，支持交叉编译和 UPX 压缩
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -103,7 +119,7 @@ jobs:
 
 ### Build Docker
 
-构建 Docker 镜像并推送到镜像仓库。
+构建 Docker 镜像并推送到镜像仓库
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -128,7 +144,7 @@ jobs:
 
 ### Deploy K8s
 
-部署到 Kubernetes 集群，自动生成 Deployment + Service + HPA + Ingress + ConfigMap。
+部署到 Kubernetes 集群，自动生成 Deployment + Service + HPA + Ingress + ConfigMap
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -172,7 +188,7 @@ jobs:
 
 ### Cleanup Images
 
-清理 GHCR 旧版本镜像。
+清理 GHCR 旧版本镜像
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -222,3 +238,51 @@ jobs:
 │  └──────────────────────────────────────┘   │
 └─────────────────────────────────────────────┘
 ```
+
+---
+
+## 公共脚本
+
+### build-linux.sh
+
+Go 二进制构建脚本，支持参数化构建
+
+```bash
+bash scripts/build-linux.sh \
+  --version "v1.0.0" \
+  --build-time "2026-01-01_00:00:00" \
+  --git-commit "abc12356" \
+  --binary-name "your-service" \
+  --output-dir "deployments" \
+  --os linux --arch amd64 \
+  --upx-compress false
+```
+
+### notify.sh
+
+通用通知脚本，支持飞书和 Telegram通过环境变量配置：
+
+```bash
+export NOTIFICATION_PROVIDER=feishu  # feishu | telegram | all | none
+export NOTIFICATION_TYPE=deployment  # deployment | rollback
+export STATUS=success                # success | failure
+export ENVIRONMENT=dev
+export BINARY_NAME=your-service
+export WORKFLOW_URL=https://github.com/...
+bash scripts/notify.sh
+```
+
+### common.sh
+
+通用函数库，提供日志、命令执行、环境检查等工具函数被 `notify.sh` 引用
+
+---
+
+## 工作流脚本引用机制
+
+公共 workflow 通过 `actions/checkout` 额外检出本仓库来获取脚本：
+
+- **build-binary.yml**: 优先使用项目自带 `scripts/build-linux.sh`，不存在则使用公共仓库的
+- **deploy-k8s.yml**: 通知功能使用公共仓库的 `scripts/notify.sh`
+
+项目如需自定义构建逻辑，只需在项目中保留自己的 `scripts/build-linux.sh` 即可

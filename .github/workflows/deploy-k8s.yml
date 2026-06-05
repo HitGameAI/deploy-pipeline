@@ -215,21 +215,21 @@ jobs:
             CONFIG_BASENAME=$(basename "${{ inputs.config-yaml }}")
             CONFIG_MOUNT_PATH="${{ inputs.docker-workdir }}/resources"
             VOLUME_MOUNTS="
-        volumeMounts:
-        - name: config-volume
-          mountPath: ${CONFIG_MOUNT_PATH}
-          readOnly: true"
+              volumeMounts:
+              - name: config-volume
+                mountPath: ${CONFIG_MOUNT_PATH}
+                readOnly: true"
             VOLUMES="
-      volumes:
-      - name: config-volume
-        configMap:
-          name: ${{ inputs.configmap-name }}"
+              volumes:
+              - name: config-volume
+                configMap:
+                  name: ${{ inputs.configmap-name }}"
             ENV_CONFIG="
-        env:
-        - name: CONFIG_FILE_PATH
-          value: ${CONFIG_MOUNT_PATH}/${CONFIG_BASENAME}
-        - name: APP_ENV
-          value: ${{ inputs.environment }}"
+              env:
+              - name: CONFIG_FILE_PATH
+                value: ${CONFIG_MOUNT_PATH}/${CONFIG_BASENAME}
+              - name: APP_ENV
+                value: ${{ inputs.environment }}"
           fi
 
           cat << DEPEOF > ${DEPLOY_DIR}/deployment.yaml
@@ -521,8 +521,12 @@ jobs:
     if: always() && inputs.notification-provider != 'none'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout Deploy Workflows (for scripts)
         uses: actions/checkout@v6
+        with:
+          repository: kamalyes/deploy-pipeline
+          ref: master
+          path: _deploy-workflows
 
       - name: Send Notification
         run: |
@@ -551,4 +555,4 @@ jobs:
             export ERROR_MESSAGE="Kubernetes deployment failed, check logs for details"
           fi
 
-          bash scripts/notify.sh
+          bash _deploy-workflows/scripts/notify.sh

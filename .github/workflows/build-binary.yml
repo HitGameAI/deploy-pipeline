@@ -70,6 +70,13 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6
 
+      - name: Checkout Deploy Workflows (for scripts)
+        uses: actions/checkout@v6
+        with:
+          repository: kamalyes/deploy-pipeline
+          ref: master
+          path: _deploy-workflows
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -110,9 +117,15 @@ jobs:
 
       - name: Build Binary
         run: |
-          chmod +x ${{ inputs.build-script }}
+          # 优先使用项目自带脚本，不存在则使用公共仓库脚本
+          if [ -f "${{ inputs.build-script }}" ]; then
+            BUILD_SCRIPT="${{ inputs.build-script }}"
+          else
+            BUILD_SCRIPT="_deploy-workflows/scripts/build-linux.sh"
+          fi
+          chmod +x "${BUILD_SCRIPT}"
 
-          ./${{ inputs.build-script }} \
+          ./${BUILD_SCRIPT} \
             --version "${{ inputs.version }}" \
             --build-time "${{ inputs.build-time }}" \
             --git-commit "${{ inputs.git-commit }}" \
