@@ -315,7 +315,11 @@ jobs:
           for file in ${DEPLOY_DIR}/*.yaml; do
             echo ""
             echo "--- $(basename "$file") ---"
-            cat "$file"
+            if [ "$(basename "$file")" = "configmap.yaml" ]; then
+              sed -E 's/^(\s*(password|passwd|pwd|secret|token|key|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential|dsn|connection[_-]?string|smtp[_-]?pass|ldap[_-]?pass|jdbc[_-]?pass|amqp[_-]?pass|mysql[_-]?pass|postgres[_-]?pass|redis[_-]?pass|mongo[_-]?pass)\s*:\s*)(.{2})(.*)(.{2})$/\1\2***\4/I' "$file"
+            else
+              cat "$file"
+            fi
           done
 
       - name: 🚀 Apply Kubernetes Resources
