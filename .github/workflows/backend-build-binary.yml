@@ -84,33 +84,6 @@ jobs:
           ref: master
           path: _deploy-workflows
 
-      - name: 🛠️ Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ inputs.go-version }}
-          check-latest: false
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: 🔑 Setup SSH Key for Private Modules
-        if: inputs.goprivate != ''
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
-
-      - name: ⚙️ Configure Git for Private Repos
-        if: inputs.goprivate != ''
-        run: |
-          git config --global url."git@github.com:".insteadOf "https://github.com/"
-
-      - name: 📦 Download Dependencies
-        run: |
-          export GOPROXY="${{ inputs.goproxy }}"
-          if [ -n "${{ inputs.goprivate }}" ]; then
-            export GOPRIVATE="${{ inputs.goprivate }}"
-          fi
-          go mod download
-
       - name: 🗄️ Cache UPX
         if: inputs.upx-compress == 'true'
         uses: actions/cache@v4
@@ -121,6 +94,33 @@ jobs:
           key: upx-${{ runner.os }}-ucl
           restore-keys: |
             upx-${{ runner.os }}-
+
+      - name: 🔑 Setup SSH Key for Private Modules
+        if: inputs.goprivate != ''
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
+      
+      - name: ⚙️ Configure Git for Private Repos
+        if: inputs.goprivate != ''
+        run: |
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
+
+      - name: 🛠️ Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: 📦 Download Dependencies
+        run: |
+          export GOPROXY="${{ inputs.goproxy }}"
+          if [ -n "${{ inputs.goprivate }}" ]; then
+            export GOPRIVATE="${{ inputs.goprivate }}"
+          fi
+          go mod download
 
       - name: 🔨 Build Binary
         run: |
