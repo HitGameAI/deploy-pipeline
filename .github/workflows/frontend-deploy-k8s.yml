@@ -1,0 +1,481 @@
+name: ☸️ Deploy Frontend to Kubernetes
+
+# ============================================
+# 前端 Kubernetes 部署工作流
+# 用途：将前端应用部署到 Kubernetes 集群
+# 自动生成：Deployment + Service + HPA + Ingress（可选）
+# 触发方式：通过 workflow_call 被其他工作流调用
+# ============================================
+
+on:
+  workflow_call:
+    inputs:
+      # ============================================
+      # 必选参数
+      # ============================================
+      environment:
+        description: '部署环境'
+        required: true
+        type: string
+
+      namespace:
+        description: 'Kubernetes namespace（默认同 environment）'
+        required: false
+        type: string
+        default: ''
+
+      image-name:
+        description: '完整 Docker 镜像名称（带 tag）'
+        required: true
+        type: string
+
+      app-name:
+        description: '应用名称'
+        required: true
+        type: string
+
+      # ============================================
+      # 网络配置
+      # ============================================
+      http-port:
+        description: 'HTTP 端口'
+        required: false
+        type: string
+        default: '80'
+
+      ingress-path-prefix:
+        description: 'Ingress 路径前缀（为空则不创建 Ingress）'
+        required: false
+        type: string
+        default: ''
+
+      ingress-entry-point:
+        description: 'Ingress 入口点'
+        required: false
+        type: string
+        default: 'web'
+
+      # ============================================
+      # 配置管理
+      # ============================================
+      config-yaml:
+        description: '配置文件路径（为空则不创建 ConfigMap）'
+        required: false
+        type: string
+        default: ''
+
+      configmap-name:
+        description: 'ConfigMap 名称'
+        required: false
+        type: string
+        default: ''
+
+      # ============================================
+      # 镜像配置
+      # ============================================
+      image-pull-secrets:
+        description: '镜像拉取密钥名称'
+        required: false
+        type: string
+        default: 'ghcr.io'
+
+      # ============================================
+      # 健康检查配置
+      # ============================================
+      readiness-delay-seconds:
+        description: '就绪探针初始延迟（秒）'
+        required: false
+        type: string
+        default: '5'
+
+      readiness-period-seconds:
+        description: '就绪探针检查周期（秒）'
+        required: false
+        type: string
+        default: '10'
+
+      liveness-delay-seconds:
+        description: '存活探针初始延迟（秒）'
+        required: false
+        type: string
+        default: '15'
+
+      liveness-period-seconds:
+        description: '存活探针检查周期（秒）'
+        required: false
+        type: string
+        default: '20'
+
+      # ============================================
+      # 资源配置
+      # ============================================
+      cpu-request:
+        description: 'CPU 请求量'
+        required: false
+        type: string
+        default: '100m'
+
+      memory-request:
+        description: '内存请求量'
+        required: false
+        type: string
+        default: '128Mi'
+
+      cpu-limit:
+        description: 'CPU 限制'
+        required: false
+        type: string
+        default: '300m'
+
+      memory-limit:
+        description: '内存限制'
+        required: false
+        type: string
+        default: '256Mi'
+
+      # ============================================
+      # 副本和自动扩缩容配置
+      # ============================================
+      min-replicas:
+        description: '最小副本数'
+        required: false
+        type: string
+        default: '1'
+
+      max-replicas:
+        description: '最大副本数'
+        required: false
+        type: string
+        default: '5'
+
+      deployment-replicas:
+        description: '初始副本数'
+        required: false
+        type: string
+        default: '1'
+
+      target-cpu-utilization:
+        description: '目标 CPU 使用率（百分比）'
+        required: false
+        type: string
+        default: '70'
+
+      enable-hpa:
+        description: '是否启用 HPA（自动扩缩容）'
+        required: false
+        type: string
+        default: 'true'
+
+      # ============================================
+      # 通知配置
+      # ============================================
+      notification-provider:
+        description: '通知方式（none/feishu/telegram/all）'
+        required: false
+        type: string
+        default: 'none'
+
+    secrets:
+      # ============================================
+      # 敏感配置
+      # ============================================
+      KUBECONFIG:
+        description: 'Kubernetes kubeconfig 内容'
+        required: true
+      FEISHU_WEBHOOK_URL:
+        description: '飞书通知 Webhook URL'
+        required: false
+      TELEGRAM_BOT_TOKEN:
+        description: 'Telegram 通知 Bot Token'
+        required: false
+      TELEGRAM_CHAT_ID:
+        description: 'Telegram 通知 Chat ID'
+        required: false
+
+jobs:
+  deploy:
+    name: ☸️ Deploy Frontend to K8s
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      image-name: ${{ steps.image-name.outputs.image-name }}
+    env:
+      KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+    steps:
+      - name: Normalize Docker Image Name
+        id: image-name
+        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
+        with:
+          image-name: ${{ inputs.image-name }}
+
+      # ============================================
+      # 步骤1：检出代码仓库
+      # ============================================
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Debug KUBECONFIG
+        run: |
+          if [ -z "$KUBECONFIG" ]; then
+            echo "ERROR: KUBECONFIG is empty! Check your workflow_call secrets configuration."
+            exit 1
+          else
+            echo "KUBECONFIG is set (length: ${#KUBECONFIG})"
+          fi
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      # ============================================
+      # 步骤2：配置 Kubernetes 上下文
+      # ============================================
+      - name: ⚙️ Setup Kubernetes Context
+        uses: Azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ env.KUBECONFIG }}
+
+      # ============================================
+      # 步骤3：检出部署工作流仓库（获取模板）
+      # ============================================
+      - name: 📥 Checkout Deploy Workflows (for templates)
+        uses: actions/checkout@v6
+        with:
+          repository: kamalyes/deploy-pipeline
+          ref: master
+          path: _deploy-workflows
+
+      # ============================================
+      # 步骤4：生成 K8s 资源清单（使用模板）
+      # ============================================
+      - name: 📝 Generate K8s Manifests
+        run: |
+          echo "================================================"
+          echo "正在生成 Kubernetes 资源清单"
+          echo "应用名称: ${{ inputs.app-name }}"
+          echo "命名空间: ${{ inputs.namespace }}"
+          echo "镜像: ${{ steps.image-name.outputs.image-name }}"
+          echo "================================================"
+
+          DEPLOY_DIR="deployments"
+          mkdir -p "${DEPLOY_DIR}"
+
+          export APP_NAME="${{ inputs.app-name }}"
+          export NAMESPACE="${{ inputs.namespace }}"
+          export IMAGE_NAME="${{ steps.image-name.outputs.image-name }}"
+          export HTTP_PORT="${{ inputs.http-port }}"
+          export REPLICAS="${{ inputs.deployment-replicas }}"
+          export REVISION_HISTORY_LIMIT="10"
+          export IMAGE_PULL_POLICY="IfNotPresent"
+          export IMAGE_PULL_SECRETS="${{ inputs.image-pull-secrets }}"
+          export READINESS_DELAY="${{ inputs.readiness-delay-seconds }}"
+          export READINESS_PERIOD="${{ inputs.readiness-period-seconds }}"
+          export LIVENESS_DELAY="${{ inputs.liveness-delay-seconds }}"
+          export LIVENESS_PERIOD="${{ inputs.liveness-period-seconds }}"
+          export CPU_REQUEST="${{ inputs.cpu-request }}"
+          export MEMORY_REQUEST="${{ inputs.memory-request }}"
+          export CPU_LIMIT="${{ inputs.cpu-limit }}"
+          export MEMORY_LIMIT="${{ inputs.memory-limit }}"
+          export MIN_REPLICAS="${{ inputs.min-replicas }}"
+          export MAX_REPLICAS="${{ inputs.max-replicas }}"
+          export TARGET_CPU_UTILIZATION="${{ inputs.target-cpu-utilization }}"
+          export INGRESS_PATH_PREFIX="${{ inputs.ingress-path-prefix }}"
+          export INGRESS_ENTRY_POINT="${{ inputs.ingress-entry-point }}"
+
+          if [ -n "${{ inputs.config-yaml }}" ] && [ -f "${{ inputs.config-yaml }}" ]; then
+            CONFIG_BASENAME=$(basename "${{ inputs.config-yaml }}")
+
+            cat <<CMEOF > ${DEPLOY_DIR}/configmap.yaml
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${{ inputs.configmap-name }}
+            namespace: ${{ inputs.namespace }}
+          data:
+            ${CONFIG_BASENAME}: |
+          CMEOF
+            sed 's/^/    /' "${{ inputs.config-yaml }}" >> ${DEPLOY_DIR}/configmap.yaml
+            echo "ConfigMap 已生成"
+          fi
+
+          : ${REPLICAS:=1}
+          : ${REVISION_HISTORY_LIMIT:=10}
+          : ${IMAGE_PULL_POLICY:=IfNotPresent}
+          : ${IMAGE_PULL_SECRETS:=ghcr.io}
+          : ${READINESS_DELAY:=5}
+          : ${READINESS_PERIOD:=10}
+          : ${LIVENESS_DELAY:=15}
+          : ${LIVENESS_PERIOD:=20}
+          : ${CPU_REQUEST:=100m}
+          : ${MEMORY_REQUEST:=128Mi}
+          : ${CPU_LIMIT:=300m}
+          : ${MEMORY_LIMIT:=256Mi}
+          : ${MIN_REPLICAS:=1}
+          : ${MAX_REPLICAS:=5}
+          : ${TARGET_CPU_UTILIZATION:=70}
+          : ${INGRESS_ENTRY_POINT:=web}
+
+          envsubst < _deploy-workflows/templates/k8s/frontend/deployment.yaml > ${DEPLOY_DIR}/deployment.yaml
+          echo "Deployment 已生成"
+
+          envsubst < _deploy-workflows/templates/k8s/frontend/service.yaml > ${DEPLOY_DIR}/service.yaml
+          echo "Service 已生成"
+
+          if [ "${{ inputs.enable-hpa }}" = "true" ]; then
+            envsubst < _deploy-workflows/templates/k8s/frontend/hpa.yaml > ${DEPLOY_DIR}/hpa.yaml
+            echo "HPA 已生成"
+          fi
+
+          if [ -n "${{ inputs.ingress-path-prefix }}" ]; then
+            envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+            echo "Ingress 已生成"
+          fi
+
+          echo ""
+          echo "生成的资源清单文件:"
+          ls -lh ${DEPLOY_DIR}/*.yaml
+
+          echo ""
+          echo "============================================="
+          echo "资源清单内容:"
+          echo "============================================="
+          for file in ${DEPLOY_DIR}/*.yaml; do
+            echo ""
+            echo "--- $(basename "$file") ---"
+            cat "$file"
+          done
+
+      # ============================================
+      # 步骤5：应用 Kubernetes 资源
+      # ============================================
+      - name: 🚀 Apply Kubernetes Resources
+        run: |
+          DEPLOY_DIR="deployments"
+
+          kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply --server-side --validate=false -f -
+
+          if [ -f "${DEPLOY_DIR}/configmap.yaml" ]; then
+            echo "正在应用 ConfigMap..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/deployment.yaml" ]; then
+            echo "正在应用 Deployment..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/deployment.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/service.yaml" ]; then
+            echo "正在应用 Service..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ "${{ inputs.enable-hpa }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
+            echo "正在应用 HPA..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/ingress.yaml" ]; then
+            echo "正在应用 Ingress..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ inputs.namespace }}
+          fi
+
+      # ============================================
+      # 步骤6：等待 Deployment 完成
+      # ============================================
+      - name: ⏳ Wait for Deployment
+        run: |
+          MAX_WAIT=300
+          ELAPSED=0
+          INTERVAL=10
+
+          echo "等待 Deployment 完成..."
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+              -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
+            READY_REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+              -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+            UPDATED_REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+              -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || echo "0")
+
+            echo "进度: Ready=${READY_REPLICAS}/${REPLICAS}, Updated=${UPDATED_REPLICAS}/${REPLICAS}"
+
+            if [ "$READY_REPLICAS" = "$REPLICAS" ] && [ "$UPDATED_REPLICAS" = "$REPLICAS" ] && [ "$REPLICAS" != "0" ]; then
+              echo "Deployment 完成！"
+              break
+            fi
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ $ELAPSED -ge $MAX_WAIT ]; then
+            echo "Deployment 超时（${MAX_WAIT}秒）！"
+            kubectl describe deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }}
+            kubectl get pods,rs -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }} -o wide
+            exit 1
+          fi
+
+      # ============================================
+      # 步骤7：验证 Deployment
+      # ============================================
+      - name: ✅ Verify Deployment
+        run: |
+          READY_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }} \
+            -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | tr ' ' '\n' | grep -c "True" || echo "0")
+
+          TOTAL_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }} \
+            --no-headers | wc -l)
+
+          echo "就绪 Pod 数: ${READY_PODS}/${TOTAL_PODS}"
+
+          if [ "$READY_PODS" -eq "0" ]; then
+            echo "Deployment 验证失败：没有就绪的 Pod"
+            kubectl describe pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }}
+            exit 1
+          fi
+
+          echo "Deployment 验证成功！"
+
+  # ============================================
+  # 通知任务
+  # ============================================
+  notify:
+    name: 🔔 Send Deployment Notification
+    needs: [deploy]
+    if: always() && inputs.notification-provider != 'none'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Deploy Workflows (for scripts)
+        uses: actions/checkout@v6
+        with:
+          repository: kamalyes/deploy-pipeline
+          ref: master
+          path: _deploy-workflows
+
+      - name: 📤 Send Notification
+        run: |
+          export NOTIFICATION_PROVIDER="${{ inputs.notification-provider }}"
+          export NOTIFICATION_TYPE="deployment"
+          export STATUS="${{ needs.deploy.result }}"
+          export ENVIRONMENT="${{ inputs.environment }}"
+          export BINARY_NAME="${{ inputs.app-name }}"
+          export VERSION="${{ needs.deploy.outputs.image-name || inputs.image-name }}"
+          export GIT_COMMIT="${{ github.sha }}"
+          export GIT_BRANCH="${{ github.ref_name }}"
+          export OPERATOR="${{ github.actor }}"
+          export WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          export FEISHU_WEBHOOK_URL="${{ secrets.FEISHU_WEBHOOK_URL }}"
+          export TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          export TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
+          export GITHUB_REPOSITORY="${{ github.repository }}"
+          export GITHUB_ACTOR="${{ github.actor }}"
+          export DEPLOYMENT_TARGET="Kubernetes"
+          export NAMESPACE="${{ inputs.namespace }}"
+          export HTTP_PORT="${{ inputs.http-port }}"
+          export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas }}"
+
+          if [ "$STATUS" = "failure" ]; then
+            export ERROR_MESSAGE="Kubernetes 部署失败，请查看日志了解详情"
+          fi
+
+          bash _deploy-workflows/scripts/notify.sh

@@ -1,4 +1,4 @@
-name: Cleanup Old Images
+name: 🗑️ Cleanup Old Images
 
 on:
   workflow_call:
@@ -19,10 +19,10 @@ on:
 
 jobs:
   cleanup:
-    name: Cleanup Old GHCR Images
+    name: 🗑️ Cleanup Old GHCR Images
     runs-on: ubuntu-latest
     steps:
-      - name: Cleanup Old Images
+      - name: 🗑️ Cleanup Old Images from GHCR
         env:
           IMAGE_NAME: ${{ inputs.image-name }}
           KEEP_COUNT: ${{ inputs.keep-count }}

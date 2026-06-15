@@ -1,0 +1,56 @@
+# ============================================
+# 前端应用 Deployment 模板
+# ============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${APP_NAME}
+    tier: frontend
+spec:
+  replicas: ${REPLICAS}
+  revisionHistoryLimit: ${REVISION_HISTORY_LIMIT}
+  selector:
+    matchLabels:
+      app: ${APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+        tier: frontend
+    spec:
+      containers:
+      - name: ${APP_NAME}
+        image: ${IMAGE_NAME}
+        imagePullPolicy: ${IMAGE_PULL_POLICY}
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sh", "-c", "sleep 3"]
+        ports:
+        - name: http
+          containerPort: ${HTTP_PORT}
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: ${READINESS_DELAY}
+          periodSeconds: ${READINESS_PERIOD}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: ${LIVENESS_DELAY}
+          periodSeconds: ${LIVENESS_PERIOD}
+        resources:
+          requests:
+            cpu: ${CPU_REQUEST}
+            memory: ${MEMORY_REQUEST}
+          limits:
+            cpu: ${CPU_LIMIT}
+            memory: ${MEMORY_LIMIT}
+      imagePullSecrets:
+      - name: ${IMAGE_PULL_SECRETS}

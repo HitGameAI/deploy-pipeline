@@ -1,0 +1,228 @@
+name: 🐳 Build Frontend Docker Image
+
+# ============================================
+# 前端 Docker 构建工作流
+# 用途：将前端构建产物打包为 Docker 镜像并推送到镜像仓库
+# 支持项目自定义 nginx.conf 配置
+# ============================================
+
+on:
+  workflow_call:
+    inputs:
+      # ============================================
+      # 必选参数
+      # ============================================
+      app-name:
+        description: '前端应用名称'
+        required: true
+        type: string
+
+      version:
+        description: '构建版本号'
+        required: true
+        type: string
+
+      docker-registry:
+        description: 'Docker 镜像仓库地址（如：ghcr.io）'
+        required: true
+        type: string
+
+      image-base:
+        description: '基础镜像名称（不带 tag）'
+        required: true
+        type: string
+
+      image-name:
+        description: '完整镜像名称（带 tag）'
+        required: true
+        type: string
+
+      # ============================================
+      # 可选参数
+      # ============================================
+      http-port:
+        description: 'HTTP 端口'
+        required: false
+        type: string
+        default: '80'
+
+      environment:
+        description: '部署环境'
+        required: false
+        type: string
+        default: 'dev'
+
+      base-image:
+        description: '基础 Docker 镜像（Nginx）'
+        required: false
+        type: string
+        default: 'nginx:1.25.3-alpine'
+
+      timezone:
+        description: '容器时区'
+        required: false
+        type: string
+        default: 'Etc/UTC'
+
+      build-output-dir:
+        description: '前端构建输出目录'
+        required: false
+        type: string
+        default: 'dist'
+
+      nginx-config-path:
+        description: '项目自定义 nginx.conf 路径（为空则使用默认配置）'
+        required: false
+        type: string
+        default: ''
+
+      artifact-name:
+        description: '构建产物 Artifact 名称（需与 build-frontend 的 artifact-name 一致）'
+        required: false
+        type: string
+        default: 'frontend-dist'
+
+jobs:
+  build-docker:
+    name: 🐳 Build Frontend Docker
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.actor }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # ============================================
+      # 步骤1：检出代码仓库
+      # ============================================
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      # ============================================
+      # 步骤2：下载前端构建产物
+      # ============================================
+      - name: 📤 Download Frontend Dist
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.build-output-dir }}
+
+      # ============================================
+      # 步骤3：生成 Dockerfile 和 Nginx 配置
+      # 优先使用项目自定义的 nginx.conf，不存在则使用默认配置
+      # ============================================
+      - name: 📝 Generate Dockerfile and Nginx Config
+        run: |
+          BUILD_OUTPUT_DIR="${{ inputs.build-output-dir }}"
+          APP_NAME="${{ inputs.app-name }}"
+          BASE_IMAGE="${{ inputs.base-image }}"
+          TIMEZONE="${{ inputs.timezone }}"
+          HTTP_PORT="${{ inputs.http-port }}"
+          NGINX_CONFIG_PATH="${{ inputs.nginx-config-path }}"
+
+          echo "================================================"
+          echo "正在生成 Dockerfile 和 Nginx 配置"
+          echo "构建输出目录: $BUILD_OUTPUT_DIR"
+          echo "应用名称: $APP_NAME"
+          echo "基础镜像: $BASE_IMAGE"
+          echo "HTTP 端口: $HTTP_PORT"
+          echo "自定义 Nginx 配置路径: ${NGINX_CONFIG_PATH:-未指定，将使用默认配置}"
+          echo "================================================"
+
+          cat << EOF > ${BUILD_OUTPUT_DIR}/Dockerfile
+          FROM ${BASE_IMAGE}
+          USER root
+          STOPSIGNAL SIGQUIT
+          WORKDIR /usr/share/nginx/html
+          COPY ./${BUILD_OUTPUT_DIR}/ .
+          RUN rm -rf /etc/nginx/conf.d/default.conf
+          COPY ./${BUILD_OUTPUT_DIR}/nginx.conf /etc/nginx/conf.d/default.conf
+          RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx
+          EXPOSE ${HTTP_PORT}
+          CMD ["nginx", "-g", "daemon off;"]
+          EOF
+
+          if [ -n "${NGINX_CONFIG_PATH}" ] && [ -f "${NGINX_CONFIG_PATH}" ]; then
+            echo "发现项目自定义 Nginx 配置，正在复制..."
+            cp "${NGINX_CONFIG_PATH}" "${BUILD_OUTPUT_DIR}/nginx.conf"
+          else
+            echo "未找到自定义 Nginx 配置，生成默认配置..."
+            cat << EOF > ${BUILD_OUTPUT_DIR}/nginx.conf
+          server {
+              listen ${HTTP_PORT};
+              server_name localhost;
+              root /usr/share/nginx/html;
+              index index.html;
+              charset utf-8;
+
+              gzip on;
+              gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
+              location / {
+                  try_files \$uri \$uri/ /index.html;
+              }
+
+              location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$ {
+                  expires 1y;
+                  add_header Cache-Control "public, immutable";
+              }
+          }
+          EOF
+          fi
+
+          echo ""
+          echo "=== 生成的 Dockerfile ==="
+          cat ${BUILD_OUTPUT_DIR}/Dockerfile
+          echo ""
+          echo "=== 生成/使用的 nginx.conf ==="
+          cat ${BUILD_OUTPUT_DIR}/nginx.conf
+
+      # ============================================
+      # 步骤4：登录 Docker 镜像仓库
+      # ============================================
+      - name: 🔐 Login to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.docker-registry }}
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
+
+      - name: Normalize Docker Image Names
+        id: image-names
+        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
+        with:
+          image-base: ${{ inputs.image-base }}
+          image-name: ${{ inputs.image-name }}
+          generate-tags: 'true'
+
+      # ============================================
+      # 步骤5：提取镜像元数据
+      # ============================================
+      - name: 📊 Extract Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image-names.outputs.image-base }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
+      # ============================================
+      # 步骤6：构建并推送 Docker 镜像
+      # ============================================
+      - name: 🔨 Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ inputs.build-output-dir }}/Dockerfile
+          push: true
+          tags: ${{ steps.image-names.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

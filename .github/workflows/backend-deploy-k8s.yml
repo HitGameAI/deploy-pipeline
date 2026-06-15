@@ -1,0 +1,456 @@
+name: ☸️ Deploy to Kubernetes
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment (dev/test/prod)'
+        required: true
+        type: string
+      namespace:
+        description: 'Kubernetes namespace (defaults to environment)'
+        required: false
+        type: string
+        default: ''
+      image-name:
+        description: 'Complete Docker image name with tag'
+        required: true
+        type: string
+      binary-source-dir:
+        description: 'Binary source directory (also used as deployments output dir)'
+        required: true
+        type: string
+      binary-name:
+        description: 'Binary/Service name'
+        required: true
+        type: string
+      http-port:
+        description: 'HTTP port'
+        required: true
+        type: string
+      rpc-port:
+        description: 'RPC port'
+        required: true
+        type: string
+      pprof-port:
+        description: 'Pprof port'
+        required: true
+        type: string
+      config-yaml:
+        description: 'Configuration YAML file path'
+        required: false
+        type: string
+        default: ''
+      configmap-name:
+        description: 'ConfigMap name'
+        required: false
+        type: string
+        default: ''
+      docker-workdir:
+        description: 'Docker working directory'
+        required: false
+        type: string
+        default: '/usr/local/services'
+      image-pull-secrets:
+        description: 'Image pull secrets name'
+        required: false
+        type: string
+        default: 'ghcr.io'
+      readiness-delay-seconds:
+        description: 'Readiness probe initial delay seconds'
+        required: false
+        type: string
+        default: '5'
+      readiness-period-seconds:
+        description: 'Readiness probe period seconds'
+        required: false
+        type: string
+        default: '10'
+      liveness-delay-seconds:
+        description: 'Liveness probe initial delay seconds'
+        required: false
+        type: string
+        default: '15'
+      liveness-period-seconds:
+        description: 'Liveness probe period seconds'
+        required: false
+        type: string
+        default: '20'
+      cpu-request:
+        description: 'CPU request'
+        required: false
+        type: string
+        default: '300m'
+      memory-request:
+        description: 'Memory request'
+        required: false
+        type: string
+        default: '250Mi'
+      cpu-limit:
+        description: 'CPU limit'
+        required: false
+        type: string
+        default: '600m'
+      memory-limit:
+        description: 'Memory limit'
+        required: false
+        type: string
+        default: '500Mi'
+      min-replicas:
+        description: 'Minimum replicas count'
+        required: false
+        type: string
+        default: '1'
+      max-replicas:
+        description: 'Maximum replicas count'
+        required: false
+        type: string
+        default: '10'
+      deployment-replicas:
+        description: 'Deployment replicas count'
+        required: false
+        type: string
+        default: '1'
+      target-cpu-utilization:
+        description: 'Target CPU utilization percentage'
+        required: false
+        type: string
+        default: '80'
+      target-memory-utilization:
+        description: 'Target memory utilization percentage'
+        required: false
+        type: string
+        default: '80'
+      scale-up-percent:
+        description: 'Scale up maximum percentage'
+        required: false
+        type: string
+        default: '100'
+      scale-down-percent:
+        description: 'Scale down maximum percentage'
+        required: false
+        type: string
+        default: '50'
+      scale-down-stabilization-seconds:
+        description: 'Scale down stabilization window in seconds'
+        required: false
+        type: string
+        default: '300'
+      enable-hpa:
+        description: 'Enable HPA (Horizontal Pod Autoscaler)'
+        required: false
+        type: string
+        default: 'true'
+      ingress-path-prefix:
+        description: 'Ingress path prefix (empty to skip Ingress)'
+        required: false
+        type: string
+        default: ''
+      ingress-entry-point:
+        description: 'Ingress entry point'
+        required: false
+        type: string
+        default: 'web'
+      notification-provider:
+        description: 'Notification provider (none/feishu/telegram/all)'
+        required: false
+        type: string
+        default: 'none'
+
+    secrets:
+      # ============================================
+      # 敏感配置
+      # ============================================
+      KUBECONFIG:
+        description: 'Kubernetes kubeconfig 内容'
+        required: true
+      FEISHU_WEBHOOK_URL:
+        description: '飞书通知 Webhook URL'
+        required: false
+      TELEGRAM_BOT_TOKEN:
+        description: 'Telegram 通知 Bot Token'
+        required: false
+      TELEGRAM_CHAT_ID:
+        description: 'Telegram 通知 Chat ID'
+        required: false
+
+jobs:
+  deploy:
+    name: ☸️ Deploy to K8s
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      image-name: ${{ steps.image-name.outputs.image-name }}
+    env:
+      KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+    steps:
+      - name: Normalize Docker Image Name
+        id: image-name
+        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
+        with:
+          image-name: ${{ inputs.image-name }}
+
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+      
+      - name: Debug KUBECONFIG
+        run: |
+          if [ -z "$KUBECONFIG" ]; then
+            echo "ERROR: KUBECONFIG is empty! Check your environment secrets."
+            exit 1
+          else
+            echo "KUBECONFIG is set (length: ${#KUBECONFIG})"
+          fi
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+      - name: ⚙️ Setup Kubernetes Context
+        uses: Azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ env.KUBECONFIG }}
+
+      - name: 📥 Checkout Deploy Workflows (for templates)
+        uses: actions/checkout@v6
+        with:
+          repository: kamalyes/deploy-pipeline
+          ref: master
+          path: _deploy-workflows
+
+      - name: 📝 Generate K8s Manifests
+        run: |
+          echo "Generating Kubernetes manifests for: ${{ inputs.binary-name }}"
+          echo "  Namespace: ${{ inputs.namespace }}"
+          echo "  Image: ${{ steps.image-name.outputs.image-name }}"
+          echo "  HTTP: ${{ inputs.http-port }}, RPC: ${{ inputs.rpc-port }}, PProf: ${{ inputs.pprof-port }}"
+
+          DEPLOY_DIR="${{ inputs.binary-source-dir }}"
+          mkdir -p "${DEPLOY_DIR}"
+
+          export APP_NAME="${{ inputs.binary-name }}"
+          export NAMESPACE="${{ inputs.namespace }}"
+          export IMAGE_NAME="${{ steps.image-name.outputs.image-name }}"
+          export HTTP_PORT="${{ inputs.http-port }}"
+          export RPC_PORT="${{ inputs.rpc-port }}"
+          export PPROF_PORT="${{ inputs.pprof-port }}"
+          export REPLICAS="${{ inputs.deployment-replicas }}"
+          export REVISION_HISTORY_LIMIT="10"
+          export IMAGE_PULL_POLICY="IfNotPresent"
+          export IMAGE_PULL_SECRETS="${{ inputs.image-pull-secrets }}"
+          export READINESS_DELAY="${{ inputs.readiness-delay-seconds }}"
+          export READINESS_PERIOD="${{ inputs.readiness-period-seconds }}"
+          export LIVENESS_DELAY="${{ inputs.liveness-delay-seconds }}"
+          export LIVENESS_PERIOD="${{ inputs.liveness-period-seconds }}"
+          export CPU_REQUEST="${{ inputs.cpu-request }}"
+          export MEMORY_REQUEST="${{ inputs.memory-request }}"
+          export CPU_LIMIT="${{ inputs.cpu-limit }}"
+          export MEMORY_LIMIT="${{ inputs.memory-limit }}"
+          export MIN_REPLICAS="${{ inputs.min-replicas }}"
+          export MAX_REPLICAS="${{ inputs.max-replicas }}"
+          export TARGET_CPU_UTILIZATION="${{ inputs.target-cpu-utilization }}"
+          export TARGET_MEMORY_UTILIZATION="${{ inputs.target-memory-utilization }}"
+          export INGRESS_PATH_PREFIX="${{ inputs.ingress-path-prefix }}"
+          export INGRESS_ENTRY_POINT="${{ inputs.ingress-entry-point }}"
+
+          if [ -n "${{ inputs.config-yaml }}" ] && [ -f "${{ inputs.config-yaml }}" ]; then
+            CONFIG_BASENAME=$(basename "${{ inputs.config-yaml }}")
+            CONFIG_MOUNT_PATH="${{ inputs.docker-workdir }}/resources"
+
+            cat <<CMEOF > ${DEPLOY_DIR}/configmap.yaml
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${{ inputs.configmap-name }}
+            namespace: ${{ inputs.namespace }}
+          data:
+            ${CONFIG_BASENAME}: |
+          CMEOF
+            sed 's/^/    /' "${{ inputs.config-yaml }}" >> ${DEPLOY_DIR}/configmap.yaml
+            echo "ConfigMap generated"
+          fi
+
+          : ${REPLICAS:=1}
+          : ${REVISION_HISTORY_LIMIT:=10}
+          : ${IMAGE_PULL_POLICY:=IfNotPresent}
+          : ${IMAGE_PULL_SECRETS:=ghcr.io}
+          : ${READINESS_DELAY:=5}
+          : ${READINESS_PERIOD:=10}
+          : ${LIVENESS_DELAY:=15}
+          : ${LIVENESS_PERIOD:=20}
+          : ${CPU_REQUEST:=300m}
+          : ${MEMORY_REQUEST:=250Mi}
+          : ${CPU_LIMIT:=600m}
+          : ${MEMORY_LIMIT:=500Mi}
+          : ${MIN_REPLICAS:=1}
+          : ${MAX_REPLICAS:=10}
+          : ${TARGET_CPU_UTILIZATION:=80}
+          : ${TARGET_MEMORY_UTILIZATION:=80}
+          : ${INGRESS_ENTRY_POINT:=web}
+
+          envsubst < _deploy-workflows/templates/k8s/backend/deployment.yaml > ${DEPLOY_DIR}/deployment.yaml
+          echo "Deployment generated"
+
+          envsubst < _deploy-workflows/templates/k8s/backend/service.yaml > ${DEPLOY_DIR}/service.yaml
+          echo "Service generated"
+
+          if [ "${{ inputs.enable-hpa }}" = "true" ]; then
+            envsubst < _deploy-workflows/templates/k8s/backend/hpa.yaml > ${DEPLOY_DIR}/hpa.yaml
+            echo "HPA generated"
+          fi
+
+          if [ -n "${{ inputs.ingress-path-prefix }}" ]; then
+            envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+            echo "Ingress generated"
+          fi
+
+          echo ""
+          echo "Generated manifests:"
+          ls -lh ${DEPLOY_DIR}/*.yaml
+
+          echo ""
+          echo "============================================="
+          echo "Manifest contents:"
+          echo "============================================="
+          for file in ${DEPLOY_DIR}/*.yaml; do
+            echo ""
+            echo "--- $(basename "$file") ---"
+            cat "$file"
+          done
+
+      - name: 🚀 Apply Kubernetes Resources
+        run: |
+          DEPLOY_DIR="${{ inputs.binary-source-dir }}"
+
+          kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply --server-side --validate=false -f -
+
+          if [ -f "${DEPLOY_DIR}/configmap.yaml" ]; then
+            echo "Applying ConfigMap..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/deployment.yaml" ]; then
+            echo "Applying Deployment..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/deployment.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/service.yaml" ]; then
+            echo "Applying Service..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ "${{ inputs.enable-hpa }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
+            echo "Applying HPA..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/ingress.yaml" ]; then
+            echo "Applying Ingress..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ inputs.namespace }}
+          fi
+
+      - name: ⏳ Wait for Deployment
+        run: |
+          MAX_WAIT=300
+          ELAPSED=0
+          INTERVAL=10
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ inputs.namespace }} \
+              -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
+            READY_REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ inputs.namespace }} \
+              -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+            UPDATED_REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ inputs.namespace }} \
+              -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || echo "0")
+
+            echo "Progress: Ready=${READY_REPLICAS}/${REPLICAS}, Updated=${UPDATED_REPLICAS}/${REPLICAS}"
+
+            if [ "$READY_REPLICAS" = "$REPLICAS" ] && [ "$UPDATED_REPLICAS" = "$REPLICAS" ] && [ "$REPLICAS" != "0" ]; then
+              echo "Deployment completed successfully!"
+              break
+            fi
+
+            PROBLEM_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }} \
+              -o json | jq -r '.items[] | select(
+                (.status.containerStatuses[0].restartCount > 3) or
+                (.status.phase != "Running" and .status.phase != "Succeeded")
+              ) | .metadata.name' 2>/dev/null || echo "")
+
+            if [ -n "$PROBLEM_PODS" ]; then
+              echo "Warning: Found problematic pods"
+              for pod in $PROBLEM_PODS; do
+                echo "--- Pod: $pod ---"
+                kubectl logs $pod -n ${{ inputs.namespace }} --tail=30 2>&1 || true
+              done
+            fi
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ $ELAPSED -ge $MAX_WAIT ]; then
+            echo "Deployment timed out ($MAX_WAIT seconds)!"
+            kubectl describe deployment/${{ inputs.binary-name }} -n ${{ inputs.namespace }}
+            kubectl get pods,rs -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }} -o wide
+            exit 1
+          fi
+
+      - name: ✅ Verify Deployment
+        run: |
+          READY_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }} \
+            -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | tr ' ' '\n' | grep -c "True" || echo "0")
+
+          TOTAL_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }} \
+            --no-headers | wc -l)
+
+          echo "Ready pods: ${READY_PODS}/${TOTAL_PODS}"
+
+          if [ "$READY_PODS" -eq "0" ]; then
+            echo "Deployment verification failed: no pods are ready"
+            kubectl describe pods -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }}
+            exit 1
+          fi
+
+          echo "Deployment verified successfully!"
+
+  notify:
+    name: 🔔 Send Deployment Notification
+    needs: [deploy]
+    if: always() && inputs.notification-provider != 'none'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Deploy Workflows (for scripts)
+        uses: actions/checkout@v6
+        with:
+          repository: kamalyes/deploy-pipeline
+          ref: master
+          path: _deploy-workflows
+
+      - name: 📤 Send Notification
+        run: |
+          export NOTIFICATION_PROVIDER="${{ inputs.notification-provider }}"
+          export NOTIFICATION_TYPE="deployment"
+          export STATUS="${{ needs.deploy.result }}"
+          export ENVIRONMENT="${{ inputs.environment }}"
+          export BINARY_NAME="${{ inputs.binary-name }}"
+          export VERSION="${{ needs.deploy.outputs.image-name || inputs.image-name }}"
+          export GIT_COMMIT="${{ github.sha }}"
+          export GIT_BRANCH="${{ github.ref_name }}"
+          export OPERATOR="${{ github.actor }}"
+          export WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          export FEISHU_WEBHOOK_URL="${{ secrets.FEISHU_WEBHOOK_URL }}"
+          export TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          export TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
+          export GITHUB_REPOSITORY="${{ github.repository }}"
+          export GITHUB_ACTOR="${{ github.actor }}"
+          export DEPLOYMENT_TARGET="Kubernetes"
+          export NAMESPACE="${{ inputs.namespace }}"
+          export HTTP_PORT="${{ inputs.http-port }}"
+          export RPC_PORT="${{ inputs.rpc-port }}"
+          export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas }}"
+
+          if [ "$STATUS" = "failure" ]; then
+            export ERROR_MESSAGE="Kubernetes deployment failed, check logs for details"
+          fi
+
+          bash _deploy-workflows/scripts/notify.sh

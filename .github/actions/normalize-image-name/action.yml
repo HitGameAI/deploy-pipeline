@@ -1,0 +1,81 @@
+name: 'Normalize Docker Image Name'
+description: 'Normalize Docker image name (lowercase repository) and optionally generate Docker tags'
+
+inputs:
+  image-base:
+    description: 'Docker image base (e.g. registry.example.com/MyApp)'
+    required: false
+    default: ''
+  image-name:
+    description: 'Docker image name (e.g. registry.example.com/MyApp:latest)'
+    required: false
+    default: ''
+  generate-tags:
+    description: 'Whether to generate Docker tags (only for build workflows)'
+    required: false
+    default: 'false'
+
+outputs:
+  image-base:
+    description: 'Normalized image base'
+    value: ${{ steps.normalize.outputs.image-base }}
+  image-name:
+    description: 'Normalized image name'
+    value: ${{ steps.normalize.outputs.image-name }}
+  tags:
+    description: 'Multiline Docker tags string (only when generate-tags is true)'
+    value: ${{ steps.normalize.outputs.tags }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Normalize
+      id: normalize
+      shell: bash
+      env:
+        INPUT_IMAGE_BASE: ${{ inputs.image-base }}
+        INPUT_IMAGE_NAME: ${{ inputs.image-name }}
+        GENERATE_TAGS: ${{ inputs.generate-tags }}
+      run: |
+        normalize_image_name() {
+          local image="$1"
+          local repository="$image"
+          local suffix=""
+
+          if [[ "$image" == *@* ]]; then
+            repository="${image%@*}"
+            suffix="@${image##*@}"
+          else
+            local last_part="${image##*/}"
+            if [[ "$last_part" == *:* ]]; then
+              repository="${image%:*}"
+              suffix=":${image##*:}"
+            fi
+          fi
+
+          printf '%s%s' "$(printf '%s' "$repository" | tr '[:upper:]' '[:lower:]')" "$suffix"
+        }
+
+        NORMALIZED_BASE=""
+        NORMALIZED_NAME=""
+
+        if [[ -n "$INPUT_IMAGE_BASE" ]]; then
+          NORMALIZED_BASE=$(normalize_image_name "$INPUT_IMAGE_BASE")
+          echo "image-base=${NORMALIZED_BASE}" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [[ -n "$INPUT_IMAGE_NAME" ]]; then
+          NORMALIZED_NAME=$(normalize_image_name "$INPUT_IMAGE_NAME")
+          echo "image-name=${NORMALIZED_NAME}" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [[ "$GENERATE_TAGS" == "true" ]]; then
+          BRANCH=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+
+          {
+            echo "tags<<EOF"
+            echo "${NORMALIZED_NAME}"
+            echo "${NORMALIZED_BASE}:${BRANCH}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        fi

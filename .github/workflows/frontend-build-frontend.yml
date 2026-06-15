@@ -1,0 +1,162 @@
+name: 🎨 Build Frontend
+
+# ============================================
+# 前端构建工作流
+# 用途：自动化构建前端项目，支持 npm、pnpm、yarn 三种包管理器
+# 触发方式：通过 workflow_call 被其他工作流调用
+# ============================================
+
+on:
+  workflow_call:
+    inputs:
+      # ============================================
+      # 必选参数
+      # ============================================
+      node-version:
+        description: 'Node.js 版本'
+        required: true
+        type: string
+
+      version:
+        description: '构建版本号（默认使用 git commit SHA）'
+        required: false
+        type: string
+        default: ''
+
+      build-time:
+        description: '构建时间戳（默认使用 run_id）'
+        required: false
+        type: string
+        default: ''
+
+      git-commit:
+        description: 'Git commit hash（默认使用当前 SHA）'
+        required: false
+        type: string
+        default: ''
+
+      # ============================================
+      # 可选参数
+      # ============================================
+      package-registry:
+        description: '包管理器仓库地址（支持 npm、pnpm、yarn）'
+        required: false
+        type: string
+        default: 'https://registry.npmmirror.com'
+
+      package-manager:
+        description: '包管理器类型：npm、pnpm 或 yarn'
+        required: false
+        type: string
+        default: 'npm'
+
+      build-command:
+        description: '构建命令（如：npm run build）'
+        required: false
+        type: string
+        default: 'npm run build'
+
+      build-script:
+        description: '构建脚本路径（相对仓库根目录）'
+        required: false
+        type: string
+        default: 'scripts/frontend/build-frontend.sh'
+
+      output-dir:
+        description: '构建输出目录'
+        required: false
+        type: string
+        default: 'dist'
+
+      artifact-name:
+        description: '构建产物 Artifact 名称（用于多应用并行构建区分）'
+        required: false
+        type: string
+        default: 'frontend-dist'
+
+      pnpm-version:
+        description: 'pnpm 版本（仅 package-manager 为 pnpm 时生效）'
+        required: false
+        type: string
+        default: '8'
+
+jobs:
+  build-frontend:
+    name: 🎨 Build Frontend
+    runs-on: ubuntu-latest
+    steps:
+      # ============================================
+      # 步骤1：检出代码仓库
+      # ============================================
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      # ============================================
+      # 步骤2：检出部署工作流仓库（获取脚本）
+      # ============================================
+      - name: 📥 Checkout Deploy Workflows (for scripts)
+        uses: actions/checkout@v6
+        with:
+          repository: kamalyes/deploy-pipeline
+          ref: master
+          path: _deploy-workflows
+
+      # ============================================
+      # 步骤3：安装 pnpm（如果使用 pnpm，需在 setup-node 之前安装以启用缓存）
+      # ============================================
+      - name: 📦 Install pnpm
+        if: inputs.package-manager == 'pnpm'
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ inputs.pnpm-version }}
+          run_install: false
+
+      # ============================================
+      # 步骤4：配置 Node.js 环境
+      # ============================================
+      - name: 🛠️ Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          check-latest: true
+          cache: ${{ inputs.package-manager }}
+
+      # ============================================
+      # 步骤5：执行前端构建
+      # ============================================
+      - name: 🔨 Build Frontend
+        env:
+          RESOLVED_VERSION: ${{ inputs.version || github.sha }}
+          RESOLVED_GIT_COMMIT: ${{ inputs.git-commit || github.sha }}
+        run: |
+          RESOLVED_BUILD_TIME="${{ inputs.build-time }}"
+          if [ -z "$RESOLVED_BUILD_TIME" ]; then
+            RESOLVED_BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          fi
+
+          if [ -f "${{ inputs.build-script }}" ]; then
+            BUILD_SCRIPT="${{ inputs.build-script }}"
+          else
+            BUILD_SCRIPT="_deploy-workflows/scripts/frontend/build-frontend.sh"
+          fi
+          chmod +x "${BUILD_SCRIPT}"
+
+          ./${BUILD_SCRIPT} \
+            --version "${RESOLVED_VERSION}" \
+            --build-time "${RESOLVED_BUILD_TIME}" \
+            --git-commit "${RESOLVED_GIT_COMMIT}" \
+            --output-dir "${{ inputs.output-dir }}" \
+            --node-version "${{ inputs.node-version }}" \
+            --package-registry "${{ inputs.package-registry }}" \
+            --package-manager "${{ inputs.package-manager }}" \
+            --build-command "${{ inputs.build-command }}"
+
+      # ============================================
+      # 步骤6：上传构建产物作为 Artifact
+      # ============================================
+      - name: 📤 Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.output-dir }}
+          retention-days: 7

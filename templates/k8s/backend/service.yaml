@@ -1,0 +1,27 @@
+# ============================================
+# 后端服务 Service 模板
+# ============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${APP_NAME}
+    tier: backend
+spec:
+  ports:
+    - name: http
+      port: ${HTTP_PORT}
+      protocol: TCP
+      targetPort: http
+    - name: rpc
+      port: ${RPC_PORT}
+      protocol: TCP
+      targetPort: rpc
+    - name: pprof
+      port: ${PPROF_PORT}
+      protocol: TCP
+      targetPort: pprof
+  selector:
+    app: ${APP_NAME}

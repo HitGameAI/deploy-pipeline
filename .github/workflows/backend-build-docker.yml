@@ -1,4 +1,4 @@
-name: Build Docker Image
+name: 🐳 Build Docker Image
 
 on:
   workflow_call:
@@ -62,7 +62,7 @@ on:
 
 jobs:
   build-docker:
-    name: Build Docker
+    name: 🐳 Build Docker Image
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     env:
@@ -74,16 +74,16 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v6
 
-      - name: Download Binary
+      - name: 📤 Download Binary
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.binary-name }}-binary
           path: ${{ inputs.binary-source-dir }}
 
-      - name: Generate Dockerfile
+      - name: 📝 Generate Dockerfile
         run: |
           BINARY_SOURCE_DIR="${{ inputs.binary-source-dir }}"
           BUILD_APP_NAME="${{ inputs.binary-name }}"
@@ -111,24 +111,37 @@ jobs:
           cat ${BINARY_SOURCE_DIR}/Dockerfile
           echo "============================"
 
-      - name: Login to Docker Registry
+      - name: 🔐 Login to Docker Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ inputs.docker-registry }}
           username: ${{ env.DOCKER_USERNAME }}
           password: ${{ env.DOCKER_PASSWORD }}
 
-      - name: Extract Metadata
+      - name: Normalize Docker Image Names
+        id: image-names
+        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
+        with:
+          image-base: ${{ inputs.image-base }}
+          image-name: ${{ inputs.image-name }}
+          generate-tags: 'true'
+
+      - name: 📊 Extract Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ inputs.image-base }}
+          images: ${{ steps.image-names.outputs.image-base }}
 
-      - name: Build and Push
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
+      - name: 🔨 Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ inputs.binary-source-dir }}/Dockerfile
           push: true
-          tags: ${{ inputs.image-name }}
+          tags: ${{ steps.image-names.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

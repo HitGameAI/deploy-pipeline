@@ -1,4 +1,4 @@
-name: Build Binary
+name: 🚀 Build Binary
 
 on:
   workflow_call:
@@ -60,24 +60,31 @@ on:
         description: 'Path to build script (relative to repo root)'
         required: false
         type: string
-        default: 'scripts/build-linux.sh'
+        default: 'scripts/backend/build-linux.sh'
+    secrets:
+      # ============================================
+      # 敏感配置
+      # ============================================
+      GIT_SSH_PRIVATE_KEY:
+        description: 'Git SSH 私钥内容'
+        required: true
 
 jobs:
   build-binary:
-    name: Build Binary
+    name: 🚀 Build Go Binary
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v6
 
-      - name: Checkout Deploy Workflows (for scripts)
+      - name: 📥 Checkout Deploy Workflows (for scripts)
         uses: actions/checkout@v6
         with:
           repository: kamalyes/deploy-pipeline
           ref: master
           path: _deploy-workflows
 
-      - name: Set up Go
+      - name: 🛠️ Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ inputs.go-version }}
@@ -85,18 +92,18 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      - name: Setup SSH Key for Private Modules
+      - name: 🔑 Setup SSH Key for Private Modules
         if: inputs.goprivate != ''
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
 
-      - name: Configure Git to use SSH for Private Repos
+      - name: ⚙️ Configure Git for Private Repos
         if: inputs.goprivate != ''
         run: |
           git config --global url."git@github.com:".insteadOf "https://github.com/"
 
-      - name: Download Dependencies
+      - name: 📦 Download Dependencies
         run: |
           export GOPROXY="${{ inputs.goproxy }}"
           if [ -n "${{ inputs.goprivate }}" ]; then
@@ -104,7 +111,7 @@ jobs:
           fi
           go mod download
 
-      - name: Cache UPX
+      - name: 🗄️ Cache UPX
         if: inputs.upx-compress == 'true'
         uses: actions/cache@v4
         with:
@@ -115,13 +122,12 @@ jobs:
           restore-keys: |
             upx-${{ runner.os }}-
 
-      - name: Build Binary
+      - name: 🔨 Build Binary
         run: |
-          # 优先使用项目自带脚本，不存在则使用公共仓库脚本
           if [ -f "${{ inputs.build-script }}" ]; then
             BUILD_SCRIPT="${{ inputs.build-script }}"
           else
-            BUILD_SCRIPT="_deploy-workflows/scripts/build-linux.sh"
+            BUILD_SCRIPT="_deploy-workflows/scripts/backend/build-linux.sh"
           fi
           chmod +x "${BUILD_SCRIPT}"
 
@@ -138,7 +144,7 @@ jobs:
           echo "Build completed: ${{ inputs.binary-name }}"
           ls -lh "${{ inputs.binary-source-dir }}"
 
-      - name: Upload Binary
+      - name: 📤 Upload Binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.binary-name }}-binary

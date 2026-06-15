@@ -1,4 +1,4 @@
-name: Code Quality Check
+name: 🔍 Code Quality Check
 
 on:
   workflow_call:
@@ -14,19 +14,19 @@ on:
 
 jobs:
   code-quality:
-    name: Code Quality Check
+    name: 🔍 Code Quality Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v6
 
-      - name: Set up Go
+      - name: 🛠️ Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ inputs.go-version }}
           cache: true
 
-      - name: Format Check
+      - name: ✨ Format Check (gofmt)
         run: |
           if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
             echo "Files needing formatting:"
@@ -34,24 +34,24 @@ jobs:
             exit 1
           fi
 
-      - name: Vet Check
+      - name: 🔍 Vet Check
         run: go vet ./...
 
-      - name: Install gotestsum
+      - name: 📦 Install gotestsum
         run: go install gotest.tools/gotestsum@${{ inputs.gotestsum-version }}
 
-      - name: Test with Coverage
+      - name: 🧪 Run Tests with Coverage
         run: gotestsum -f testname -- ./... -race -count=1 -coverprofile=coverage -covermode=atomic -shuffle=on
         continue-on-error: true
 
-      - name: Generate Coverage Report
+      - name: 📊 Generate Coverage Report
         if: always()
         run: |
           if [ -f coverage ]; then
             go tool cover -html=coverage -o coverage.html
           fi
 
-      - name: Upload Coverage
+      - name: 📤 Upload Coverage Report
         uses: actions/upload-artifact@v4
         if: always()
         with:
