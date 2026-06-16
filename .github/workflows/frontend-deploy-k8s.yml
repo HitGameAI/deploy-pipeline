@@ -49,6 +49,12 @@ on:
         type: string
         default: ''
 
+      ingress-host:
+        description: 'Ingress 域名（如 abc.com），为空则仅用 PathPrefix 匹配'
+        required: false
+        type: string
+        default: ''
+
       ingress-entry-point:
         description: 'Ingress 入口点'
         required: false
@@ -280,6 +286,7 @@ jobs:
           export MAX_REPLICAS="${{ inputs.max-replicas }}"
           export TARGET_CPU_UTILIZATION="${{ inputs.target-cpu-utilization }}"
           export INGRESS_PATH_PREFIX="${{ inputs.ingress-path-prefix }}"
+          export INGRESS_HOST="${{ inputs.ingress-host }}"
           export INGRESS_ENTRY_POINT="${{ inputs.ingress-entry-point }}"
           export RUN_MODE="${{ inputs.environment }}"
           export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
@@ -332,9 +339,28 @@ jobs:
             echo "HPA 已生成"
           fi
 
-          if [ -n "${{ inputs.ingress-path-prefix }}" ]; then
-            envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
-            echo "Ingress 已生成"
+          if [ -n "${{ inputs.ingress-host }}" ] || [ -n "${{ inputs.ingress-path-prefix }}" ]; then
+            if [ -n "${{ inputs.ingress-host }}" ] && [ -n "${{ inputs.ingress-path-prefix }}" ]; then
+              export INGRESS_MATCH_RULE="Host(\`${{ inputs.ingress-host }}\`) && PathPrefix(\`${{ inputs.ingress-path-prefix }}\`)"
+              export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
+              export INGRESS_STRIP_NAME="${APP_NAME}-strip"
+              envsubst < _deploy-workflows/templates/k8s/frontend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
+              envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip.yaml > ${DEPLOY_DIR}/ingress.yaml
+              echo "IngressRoute: Host + PathPrefix (with StripPrefix middleware)"
+            elif [ -n "${{ inputs.ingress-host }}" ]; then
+              export INGRESS_MATCH_RULE="Host(\`${{ inputs.ingress-host }}\`)"
+              envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+              echo "IngressRoute: Host only (no StripPrefix needed)"
+            else
+              export INGRESS_MATCH_RULE="PathPrefix(\`${{ inputs.ingress-path-prefix }}\`)"
+              export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
+              export INGRESS_STRIP_NAME="${APP_NAME}"
+              envsubst < _deploy-workflows/templates/k8s/frontend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
+              envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip.yaml > ${DEPLOY_DIR}/ingress.yaml
+              echo "IngressRoute: PathPrefix only (with StripPrefix middleware)"
+            fi
+          else
+            echo "Skipping IngressRoute (no ingress-host or ingress-path-prefix configured)"
           fi
 
           echo ""
@@ -385,8 +411,13 @@ jobs:
           fi
 
           if [ -f "${DEPLOY_DIR}/ingress.yaml" ]; then
-            echo "正在应用 Ingress..."
+            echo "正在应用 IngressRoute..."
             kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ inputs.namespace }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/middleware.yaml" ]; then
+            echo "正在应用 Middleware..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/middleware.yaml -n ${{ inputs.namespace }}
           fi
 
       # ============================================

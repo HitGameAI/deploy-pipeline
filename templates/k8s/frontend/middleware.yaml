@@ -1,0 +1,9 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ${INGRESS_STRIP_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  stripPrefix:
+    prefixes:
+      - ${INGRESS_STRIP_PREFIX}
