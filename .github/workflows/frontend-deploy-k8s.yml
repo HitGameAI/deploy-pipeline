@@ -394,11 +394,14 @@ jobs:
       # ============================================
       - name: ⏳ Wait for Deployment
         run: |
-          MAX_WAIT=300
+          MAX_WAIT="${{ vars.K8S_HEALTH_MAX_WAIT || '120' }}"
           ELAPSED=0
           INTERVAL=10
 
-          echo "等待 Deployment 完成..."
+          # 获取当前 Deployment 的 pod-template-hash，只关注新 ReplicaSet 的 Pod
+          NEW_RS_HASH=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+            -o jsonpath='{.status.latestRevision}' 2>/dev/null || echo "")
+
           while [ $ELAPSED -lt $MAX_WAIT ]; do
             REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
               -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
@@ -414,6 +417,29 @@ jobs:
               break
             fi
 
+            # 只检查新 ReplicaSet 的 Pod，忽略正在终止的旧 Pod
+            if [ -n "$NEW_RS_HASH" ]; then
+              PROBLEM_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH} \
+                -o json | jq -r '.items[] | select(
+                  (.status.containerStatuses[]?.restartCount // 0) > 3 or
+                  (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
+                ) | .metadata.name' 2>/dev/null || echo "")
+            else
+              PROBLEM_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }} \
+                -o json | jq -r '.items[] | select(
+                  (.status.containerStatuses[]?.restartCount // 0) > 3 or
+                  (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
+                ) | .metadata.name' 2>/dev/null || echo "")
+            fi
+
+            if [ -n "$PROBLEM_PODS" ]; then
+              echo "警告: 新 ReplicaSet 中发现问题 Pod"
+              for pod in $PROBLEM_PODS; do
+                echo "--- Pod: $pod ---"
+                kubectl logs $pod -n ${{ inputs.namespace }} --tail=30 2>&1 || true
+              done
+            fi
+
             sleep $INTERVAL
             ELAPSED=$((ELAPSED + INTERVAL))
           done
@@ -425,22 +451,29 @@ jobs:
             exit 1
           fi
 
-      # ============================================
-      # 步骤7：验证 Deployment
-      # ============================================
       - name: ✅ Verify Deployment
         run: |
-          READY_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }} \
+          # 获取当前 Deployment 的 pod-template-hash，只验证新 Pod
+          NEW_RS_HASH=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+            -o jsonpath='{.status.latestRevision}' 2>/dev/null || echo "")
+
+          if [ -n "$NEW_RS_HASH" ]; then
+            LABEL_SELECTOR="app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH}"
+          else
+            LABEL_SELECTOR="app=${{ inputs.app-name }}"
+          fi
+
+          READY_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l "${LABEL_SELECTOR}" \
             -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | tr ' ' '\n' | grep -c "True" || echo "0")
 
-          TOTAL_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }} \
-            --no-headers | wc -l)
+          TOTAL_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l "${LABEL_SELECTOR}" \
+            --no-headers 2>/dev/null | wc -l)
 
-          echo "就绪 Pod 数: ${READY_PODS}/${TOTAL_PODS}"
+          echo "就绪 Pod 数: ${READY_PODS}/${TOTAL_PODS}（仅新 ReplicaSet）"
 
           if [ "$READY_PODS" -eq "0" ]; then
             echo "Deployment 验证失败：没有就绪的 Pod"
-            kubectl describe pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }}
+            kubectl describe pods -n ${{ inputs.namespace }} -l "${LABEL_SELECTOR}"
             exit 1
           fi
 

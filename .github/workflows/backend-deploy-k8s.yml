@@ -194,7 +194,7 @@ jobs:
       HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '8182' }}
       RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
       PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
-      DOCKER_WORKDIR: ${{ inputs.docker-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
+      DOCKER_RUN_WORKDIR: ${{ inputs.docker-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
       IMAGE_PULL_SECRETS: ${{ inputs.image-pull-secrets || vars.K8S_IMAGE_PULL_SECRETS || 'ghcr.io' }}
       READINESS_DELAY: ${{ inputs.readiness-delay-seconds || vars.K8S_READINESS_DELAY_SECONDS || '5' }}
       READINESS_PERIOD: ${{ inputs.readiness-period-seconds || vars.K8S_READINESS_PERIOD_SECONDS || '10' }}
@@ -294,7 +294,7 @@ jobs:
           export INGRESS_ENTRY_POINT="${{ inputs.ingress-entry-point }}"
           export RUN_MODE="${{ inputs.environment }}"
           export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
-          export CONFIG_MOUNT_PATH="${{ inputs.docker-workdir }}/resources"
+          export CONFIG_MOUNT_PATH="${{ env.DOCKER_RUN_WORKDIR }}/resources"
 
           if [ -n "${{ inputs.config-yaml }}" ] && [ -f "${{ inputs.config-yaml }}" ]; then
             CONFIG_BASENAME=$(basename "${{ inputs.config-yaml }}")
@@ -400,9 +400,13 @@ jobs:
 
       - name: ⏳ Wait for Deployment
         run: |
-          MAX_WAIT=300
+          MAX_WAIT="${{ vars.K8S_HEALTH_MAX_WAIT || '120' }}"
           ELAPSED=0
           INTERVAL=10
+
+          # 获取当前 Deployment 的 pod-template-hash，只关注新 ReplicaSet 的 Pod
+          NEW_RS_HASH=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} \
+            -o jsonpath='{.status.latestRevision}' 2>/dev/null || echo "")
 
           while [ $ELAPSED -lt $MAX_WAIT ]; do
             REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} \
@@ -419,14 +423,23 @@ jobs:
               break
             fi
 
-            PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }} \
-              -o json | jq -r '.items[] | select(
-                (.status.containerStatuses[0].restartCount > 3) or
-                (.status.phase != "Running" and .status.phase != "Succeeded")
-              ) | .metadata.name' 2>/dev/null || echo "")
+            # 只检查新 ReplicaSet 的 Pod，忽略正在终止的旧 Pod
+            if [ -n "$NEW_RS_HASH" ]; then
+              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }},pod-template-hash=${NEW_RS_HASH} \
+                -o json | jq -r '.items[] | select(
+                  (.status.containerStatuses[]?.restartCount // 0) > 3 or
+                  (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
+                ) | .metadata.name' 2>/dev/null || echo "")
+            else
+              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }} \
+                -o json | jq -r '.items[] | select(
+                  (.status.containerStatuses[]?.restartCount // 0) > 3 or
+                  (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
+                ) | .metadata.name' 2>/dev/null || echo "")
+            fi
 
             if [ -n "$PROBLEM_PODS" ]; then
-              echo "Warning: Found problematic pods"
+              echo "Warning: Found problematic pods in new ReplicaSet"
               for pod in $PROBLEM_PODS; do
                 echo "--- Pod: $pod ---"
                 kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=30 2>&1 || true
@@ -446,17 +459,27 @@ jobs:
 
       - name: ✅ Verify Deployment
         run: |
-          READY_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }} \
+          # 获取当前 Deployment 的 pod-template-hash，只验证新 Pod
+          NEW_RS_HASH=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} \
+            -o jsonpath='{.status.latestRevision}' 2>/dev/null || echo "")
+
+          if [ -n "$NEW_RS_HASH" ]; then
+            LABEL_SELECTOR="app=${{ inputs.binary-name }},pod-template-hash=${NEW_RS_HASH}"
+          else
+            LABEL_SELECTOR="app=${{ inputs.binary-name }}"
+          fi
+
+          READY_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l "${LABEL_SELECTOR}" \
             -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | tr ' ' '\n' | grep -c "True" || echo "0")
 
-          TOTAL_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }} \
-            --no-headers | wc -l)
+          TOTAL_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l "${LABEL_SELECTOR}" \
+            --no-headers 2>/dev/null | wc -l)
 
-          echo "Ready pods: ${READY_PODS}/${TOTAL_PODS}"
+          echo "Ready pods: ${READY_PODS}/${TOTAL_PODS} (new ReplicaSet only)"
 
           if [ "$READY_PODS" -eq "0" ]; then
             echo "Deployment verification failed: no pods are ready"
-            kubectl describe pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }}
+            kubectl describe pods -n ${{ env.NAMESPACE }} -l "${LABEL_SELECTOR}"
             exit 1
           fi
 
