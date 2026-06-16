@@ -26,6 +26,9 @@ spec:
       - name: ${APP_NAME}
         image: ${IMAGE_NAME}
         imagePullPolicy: ${IMAGE_PULL_POLICY}
+        env:
+        - name: APP_ENV
+          value: "${RUN_MODE}"
         lifecycle:
           preStop:
             exec:
@@ -34,9 +37,7 @@ spec:
         - name: http
           containerPort: ${HTTP_PORT}
           protocol: TCP
-        - name: rpc
-          containerPort: ${RPC_PORT}
-          protocol: TCP
+${DEPLOY_RPC_PORT_BLOCK}
         - name: pprof
           containerPort: ${PPROF_PORT}
           protocol: TCP
@@ -57,5 +58,14 @@ spec:
           limits:
             cpu: ${CPU_LIMIT}
             memory: ${MEMORY_LIMIT}
+        volumeMounts:
+        - name: config
+          mountPath: ${CONFIG_MOUNT_PATH}
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: ${CONFIGMAP_NAME}
+          optional: true
       imagePullSecrets:
       - name: ${IMAGE_PULL_SECRETS}

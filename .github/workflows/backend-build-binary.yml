@@ -3,20 +3,9 @@ name: 🚀 Build Binary
 on:
   workflow_call:
     inputs:
-      go-version:
-        description: 'Go version'
-        required: true
-        type: string
-      goproxy:
-        description: 'Go module proxy'
-        required: false
-        type: string
-        default: 'https://goproxy.cn,direct'
-      goprivate:
-        description: 'Go private modules'
-        required: false
-        type: string
-        default: ''
+      # ============================================
+      # 动态值（每次调用不同，必须传入）
+      # ============================================
       binary-name:
         description: 'Binary name'
         required: true
@@ -41,6 +30,34 @@ on:
         description: 'Git commit hash'
         required: true
         type: string
+      # ============================================
+      # 可覆盖的静态配置（有默认值，优先读 vars）
+      # ============================================
+      go-version:
+        description: 'Go version (overrides vars.GO_VERSION)'
+        required: false
+        type: string
+        default: ''
+      goproxy:
+        description: 'Go module proxy (overrides vars.GOPROXY)'
+        required: false
+        type: string
+        default: ''
+      goprivate:
+        description: 'Go private modules (overrides vars.GOPRIVATE)'
+        required: false
+        type: string
+        default: ''
+      go-auth-method:
+        description: 'Go private module auth method: app-token | ssh | none'
+        required: false
+        type: string
+        default: ''
+      upx-compress:
+        description: 'Enable UPX compression (overrides vars.UPX_COMPRESS)'
+        required: false
+        type: string
+        default: ''
       os:
         description: 'Target OS'
         required: false
@@ -51,28 +68,33 @@ on:
         required: false
         type: string
         default: 'amd64'
-      upx-compress:
-        description: 'Enable UPX compression'
-        required: false
-        type: string
-        default: 'false'
       build-script:
         description: 'Path to build script (relative to repo root)'
         required: false
         type: string
         default: 'scripts/backend/build-linux.sh'
     secrets:
-      # ============================================
-      # 敏感配置
-      # ============================================
+      APP_ID:
+        description: 'GitHub App ID (for app-token auth)'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'GitHub App Private Key (for app-token auth)'
+        required: false
       GIT_SSH_PRIVATE_KEY:
-        description: 'Git SSH 私钥内容'
-        required: true
+        description: 'Git SSH 私钥内容 (for ssh auth, legacy)'
+        required: false
 
 jobs:
   build-binary:
     name: 🚀 Build Go Binary
     runs-on: ubuntu-latest
+    env:
+      # 优先级: input > vars > 硬编码默认值
+      GO_VERSION: ${{ inputs.go-version || vars.GO_VERSION || '1.25.1' }}
+      GOPROXY: ${{ inputs.goproxy || vars.GOPROXY || 'https://goproxy.cn,direct' }}
+      GOPRIVATE: ${{ inputs.goprivate || vars.GOPRIVATE || '' }}
+      GO_AUTH_METHOD: ${{ inputs.go-auth-method || vars.GO_AUTH_METHOD || 'ssh' }}
+      UPX_COMPRESS: ${{ inputs.upx-compress || vars.UPX_COMPRESS || 'false' }}
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
@@ -85,7 +107,7 @@ jobs:
           path: _deploy-workflows
 
       - name: 🗄️ Cache UPX
-        if: inputs.upx-compress == 'true'
+        if: env.UPX_COMPRESS == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -95,30 +117,60 @@ jobs:
           restore-keys: |
             upx-${{ runner.os }}-
 
+      # ============================================
+      # Auth Method: app-token
+      # 使用 GitHub App 生成临时 Token 拉取私有模块
+      # 条件：GO_AUTH_METHOD == 'app-token'（不依赖 GOPRIVATE 是否为空）
+      # ============================================
+      - name: 🔑 Generate GitHub App Token
+        if: env.GO_AUTH_METHOD == 'app-token'
+        id: app_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: ⚙️ Configure Git for App Token Auth
+        if: env.GO_AUTH_METHOD == 'app-token'
+        run: |
+          git config --global url."https://x-access-token:${{ steps.app_token.outputs.token }}@github.com/".insteadOf "https://github.com/"
+          if [ -n "${GOPRIVATE}" ]; then
+            echo "GOPRIVATE=${GOPRIVATE}" >> "$GITHUB_ENV"
+          fi
+
+      # ============================================
+      # Auth Method: ssh (legacy)
+      # 使用 SSH 私钥拉取私有模块
+      # 条件：GO_AUTH_METHOD == 'ssh'（不依赖 GOPRIVATE 是否为空）
+      # ============================================
       - name: 🔑 Setup SSH Key for Private Modules
-        if: inputs.goprivate != ''
+        if: env.GO_AUTH_METHOD == 'ssh'
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
-      
-      - name: ⚙️ Configure Git for Private Repos
-        if: inputs.goprivate != ''
+
+      - name: ⚙️ Configure Git for SSH Auth
+        if: env.GO_AUTH_METHOD == 'ssh'
         run: |
           git config --global url."git@github.com:".insteadOf "https://github.com/"
+          if [ -n "${GOPRIVATE}" ]; then
+            echo "GOPRIVATE=${GOPRIVATE}" >> "$GITHUB_ENV"
+          fi
 
       - name: 🛠️ Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ inputs.go-version }}
+          go-version: ${{ env.GO_VERSION }}
           check-latest: false
           cache: true
           cache-dependency-path: go.sum
 
       - name: 📦 Download Dependencies
         run: |
-          export GOPROXY="${{ inputs.goproxy }}"
-          if [ -n "${{ inputs.goprivate }}" ]; then
-            export GOPRIVATE="${{ inputs.goprivate }}"
+          export GOPROXY="${{ env.GOPROXY }}"
+          if [ -n "${{ env.GOPRIVATE }}" ]; then
+            export GOPRIVATE="${{ env.GOPRIVATE }}"
           fi
           go mod download
 
@@ -139,7 +191,7 @@ jobs:
             --output-dir "${{ inputs.binary-source-dir }}" \
             --os "${{ inputs.os }}" \
             --arch "${{ inputs.arch }}" \
-            --upx-compress "${{ inputs.upx-compress }}"
+            --upx-compress "${{ env.UPX_COMPRESS }}"
 
           echo "Build completed: ${{ inputs.binary-name }}"
           ls -lh "${{ inputs.binary-source-dir }}"

@@ -281,6 +281,9 @@ jobs:
           export TARGET_CPU_UTILIZATION="${{ inputs.target-cpu-utilization }}"
           export INGRESS_PATH_PREFIX="${{ inputs.ingress-path-prefix }}"
           export INGRESS_ENTRY_POINT="${{ inputs.ingress-entry-point }}"
+          export RUN_MODE="${{ inputs.environment }}"
+          export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
+          export CONFIG_MOUNT_PATH="/usr/share/nginx/html/config"
 
           if [ -n "${{ inputs.config-yaml }}" ] && [ -f "${{ inputs.config-yaml }}" ]; then
             CONFIG_BASENAME=$(basename "${{ inputs.config-yaml }}")
@@ -314,6 +317,9 @@ jobs:
           : ${MAX_REPLICAS:=5}
           : ${TARGET_CPU_UTILIZATION:=70}
           : ${INGRESS_ENTRY_POINT:=web}
+          : ${RUN_MODE:=dev}
+          : ${CONFIGMAP_NAME:=${APP_NAME}-config}
+          : ${CONFIG_MOUNT_PATH:=/usr/share/nginx/html/config}
 
           envsubst < _deploy-workflows/templates/k8s/frontend/deployment.yaml > ${DEPLOY_DIR}/deployment.yaml
           echo "Deployment 已生成"

@@ -74,7 +74,11 @@ GitHub Actions 支持**环境级别**和**仓库级别**两种配置方式，优
 |--------|------|------|------|
 | `DOCKER_USERNAME` | Docker/GitHub 用户名 | 镜像推送认证 | ✅ |
 | `DOCKER_PASSWORD` | Docker 密码或 GitHub Token | 镜像推送认证 | ✅ |
-| `GIT_SSH_PRIVATE_KEY` | Git SSH 私钥 | 拉取私有 Go 模块 | ❌ |
+| `APP_ID` | GitHub App ID | App Token 方式拉取私有 Go 模块 | ❌ |
+| `APP_PRIVATE_KEY` | GitHub App 私钥 | App Token 方式拉取私有 Go 模块 | ❌ |
+| `GIT_SSH_PRIVATE_KEY` | Git SSH 私钥 (Legacy) | SSH 方式拉取私有 Go 模块 | ❌ |
+
+> **认证方式选择**：推荐使用 `APP_ID` + `APP_PRIVATE_KEY`（GitHub App Token），它会自动生成临时 Token，安全性更高。`GIT_SSH_PRIVATE_KEY` 仍可使用但属于旧方式。
 
 #### 环境级别 Secrets（按环境配置）
 
@@ -92,6 +96,9 @@ GitHub Actions 支持**环境级别**和**仓库级别**两种配置方式，优
 | Variable | 说明 | 默认值 | 必填 |
 |----------|------|--------|------|
 | `GO_VERSION` | 默认 Go 版本 | `1.25.1` | ❌ |
+| `GOPROXY` | Go 模块代理地址 | `https://goproxy.cn,direct` | ❌ |
+| `GOPRIVATE` | Go 私有模块路径 | `''` | ❌ |
+| `GO_AUTH_METHOD` | Go 私有模块认证方式 | `none` | ❌ |
 | `NODE_VERSION` | 默认 Node.js 版本 | `20` | ❌ |
 | `PACKAGE_REGISTRY` | 默认包管理器仓库 | `https://registry.npmmirror.com` | ❌ |
 
@@ -149,7 +156,12 @@ jobs:
     with:
       go-version: ${{ vars.GO_VERSION || '1.25.1' }}
       gotestsum-version: 'v1.13.0'
-    secrets: inherit
+      goprivate: ${{ vars.GOPRIVATE || '' }}
+      go-auth-method: ${{ vars.GO_AUTH_METHOD || 'app-token' }}
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+      GIT_SSH_PRIVATE_KEY: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
 
   build-binary:
     uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
@@ -161,7 +173,12 @@ jobs:
       version: '${{ github.sha }}'
       build-time: '${{ format('{0}_{1}', github.event.head_commit.timestamp, github.run_id) }}'
       git-commit: '${{ github.sha }}'
-    secrets: inherit
+      goprivate: ${{ vars.GOPRIVATE || '' }}
+      go-auth-method: ${{ vars.GO_AUTH_METHOD || 'app-token' }}
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+      GIT_SSH_PRIVATE_KEY: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
 
   build-docker:
     needs: [build-binary]
@@ -176,7 +193,9 @@ jobs:
       binary-source-dir: 'deployments'
       image-base: '${{ vars.IMAGE_PREFIX }}/your-service'
       image-name: '${{ vars.IMAGE_PREFIX }}/your-service:${{ github.sha }}'
-    secrets: inherit
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
   deploy-dev:
     needs: [build-docker]
@@ -191,7 +210,65 @@ jobs:
       pprof-port: '6060'
       notification-provider: 'feishu'
     environment: dev
-    secrets: inherit
+    secrets:
+      KUBECONFIG: ${{ secrets.KUBECONFIG }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+```
+
+### 前端应用示例
+
+```yaml
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-frontend:
+    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-build-frontend.yml@master
+    with:
+      node-version: ${{ vars.NODE_VERSION || '20' }}
+      package-manager: 'pnpm'
+      package-registry: ${{ vars.PACKAGE_REGISTRY || 'https://registry.npmmirror.com' }}
+      version: '${{ github.sha }}'
+      build-time: '${{ format('{0}_{1}', github.event.head_commit.timestamp, github.run_id) }}'
+      git-commit: '${{ github.sha }}'
+      output-dir: 'dist'
+
+  build-docker:
+    needs: [build-frontend]
+    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-build-docker.yml@master
+    with:
+      app-name: 'frontend-app'
+      version: '${{ github.sha }}'
+      http-port: '80'
+      docker-registry: ${{ vars.IMAGE_REGISTRY || 'ghcr.io' }}
+      image-base: '${{ vars.IMAGE_PREFIX }}/frontend-app'
+      image-name: '${{ vars.IMAGE_PREFIX }}/frontend-app:${{ github.sha }}'
+      nginx-config-path: 'deploy/nginx.conf'
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  deploy-dev:
+    needs: [build-docker]
+    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-deploy-k8s.yml@master
+    with:
+      environment: 'dev'
+      image-name: '${{ vars.IMAGE_PREFIX }}/frontend-app:${{ github.sha }}'
+      app-name: 'frontend-app'
+      http-port: '80'
+      ingress-path-prefix: '/app'
+      notification-provider: 'feishu'
+    environment: dev
+    secrets:
+      KUBECONFIG: ${{ secrets.KUBECONFIG }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 ```
 
 ### 前端应用示例
@@ -277,13 +354,12 @@ jobs:
       node-version: ${{ env.NODE_VERSION }}
       pnpm-version: ${{ env.PNPM_VERSION }}
       package-manager: 'pnpm'
-      build-command: 'pnpm run build:app-a'     # monorepo 指定构建子应用
-      output-dir: 'apps/app-a/dist'              # 子应用构建输出目录
-      artifact-name: 'app-a-dist'                # 区分不同应用的 artifact
+      build-command: 'pnpm run build:app-a'
+      output-dir: 'apps/app-a/dist'
+      artifact-name: 'app-a-dist'
       version: '${{ github.sha }}'
       build-time: '${{ format("{0}_{1}", github.event.head_commit.timestamp, github.run_id) }}'
       git-commit: '${{ github.sha }}'
-    secrets: inherit
 
   docker:
     needs: [build]
@@ -295,9 +371,11 @@ jobs:
       image-base: '${{ env.IMAGE_PREFIX }}/my-project-app-a'
       image-name: '${{ env.IMAGE_PREFIX }}/my-project-app-a:${{ github.sha }}'
       build-output-dir: 'apps/app-a/dist'
-      artifact-name: 'app-a-dist'                # 需与 build 步骤一致
+      artifact-name: 'app-a-dist'
       nginx-config-path: 'deploy/nginx.conf'
-    secrets: inherit
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
   deploy:
     needs: [docker]
@@ -310,7 +388,11 @@ jobs:
       ingress-path-prefix: '/app-a'
       notification-provider: 'feishu'
     environment: ${{ inputs.environment || 'dev' }}
-    secrets: inherit
+    secrets:
+      KUBECONFIG: ${{ secrets.KUBECONFIG }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 ```
 
 ---
@@ -325,8 +407,19 @@ jobs:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `go-version` | string | 是 | - | Go 版本 |
-| `gotestsum-version` | string | 是 | - | gotestsum 版本 |
+| `go-version` | string | 否 | `1.25.1` | Go 版本 |
+| `gotestsum-version` | string | 否 | `v1.13.0` | gotestsum 版本 |
+| `goproxy` | string | 否 | `https://goproxy.cn,direct` | Go 模块代理 |
+| `goprivate` | string | 否 | `''` | 私有模块路径 |
+| `go-auth-method` | string | 否 | `none` | 私有模块认证方式（同 Build Binary） |
+
+**所需 Secrets（当 `goprivate` 非空时）：**
+
+| Secret | 认证方式 | 说明 |
+|--------|----------|------|
+| `APP_ID` | `app-token` | GitHub App ID |
+| `APP_PRIVATE_KEY` | `app-token` | GitHub App 私钥 |
+| `GIT_SSH_PRIVATE_KEY` | `ssh` | SSH 私钥（Legacy） |
 
 #### Cleanup Images
 
@@ -354,14 +447,78 @@ jobs:
 | `build-time` | string | 是 | - | 构建时间 |
 | `git-commit` | string | 是 | - | Git commit hash |
 | `goproxy` | string | 否 | `https://goproxy.cn,direct` | Go 模块代理 |
-| `goprivate` | string | 否 | `''` | 私有模块路径 |
+| `goprivate` | string | 否 | `''` | 私有模块路径（如 `github.com/your-org/*`） |
+| `go-auth-method` | string | 否 | `none` | 私有模块认证方式，详见下方说明 |
 | `os` | string | 否 | `linux` | 目标操作系统 |
 | `arch` | string | 否 | `amd64` | 目标架构 |
 | `upx-compress` | string | 否 | `false` | 是否启用 UPX 压缩 |
 
 **所需 Secrets：**
 
-- `GIT_SSH_PRIVATE_KEY`（当 `goprivate` 非空时需要）
+| Secret | 认证方式 | 说明 |
+|--------|----------|------|
+| `APP_ID` | `app-token` | GitHub App ID |
+| `APP_PRIVATE_KEY` | `app-token` | GitHub App 私钥 |
+| `GIT_SSH_PRIVATE_KEY` | `ssh` | SSH 私钥（Legacy） |
+
+---
+
+#### 🔐 Go 私有模块认证（`go-auth-method`）
+
+当项目依赖私有 Go 模块（通过 `goprivate` 指定）时，CI 需要认证才能拉取。`go-auth-method` 支持三种方式：
+
+| 值 | 说明 | Secrets | 安全性 |
+|-----|------|---------|--------|
+| `app-token` | **推荐** — 使用 GitHub App 动态生成短期 Token | `APP_ID` + `APP_PRIVATE_KEY` | ⭐⭐⭐ Token 自动过期，权限可细粒度控制 |
+| `ssh` | 传统方式 — 使用 SSH 私钥拉取 | `GIT_SSH_PRIVATE_KEY` | ⭐⭐ 私钥长期有效，需手动轮换 |
+| `none` | 不需要认证（公开仓库或已有其他认证） | 无 | — |
+
+**优先级链：** `input > vars.GO_AUTH_METHOD > 'none'`
+
+**`app-token` 方式工作原理：**
+
+1. 使用 `actions/create-github-app-token@v1` 由 `APP_ID` + `APP_PRIVATE_KEY` 生成临时 Token
+2. 自动配置 `git config --global url."https://x-access-token:<token>@github.com/".insteadOf "https://github.com/"`
+3. Token 仅在当前 Job 生命周期内有效，Job 结束自动失效
+
+**GitHub App 配置步骤：**
+
+1. 前往 GitHub → Settings → Developer settings → GitHub Apps → New GitHub App
+2. 设置 Permissions：Contents → Read-only（拉取私有仓库）
+3. 安装 App 到目标组织/仓库
+4. 将 App ID 存入仓库 Secret `APP_ID`
+5. 将 App 生成的 Private Key 存入仓库 Secret `APP_PRIVATE_KEY`
+
+**`ssh` 方式工作原理：**
+
+1. 使用 `webfactory/ssh-agent@v0.9.0` 加载 SSH 私钥
+2. 配置 `git config --global url."git@github.com:".insteadOf "https://github.com/"`
+3. 私钥永不过期，需定期手动轮换
+
+**调用示例：**
+
+```yaml
+# 推荐：App Token 方式
+build-binary:
+  uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
+  with:
+    binary-name: 'my-service'
+    goprivate: 'github.com/my-org/*'
+    go-auth-method: 'app-token'
+  secrets:
+    APP_ID: ${{ secrets.APP_ID }}
+    APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+
+# Legacy：SSH 方式
+build-binary:
+  uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
+  with:
+    binary-name: 'my-service'
+    goprivate: 'github.com/my-org/*'
+    go-auth-method: 'ssh'
+  secrets:
+    GIT_SSH_PRIVATE_KEY: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
+```
 
 #### Build Docker (Backend)
 
@@ -378,6 +535,13 @@ jobs:
 | `binary-source-dir` | string | 是 | - | 二进制文件目录 |
 | `image-base` | string | 是 | - | 基础镜像名（不带 tag） |
 | `image-name` | string | 是 | - | 完整镜像名（带 tag） |
+
+**所需 Secrets：**
+
+| Secret | 必填 | 说明 |
+|--------|------|------|
+| `DOCKER_USERNAME` | 否 | 镜像仓库用户名，默认 `github.actor` |
+| `DOCKER_PASSWORD` | 否 | 镜像仓库密码/Token，默认 `GITHUB_TOKEN` |
 
 #### Deploy K8s (Backend)
 
@@ -399,9 +563,12 @@ jobs:
 
 **所需环境级 Secrets：**
 
-- `KUBECONFIG` - K8s 集群配置
-- `FEISHU_WEBHOOK_URL` - 飞书通知（可选）
-- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` - Telegram 通知（可选）
+| Secret | 必填 | 说明 |
+|--------|------|------|
+| `KUBECONFIG` | 是 | K8s 集群配置 |
+| `FEISHU_WEBHOOK_URL` | 否 | 飞书通知 Webhook URL |
+| `TELEGRAM_BOT_TOKEN` | 否 | Telegram Bot Token |
+| `TELEGRAM_CHAT_ID` | 否 | Telegram 聊天群组 ID |
 
 ### 前端工作流
 
@@ -452,11 +619,35 @@ jobs:
 | `enable-hpa` | string | 否 | `true` | 是否启用 HPA |
 | `notification-provider` | string | 否 | `none` | 通知方式 |
 
+**所需 Secrets：**
+
+| Secret | 必填 | 说明 |
+|--------|------|------|
+| `DOCKER_USERNAME` | 否 | 镜像仓库用户名，默认 `github.actor` |
+| `DOCKER_PASSWORD` | 否 | 镜像仓库密码/Token，默认 `GITHUB_TOKEN` |
+
+#### Deploy K8s (Frontend)
+
+部署前端应用到 Kubernetes 集群
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `environment` | string | 是 | - | 部署环境（用作 K8s namespace） |
+| `image-name` | string | 是 | - | 完整镜像名（带 tag） |
+| `app-name` | string | 是 | - | 应用名称 |
+| `http-port` | string | 否 | `80` | HTTP 端口 |
+| `ingress-path-prefix` | string | 否 | `''` | Ingress 路径前缀 |
+| `enable-hpa` | string | 否 | `true` | 是否启用 HPA |
+| `notification-provider` | string | 否 | `none` | 通知方式 |
+
 **所需环境级 Secrets：**
 
-- `KUBECONFIG` - K8s 集群配置
-- `FEISHU_WEBHOOK_URL` - 飞书通知（可选）
-- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` - Telegram 通知（可选）
+| Secret | 必填 | 说明 |
+|--------|------|------|
+| `KUBECONFIG` | 是 | K8s 集群配置 |
+| `FEISHU_WEBHOOK_URL` | 否 | 飞书通知 Webhook URL |
+| `TELEGRAM_BOT_TOKEN` | 否 | Telegram Bot Token |
+| `TELEGRAM_CHAT_ID` | 否 | Telegram 聊天群组 ID |
 
 ---
 

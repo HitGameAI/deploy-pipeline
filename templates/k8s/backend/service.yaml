@@ -15,10 +15,7 @@ spec:
       port: ${HTTP_PORT}
       protocol: TCP
       targetPort: http
-    - name: rpc
-      port: ${RPC_PORT}
-      protocol: TCP
-      targetPort: rpc
+${SVC_RPC_PORT_BLOCK}
     - name: pprof
       port: ${PPROF_PORT}
       protocol: TCP

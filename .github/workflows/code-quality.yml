@@ -3,28 +3,104 @@ name: 🔍 Code Quality Check
 on:
   workflow_call:
     inputs:
+      # ============================================
+      # 可覆盖的静态配置（优先读 vars）
+      # ============================================
       go-version:
-        description: 'Go version'
-        required: true
+        description: 'Go version (overrides vars.GO_VERSION)'
+        required: false
         type: string
+        default: ''
       gotestsum-version:
-        description: 'gotestsum version'
-        required: true
+        description: 'gotestsum version (overrides vars.GOTESTSUM_VERSION)'
+        required: false
         type: string
+        default: ''
+      goproxy:
+        description: 'Go module proxy (overrides vars.GOPROXY)'
+        required: false
+        type: string
+        default: ''
+      goprivate:
+        description: 'Go private modules (overrides vars.GOPRIVATE)'
+        required: false
+        type: string
+        default: ''
+      go-auth-method:
+        description: 'Go private module auth method: app-token | ssh | none'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      APP_ID:
+        description: 'GitHub App ID (for app-token auth)'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'GitHub App Private Key (for app-token auth)'
+        required: false
+      GIT_SSH_PRIVATE_KEY:
+        description: 'Git SSH 私钥内容 (for ssh auth, legacy)'
+        required: false
 
 jobs:
   code-quality:
     name: 🔍 Code Quality Check
     runs-on: ubuntu-latest
+    env:
+      # 优先级: input > vars > 硬编码默认值
+      GO_VERSION: ${{ inputs.go-version || vars.GO_VERSION || '1.25.1' }}
+      GOTESTSUM_VERSION: ${{ inputs.gotestsum-version || vars.GOTESTSUM_VERSION || 'v1.13.0' }}
+      GOPROXY: ${{ inputs.goproxy || vars.GOPROXY || 'https://goproxy.cn,direct' }}
+      GOPRIVATE: ${{ inputs.goprivate || vars.GOPRIVATE || '' }}
+      GO_AUTH_METHOD: ${{ inputs.go-auth-method || vars.GO_AUTH_METHOD || 'none' }}
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
 
+      - name: 🔑 Generate GitHub App Token
+        if: env.GO_AUTH_METHOD == 'app-token'
+        id: app_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: ⚙️ Configure Git for App Token Auth
+        if: env.GO_AUTH_METHOD == 'app-token'
+        run: |
+          git config --global url."https://x-access-token:${{ steps.app_token.outputs.token }}@github.com/".insteadOf "https://github.com/"
+          if [ -n "${GOPRIVATE}" ]; then
+            echo "GOPRIVATE=${GOPRIVATE}" >> "$GITHUB_ENV"
+          fi
+
+      - name: 🔑 Setup SSH Key for Private Modules
+        if: env.GO_AUTH_METHOD == 'ssh'
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
+
+      - name: ⚙️ Configure Git for SSH Auth
+        if: env.GO_AUTH_METHOD == 'ssh'
+        run: |
+          git config --global url."git@github.com:".insteadOf "https://github.com/"
+          if [ -n "${GOPRIVATE}" ]; then
+            echo "GOPRIVATE=${GOPRIVATE}" >> "$GITHUB_ENV"
+          fi
+
       - name: 🛠️ Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ inputs.go-version }}
+          go-version: ${{ env.GO_VERSION }}
           cache: true
+
+      - name: 📦 Download Dependencies
+        run: |
+          export GOPROXY="${{ env.GOPROXY }}"
+          if [ -n "${{ env.GOPRIVATE }}" ]; then
+            export GOPRIVATE="${{ env.GOPRIVATE }}"
+          fi
+          go mod download
 
       - name: ✨ Format Check (gofmt)
         run: |
@@ -38,7 +114,7 @@ jobs:
         run: go vet ./...
 
       - name: 📦 Install gotestsum
-        run: go install gotest.tools/gotestsum@${{ inputs.gotestsum-version }}
+        run: go install gotest.tools/gotestsum@${{ env.GOTESTSUM_VERSION }}
 
       - name: 🧪 Run Tests with Coverage
         run: gotestsum -f testname -- ./... -race -count=1 -coverprofile=coverage -covermode=atomic -shuffle=on

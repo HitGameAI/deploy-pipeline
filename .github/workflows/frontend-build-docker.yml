@@ -81,6 +81,13 @@ on:
         required: false
         type: string
         default: 'frontend-dist'
+    secrets:
+      DOCKER_USERNAME:
+        description: 'Docker registry username'
+        required: false
+      DOCKER_PASSWORD:
+        description: 'Docker registry password or token'
+        required: false
 
 jobs:
   build-docker:

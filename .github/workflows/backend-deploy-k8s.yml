@@ -3,39 +3,48 @@ name: ☸️ Deploy to Kubernetes
 on:
   workflow_call:
     inputs:
+      # ============================================
+      # 动态值（每次调用不同，必须传入）
+      # ============================================
       environment:
         description: 'Deployment environment (dev/test/prod)'
         required: true
         type: string
-      namespace:
-        description: 'Kubernetes namespace (defaults to environment)'
-        required: false
-        type: string
-        default: ''
       image-name:
         description: 'Complete Docker image name with tag'
-        required: true
-        type: string
-      binary-source-dir:
-        description: 'Binary source directory (also used as deployments output dir)'
         required: true
         type: string
       binary-name:
         description: 'Binary/Service name'
         required: true
         type: string
+      binary-source-dir:
+        description: 'Binary source directory (also used as deployments output dir)'
+        required: true
+        type: string
+      # ============================================
+      # 可覆盖的静态配置（优先读 vars，有硬编码默认值兜底）
+      # ============================================
+      namespace:
+        description: 'Kubernetes namespace (overrides vars.K8S_NAMESPACE)'
+        required: false
+        type: string
+        default: ''
       http-port:
-        description: 'HTTP port'
-        required: true
+        description: 'HTTP port (overrides vars.HTTP_PORT)'
+        required: false
         type: string
+        default: ''
       rpc-port:
-        description: 'RPC port'
-        required: true
+        description: 'RPC port (overrides vars.RPC_PORT)'
+        required: false
         type: string
+        default: ''
       pprof-port:
-        description: 'Pprof port'
-        required: true
+        description: 'Pprof port (overrides vars.PPROF_PORT)'
+        required: false
         type: string
+        default: ''
       config-yaml:
         description: 'Configuration YAML file path'
         required: false
@@ -47,100 +56,100 @@ on:
         type: string
         default: ''
       docker-workdir:
-        description: 'Docker working directory'
+        description: 'Docker working directory (overrides vars.DOCKER_RUN_WORKDIR)'
         required: false
         type: string
-        default: '/usr/local/services'
+        default: ''
       image-pull-secrets:
-        description: 'Image pull secrets name'
+        description: 'Image pull secrets name (overrides vars.K8S_IMAGE_PULL_SECRETS)'
         required: false
         type: string
-        default: 'ghcr.io'
+        default: ''
       readiness-delay-seconds:
-        description: 'Readiness probe initial delay seconds'
+        description: 'Readiness probe initial delay seconds (overrides vars.K8S_READINESS_DELAY_SECONDS)'
         required: false
         type: string
-        default: '5'
+        default: ''
       readiness-period-seconds:
-        description: 'Readiness probe period seconds'
+        description: 'Readiness probe period seconds (overrides vars.K8S_READINESS_PERIOD_SECONDS)'
         required: false
         type: string
-        default: '10'
+        default: ''
       liveness-delay-seconds:
-        description: 'Liveness probe initial delay seconds'
+        description: 'Liveness probe initial delay seconds (overrides vars.K8S_LIVENESS_DELAY_SECONDS)'
         required: false
         type: string
-        default: '15'
+        default: ''
       liveness-period-seconds:
-        description: 'Liveness probe period seconds'
+        description: 'Liveness probe period seconds (overrides vars.K8S_LIVENESS_PERIOD_SECONDS)'
         required: false
         type: string
-        default: '20'
+        default: ''
       cpu-request:
-        description: 'CPU request'
+        description: 'CPU request (overrides vars.K8S_CPU_REQUEST)'
         required: false
         type: string
-        default: '300m'
+        default: ''
       memory-request:
-        description: 'Memory request'
+        description: 'Memory request (overrides vars.K8S_MEMORY_REQUEST)'
         required: false
         type: string
-        default: '250Mi'
+        default: ''
       cpu-limit:
-        description: 'CPU limit'
+        description: 'CPU limit (overrides vars.K8S_CPU_LIMIT)'
         required: false
         type: string
-        default: '600m'
+        default: ''
       memory-limit:
-        description: 'Memory limit'
+        description: 'Memory limit (overrides vars.K8S_MEMORY_LIMIT)'
         required: false
         type: string
-        default: '500Mi'
+        default: ''
       min-replicas:
-        description: 'Minimum replicas count'
+        description: 'Minimum replicas count (overrides vars.K8S_MIN_REPLICAS)'
         required: false
         type: string
-        default: '1'
+        default: ''
       max-replicas:
-        description: 'Maximum replicas count'
+        description: 'Maximum replicas count (overrides vars.K8S_MAX_REPLICAS)'
         required: false
         type: string
-        default: '10'
+        default: ''
       deployment-replicas:
-        description: 'Deployment replicas count'
+        description: 'Deployment replicas count (overrides vars.K8S_DEPLOYMENT_REPLICAS)'
         required: false
         type: string
-        default: '1'
+        default: ''
       target-cpu-utilization:
-        description: 'Target CPU utilization percentage'
+        description: 'Target CPU utilization percentage (overrides vars.K8S_TARGET_CPU_UTILIZATION)'
         required: false
         type: string
-        default: '80'
+        default: ''
       target-memory-utilization:
-        description: 'Target memory utilization percentage'
+        description: 'Target memory utilization percentage (overrides vars.K8S_TARGET_MEMORY_UTILIZATION)'
         required: false
         type: string
-        default: '80'
+        default: ''
       scale-up-percent:
-        description: 'Scale up maximum percentage'
+        description: 'Scale up maximum percentage (overrides vars.K8S_SCALE_UP_PERCENT)'
         required: false
         type: string
-        default: '100'
+        default: ''
       scale-down-percent:
-        description: 'Scale down maximum percentage'
+        description: 'Scale down maximum percentage (overrides vars.K8S_SCALE_DOWN_PERCENT)'
         required: false
         type: string
-        default: '50'
+        default: ''
       scale-down-stabilization-seconds:
-        description: 'Scale down stabilization window in seconds'
+        description: 'Scale down stabilization window in seconds (overrides vars.K8S_SCALE_DOWN_STABILIZATION_SECONDS)'
         required: false
         type: string
-        default: '300'
+        default: ''
       enable-hpa:
-        description: 'Enable HPA (Horizontal Pod Autoscaler)'
+        description: 'Enable HPA (overrides vars.K8S_ENABLE_HPA)'
         required: false
         type: string
-        default: 'true'
+        default: ''
       ingress-path-prefix:
         description: 'Ingress path prefix (empty to skip Ingress)'
         required: false
@@ -158,9 +167,6 @@ on:
         default: 'none'
 
     secrets:
-      # ============================================
-      # 敏感配置
-      # ============================================
       KUBECONFIG:
         description: 'Kubernetes kubeconfig 内容'
         required: true
@@ -183,6 +189,30 @@ jobs:
       image-name: ${{ steps.image-name.outputs.image-name }}
     env:
       KUBECONFIG: ${{ secrets.KUBECONFIG }}
+      # 优先级: input > vars > 硬编码默认值
+      NAMESPACE: ${{ inputs.namespace || vars.K8S_NAMESPACE || 'default' }}
+      HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '8182' }}
+      RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
+      PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
+      DOCKER_WORKDIR: ${{ inputs.docker-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
+      IMAGE_PULL_SECRETS: ${{ inputs.image-pull-secrets || vars.K8S_IMAGE_PULL_SECRETS || 'ghcr.io' }}
+      READINESS_DELAY: ${{ inputs.readiness-delay-seconds || vars.K8S_READINESS_DELAY_SECONDS || '5' }}
+      READINESS_PERIOD: ${{ inputs.readiness-period-seconds || vars.K8S_READINESS_PERIOD_SECONDS || '10' }}
+      LIVENESS_DELAY: ${{ inputs.liveness-delay-seconds || vars.K8S_LIVENESS_DELAY_SECONDS || '15' }}
+      LIVENESS_PERIOD: ${{ inputs.liveness-period-seconds || vars.K8S_LIVENESS_PERIOD_SECONDS || '20' }}
+      CPU_REQUEST: ${{ inputs.cpu-request || vars.K8S_CPU_REQUEST || '100m' }}
+      MEMORY_REQUEST: ${{ inputs.memory-request || vars.K8S_MEMORY_REQUEST || '128Mi' }}
+      CPU_LIMIT: ${{ inputs.cpu-limit || vars.K8S_CPU_LIMIT || '300m' }}
+      MEMORY_LIMIT: ${{ inputs.memory-limit || vars.K8S_MEMORY_LIMIT || '256Mi' }}
+      MIN_REPLICAS: ${{ inputs.min-replicas || vars.K8S_MIN_REPLICAS || '2' }}
+      MAX_REPLICAS: ${{ inputs.max-replicas || vars.K8S_MAX_REPLICAS || '10' }}
+      DEPLOYMENT_REPLICAS: ${{ inputs.deployment-replicas || vars.K8S_DEPLOYMENT_REPLICAS || '2' }}
+      TARGET_CPU_UTILIZATION: ${{ inputs.target-cpu-utilization || vars.K8S_TARGET_CPU_UTILIZATION || '80' }}
+      TARGET_MEMORY_UTILIZATION: ${{ inputs.target-memory-utilization || vars.K8S_TARGET_MEMORY_UTILIZATION || '80' }}
+      SCALE_UP_PERCENT: ${{ inputs.scale-up-percent || vars.K8S_SCALE_UP_PERCENT || '100' }}
+      SCALE_DOWN_PERCENT: ${{ inputs.scale-down-percent || vars.K8S_SCALE_DOWN_PERCENT || '50' }}
+      SCALE_DOWN_STABILIZATION_SECONDS: ${{ inputs.scale-down-stabilization-seconds || vars.K8S_SCALE_DOWN_STABILIZATION_SECONDS || '300' }}
+      ENABLE_HPA: ${{ inputs.enable-hpa || vars.K8S_ENABLE_HPA || 'true' }}
 
     steps:
       - name: Normalize Docker Image Name
@@ -193,7 +223,7 @@ jobs:
 
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
-      
+
       - name: Debug KUBECONFIG
         run: |
           if [ -z "$KUBECONFIG" ]; then
@@ -221,48 +251,60 @@ jobs:
       - name: 📝 Generate K8s Manifests
         run: |
           echo "Generating Kubernetes manifests for: ${{ inputs.binary-name }}"
-          echo "  Namespace: ${{ inputs.namespace }}"
+          echo "  Namespace: ${{ env.NAMESPACE }}"
           echo "  Image: ${{ steps.image-name.outputs.image-name }}"
-          echo "  HTTP: ${{ inputs.http-port }}, RPC: ${{ inputs.rpc-port }}, PProf: ${{ inputs.pprof-port }}"
+          echo "  HTTP: ${{ env.HTTP_PORT }}, RPC: ${{ env.RPC_PORT }}, PProf: ${{ env.PPROF_PORT }}"
 
           DEPLOY_DIR="${{ inputs.binary-source-dir }}"
           mkdir -p "${DEPLOY_DIR}"
 
           export APP_NAME="${{ inputs.binary-name }}"
-          export NAMESPACE="${{ inputs.namespace }}"
+          export NAMESPACE="${{ env.NAMESPACE }}"
           export IMAGE_NAME="${{ steps.image-name.outputs.image-name }}"
-          export HTTP_PORT="${{ inputs.http-port }}"
-          export RPC_PORT="${{ inputs.rpc-port }}"
-          export PPROF_PORT="${{ inputs.pprof-port }}"
-          export REPLICAS="${{ inputs.deployment-replicas }}"
+          export HTTP_PORT="${{ env.HTTP_PORT }}"
+          export RPC_PORT="${{ env.RPC_PORT }}"
+          export PPROF_PORT="${{ env.PPROF_PORT }}"
+
+          # RPC 端口可选：gateway 类服务无 gRPC 端口，设为空/0/none 则跳过
+          if [ -n "${{ env.RPC_PORT }}" ] && [ "${{ env.RPC_PORT }}" != "0" ] && [ "${{ env.RPC_PORT }}" != "none" ]; then
+            export DEPLOY_RPC_PORT_BLOCK=$(printf '        - name: rpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.RPC_PORT }}")
+            export SVC_RPC_PORT_BLOCK=$(printf '    - name: rpc\n      port: %s\n      protocol: TCP\n      targetPort: rpc\n' "${{ env.RPC_PORT }}")
+          else
+            export DEPLOY_RPC_PORT_BLOCK=""
+            export SVC_RPC_PORT_BLOCK=""
+          fi
+
+          export REPLICAS="${{ env.DEPLOYMENT_REPLICAS }}"
           export REVISION_HISTORY_LIMIT="10"
           export IMAGE_PULL_POLICY="IfNotPresent"
-          export IMAGE_PULL_SECRETS="${{ inputs.image-pull-secrets }}"
-          export READINESS_DELAY="${{ inputs.readiness-delay-seconds }}"
-          export READINESS_PERIOD="${{ inputs.readiness-period-seconds }}"
-          export LIVENESS_DELAY="${{ inputs.liveness-delay-seconds }}"
-          export LIVENESS_PERIOD="${{ inputs.liveness-period-seconds }}"
-          export CPU_REQUEST="${{ inputs.cpu-request }}"
-          export MEMORY_REQUEST="${{ inputs.memory-request }}"
-          export CPU_LIMIT="${{ inputs.cpu-limit }}"
-          export MEMORY_LIMIT="${{ inputs.memory-limit }}"
-          export MIN_REPLICAS="${{ inputs.min-replicas }}"
-          export MAX_REPLICAS="${{ inputs.max-replicas }}"
-          export TARGET_CPU_UTILIZATION="${{ inputs.target-cpu-utilization }}"
-          export TARGET_MEMORY_UTILIZATION="${{ inputs.target-memory-utilization }}"
+          export IMAGE_PULL_SECRETS="${{ env.IMAGE_PULL_SECRETS }}"
+          export READINESS_DELAY="${{ env.READINESS_DELAY }}"
+          export READINESS_PERIOD="${{ env.READINESS_PERIOD }}"
+          export LIVENESS_DELAY="${{ env.LIVENESS_DELAY }}"
+          export LIVENESS_PERIOD="${{ env.LIVENESS_PERIOD }}"
+          export CPU_REQUEST="${{ env.CPU_REQUEST }}"
+          export MEMORY_REQUEST="${{ env.MEMORY_REQUEST }}"
+          export CPU_LIMIT="${{ env.CPU_LIMIT }}"
+          export MEMORY_LIMIT="${{ env.MEMORY_LIMIT }}"
+          export MIN_REPLICAS="${{ env.MIN_REPLICAS }}"
+          export MAX_REPLICAS="${{ env.MAX_REPLICAS }}"
+          export TARGET_CPU_UTILIZATION="${{ env.TARGET_CPU_UTILIZATION }}"
+          export TARGET_MEMORY_UTILIZATION="${{ env.TARGET_MEMORY_UTILIZATION }}"
           export INGRESS_PATH_PREFIX="${{ inputs.ingress-path-prefix }}"
           export INGRESS_ENTRY_POINT="${{ inputs.ingress-entry-point }}"
+          export RUN_MODE="${{ inputs.environment }}"
+          export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
+          export CONFIG_MOUNT_PATH="${{ inputs.docker-workdir }}/resources"
 
           if [ -n "${{ inputs.config-yaml }}" ] && [ -f "${{ inputs.config-yaml }}" ]; then
             CONFIG_BASENAME=$(basename "${{ inputs.config-yaml }}")
-            CONFIG_MOUNT_PATH="${{ inputs.docker-workdir }}/resources"
 
             cat <<CMEOF > ${DEPLOY_DIR}/configmap.yaml
           apiVersion: v1
           kind: ConfigMap
           metadata:
             name: ${{ inputs.configmap-name }}
-            namespace: ${{ inputs.namespace }}
+            namespace: ${{ env.NAMESPACE }}
           data:
             ${CONFIG_BASENAME}: |
           CMEOF
@@ -287,6 +329,9 @@ jobs:
           : ${TARGET_CPU_UTILIZATION:=80}
           : ${TARGET_MEMORY_UTILIZATION:=80}
           : ${INGRESS_ENTRY_POINT:=web}
+          : ${RUN_MODE:=dev}
+          : ${CONFIGMAP_NAME:=${APP_NAME}-config}
+          : ${CONFIG_MOUNT_PATH:=/usr/local/services/resources}
 
           envsubst < _deploy-workflows/templates/k8s/backend/deployment.yaml > ${DEPLOY_DIR}/deployment.yaml
           echo "Deployment generated"
@@ -294,7 +339,7 @@ jobs:
           envsubst < _deploy-workflows/templates/k8s/backend/service.yaml > ${DEPLOY_DIR}/service.yaml
           echo "Service generated"
 
-          if [ "${{ inputs.enable-hpa }}" = "true" ]; then
+          if [ "${{ env.ENABLE_HPA }}" = "true" ]; then
             envsubst < _deploy-workflows/templates/k8s/backend/hpa.yaml > ${DEPLOY_DIR}/hpa.yaml
             echo "HPA generated"
           fi
@@ -326,31 +371,31 @@ jobs:
         run: |
           DEPLOY_DIR="${{ inputs.binary-source-dir }}"
 
-          kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply --server-side --validate=false -f -
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply --server-side --validate=false -f -
 
           if [ -f "${DEPLOY_DIR}/configmap.yaml" ]; then
             echo "Applying ConfigMap..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/deployment.yaml" ]; then
             echo "Applying Deployment..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/deployment.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/deployment.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/service.yaml" ]; then
             echo "Applying Service..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ env.NAMESPACE }}
           fi
 
-          if [ "${{ inputs.enable-hpa }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
+          if [ "${{ env.ENABLE_HPA }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
             echo "Applying HPA..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/ingress.yaml" ]; then
             echo "Applying Ingress..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ env.NAMESPACE }}
           fi
 
       - name: ⏳ Wait for Deployment
@@ -360,11 +405,11 @@ jobs:
           INTERVAL=10
 
           while [ $ELAPSED -lt $MAX_WAIT ]; do
-            REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ inputs.namespace }} \
+            REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} \
               -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
-            READY_REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ inputs.namespace }} \
+            READY_REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} \
               -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-            UPDATED_REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ inputs.namespace }} \
+            UPDATED_REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} \
               -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || echo "0")
 
             echo "Progress: Ready=${READY_REPLICAS}/${REPLICAS}, Updated=${UPDATED_REPLICAS}/${REPLICAS}"
@@ -374,7 +419,7 @@ jobs:
               break
             fi
 
-            PROBLEM_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }} \
+            PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }} \
               -o json | jq -r '.items[] | select(
                 (.status.containerStatuses[0].restartCount > 3) or
                 (.status.phase != "Running" and .status.phase != "Succeeded")
@@ -384,7 +429,7 @@ jobs:
               echo "Warning: Found problematic pods"
               for pod in $PROBLEM_PODS; do
                 echo "--- Pod: $pod ---"
-                kubectl logs $pod -n ${{ inputs.namespace }} --tail=30 2>&1 || true
+                kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=30 2>&1 || true
               done
             fi
 
@@ -394,24 +439,24 @@ jobs:
 
           if [ $ELAPSED -ge $MAX_WAIT ]; then
             echo "Deployment timed out ($MAX_WAIT seconds)!"
-            kubectl describe deployment/${{ inputs.binary-name }} -n ${{ inputs.namespace }}
-            kubectl get pods,rs -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }} -o wide
+            kubectl describe deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }}
+            kubectl get pods,rs -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }} -o wide
             exit 1
           fi
 
       - name: ✅ Verify Deployment
         run: |
-          READY_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }} \
+          READY_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }} \
             -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | tr ' ' '\n' | grep -c "True" || echo "0")
 
-          TOTAL_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }} \
+          TOTAL_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }} \
             --no-headers | wc -l)
 
           echo "Ready pods: ${READY_PODS}/${TOTAL_PODS}"
 
           if [ "$READY_PODS" -eq "0" ]; then
             echo "Deployment verification failed: no pods are ready"
-            kubectl describe pods -n ${{ inputs.namespace }} -l app=${{ inputs.binary-name }}
+            kubectl describe pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }}
             exit 1
           fi
 
@@ -448,10 +493,10 @@ jobs:
           export GITHUB_REPOSITORY="${{ github.repository }}"
           export GITHUB_ACTOR="${{ github.actor }}"
           export DEPLOYMENT_TARGET="Kubernetes"
-          export NAMESPACE="${{ inputs.namespace }}"
-          export HTTP_PORT="${{ inputs.http-port }}"
-          export RPC_PORT="${{ inputs.rpc-port }}"
-          export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas }}"
+          export NAMESPACE="${{ inputs.namespace || vars.K8S_NAMESPACE || 'business' }}"
+          export HTTP_PORT="${{ inputs.http-port || vars.HTTP_PORT || '8182' }}"
+          export RPC_PORT="${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}"
+          export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas || vars.K8S_DEPLOYMENT_REPLICAS || '1' }}"
 
           if [ "$STATUS" = "failure" ]; then
             export ERROR_MESSAGE="Kubernetes deployment failed, check logs for details"

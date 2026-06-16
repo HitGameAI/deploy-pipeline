@@ -3,37 +3,19 @@ name: 🐳 Build Docker Image
 on:
   workflow_call:
     inputs:
-      docker-run-workdir:
-        description: 'Docker working directory'
-        required: false
-        type: string
-        default: '/usr/local/services'
+      # ============================================
+      # 动态值（每次调用不同，必须传入）
+      # ============================================
       binary-name:
         description: 'Binary name'
         required: true
         type: string
-      version:
-        description: 'Build version'
-        required: true
-        type: string
-      http-port:
-        description: 'HTTP port'
-        required: true
-        type: string
-      rpc-port:
-        description: 'RPC port'
-        required: true
-        type: string
-      pprof-port:
-        description: 'Pprof port'
-        required: true
-        type: string
-      docker-registry:
-        description: 'Docker registry (e.g., ghcr.io)'
-        required: true
-        type: string
       binary-source-dir:
         description: 'Binary source directory'
+        required: true
+        type: string
+      version:
+        description: 'Build version'
         required: true
         type: string
       image-base:
@@ -49,6 +31,34 @@ on:
         required: false
         type: string
         default: 'dev'
+      # ============================================
+      # 可覆盖的静态配置（优先读 vars）
+      # ============================================
+      docker-registry:
+        description: 'Docker registry (overrides vars.DOCKER_REGISTRY)'
+        required: false
+        type: string
+        default: ''
+      docker-run-workdir:
+        description: 'Docker working directory (overrides vars.DOCKER_RUN_WORKDIR)'
+        required: false
+        type: string
+        default: ''
+      http-port:
+        description: 'HTTP port (overrides vars.HTTP_PORT)'
+        required: false
+        type: string
+        default: ''
+      rpc-port:
+        description: 'RPC port (overrides vars.RPC_PORT)'
+        required: false
+        type: string
+        default: ''
+      pprof-port:
+        description: 'Pprof port (overrides vars.PPROF_PORT)'
+        required: false
+        type: string
+        default: ''
       base-image:
         description: 'Base Docker image for build'
         required: false
@@ -59,6 +69,13 @@ on:
         required: false
         type: string
         default: 'Asia/Shanghai'
+    secrets:
+      DOCKER_USERNAME:
+        description: 'Docker registry username'
+        required: false
+      DOCKER_PASSWORD:
+        description: 'Docker registry password or token'
+        required: false
 
 jobs:
   build-docker:
@@ -66,6 +83,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     env:
+      # 优先级: input > vars > 硬编码默认值
+      DOCKER_REGISTRY: ${{ inputs.docker-registry || vars.DOCKER_REGISTRY || 'ghcr.io' }}
+      DOCKER_RUN_WORKDIR: ${{ inputs.docker-run-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
+      HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '8182' }}
+      RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
+      PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.actor }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
 
@@ -87,10 +110,15 @@ jobs:
         run: |
           BINARY_SOURCE_DIR="${{ inputs.binary-source-dir }}"
           BUILD_APP_NAME="${{ inputs.binary-name }}"
-          DOCKER_RUN_WORKDIR="${{ inputs.docker-run-workdir }}"
-          ADDITIONAL_PORTS="${{ inputs.rpc-port }},${{ inputs.pprof-port }}"
+          DOCKER_RUN_WORKDIR="${{ env.DOCKER_RUN_WORKDIR }}"
           BASE_IMAGE="${{ inputs.base-image }}"
           TIMEZONE="${{ inputs.timezone }}"
+
+          # RPC 端口可选：gateway 类服务无 gRPC 端口
+          RPC_EXPOSE=""
+          if [ -n "${{ env.RPC_PORT }}" ] && [ "${{ env.RPC_PORT }}" != "0" ] && [ "${{ env.RPC_PORT }}" != "none" ]; then
+            RPC_EXPOSE="EXPOSE ${{ env.RPC_PORT }}"
+          fi
 
           cat << EOF > ${BINARY_SOURCE_DIR}/Dockerfile
           FROM ${BASE_IMAGE}
@@ -101,9 +129,9 @@ jobs:
           COPY ./locales ./locales
           RUN chmod +x ./${BUILD_APP_NAME}
           RUN rm -rf ./resources && mkdir -p ./resources
-          EXPOSE ${{ inputs.http-port }}
-          EXPOSE ${{ inputs.rpc-port }}
-          EXPOSE ${{ inputs.pprof-port }}
+          EXPOSE ${{ env.HTTP_PORT }}
+          ${RPC_EXPOSE}
+          EXPOSE ${{ env.PPROF_PORT }}
           CMD ["sh", "-c", "./${BUILD_APP_NAME}"]
           EOF
 
@@ -114,7 +142,7 @@ jobs:
       - name: 🔐 Login to Docker Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ inputs.docker-registry }}
+          registry: ${{ env.DOCKER_REGISTRY }}
           username: ${{ env.DOCKER_USERNAME }}
           password: ${{ env.DOCKER_PASSWORD }}
 

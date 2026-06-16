@@ -25,6 +25,9 @@ spec:
       - name: ${APP_NAME}
         image: ${IMAGE_NAME}
         imagePullPolicy: ${IMAGE_PULL_POLICY}
+        env:
+        - name: APP_ENV
+          value: "${RUN_MODE}"
         lifecycle:
           preStop:
             exec:
@@ -52,5 +55,14 @@ spec:
           limits:
             cpu: ${CPU_LIMIT}
             memory: ${MEMORY_LIMIT}
+        volumeMounts:
+        - name: config
+          mountPath: ${CONFIG_MOUNT_PATH}
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: ${CONFIGMAP_NAME}
+          optional: true
       imagePullSecrets:
       - name: ${IMAGE_PULL_SECRETS}
