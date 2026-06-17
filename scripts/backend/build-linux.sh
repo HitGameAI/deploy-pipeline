@@ -22,6 +22,7 @@ BUILD_OS="${BUILD_OS:-linux}"
 BUILD_ARCH="${BUILD_ARCH:-amd64}"
 BATCH_MODE="${BATCH_MODE:-false}"
 UPX_COMPRESS="${UPX_COMPRESS:-false}"
+BUILD_DIR="${BUILD_DIR:-}"
 
 # 参数解析
 while [[ $# -gt 0 ]]; do
@@ -62,9 +63,13 @@ while [[ $# -gt 0 ]]; do
             UPX_COMPRESS="$2"
             shift 2
             ;;
+        --build-dir)
+            BUILD_DIR="$2"
+            shift 2
+            ;;
         *)
             echo "未知参数: $1"
-            echo "用法: $0 [--version VERSION] [--build-time TIME] [--git-commit COMMIT] [--output-dir DIR] [--binary-name NAME] [--os OS] [--arch ARCH] [--batch]"
+            echo "用法: $0 [--version VERSION] [--build-time TIME] [--git-commit COMMIT] [--output-dir DIR] [--binary-name NAME] [--os OS] [--arch ARCH] [--batch] [--build-dir DIR]"
             exit 1
             ;;
     esac
@@ -172,11 +177,12 @@ build_target() {
     echo "   - Git Commit: ${GIT_COMMIT}"
     echo "   - Platform: ${os}/${arch}"
     
+    BUILD_TARGET="${BUILD_DIR:-.}"
     if GOOS=${os} GOARCH=${arch} CGO_ENABLED=0 go build \
         ${TRIM_PATH} \
         -tags "${BUILD_TAGS}" \
         -ldflags "${LDFLAGS}" \
-        -o ${output} main.go; then
+        -o ${output} ${BUILD_TARGET}; then
         echo "✅ 构建成功: ${output}"
         
         # 显示文件大小

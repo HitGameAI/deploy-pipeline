@@ -43,6 +43,12 @@ on:
         type: string
         default: '80'
 
+      https-port:
+        description: 'HTTPS 端口'
+        required: false
+        type: string
+        default: '443'
+
       ingress-path-prefix:
         description: 'Ingress 路径前缀（为空则不创建 Ingress）'
         required: false
@@ -56,10 +62,28 @@ on:
         default: ''
 
       ingress-entry-point:
-        description: 'Ingress 入口点'
+        description: 'Ingress 入口点（覆盖 vars.INGRESS_ENTRY_POINT）'
         required: false
         type: string
-        default: 'web'
+        default: ''
+
+      ingress-tls:
+        description: '是否为 IngressRoute 启用 TLS（覆盖 vars.INGRESS_TLS，需要 Traefik 配置 ACME certResolver）'
+        required: false
+        type: string
+        default: ''
+
+      ingress-cert-resolver:
+        description: 'Traefik ACME certResolver 名称（覆盖 vars.INGRESS_CERT_RESOLVER，如 letsencrypt）'
+        required: false
+        type: string
+        default: ''
+
+      ingress-tls-entry-point:
+        description: 'TLS 入口点（覆盖 vars.INGRESS_TLS_ENTRY_POINT）'
+        required: false
+        type: string
+        default: ''
 
       # ============================================
       # 配置管理
@@ -207,6 +231,11 @@ jobs:
       image-name: ${{ steps.image-name.outputs.image-name }}
     env:
       KUBECONFIG: ${{ secrets.KUBECONFIG }}
+      # 优先级: input > vars > 硬编码默认值
+      INGRESS_ENTRY_POINT: ${{ inputs.ingress-entry-point || vars.INGRESS_ENTRY_POINT || 'web' }}
+      INGRESS_TLS: ${{ inputs.ingress-tls || vars.INGRESS_TLS || 'false' }}
+      INGRESS_CERT_RESOLVER: ${{ inputs.ingress-cert-resolver || vars.INGRESS_CERT_RESOLVER || 'letsencrypt' }}
+      INGRESS_TLS_ENTRY_POINT: ${{ inputs.ingress-tls-entry-point || vars.INGRESS_TLS_ENTRY_POINT || 'websecure' }}
 
     steps:
       - name: Normalize Docker Image Name
@@ -270,6 +299,7 @@ jobs:
           export NAMESPACE="${{ inputs.namespace }}"
           export IMAGE_NAME="${{ steps.image-name.outputs.image-name }}"
           export HTTP_PORT="${{ inputs.http-port }}"
+          export HTTPS_PORT="${{ inputs.https-port }}"
           export REPLICAS="${{ inputs.deployment-replicas }}"
           export REVISION_HISTORY_LIMIT="10"
           export IMAGE_PULL_POLICY="IfNotPresent"
@@ -287,7 +317,10 @@ jobs:
           export TARGET_CPU_UTILIZATION="${{ inputs.target-cpu-utilization }}"
           export INGRESS_PATH_PREFIX="${{ inputs.ingress-path-prefix }}"
           export INGRESS_HOST="${{ inputs.ingress-host }}"
-          export INGRESS_ENTRY_POINT="${{ inputs.ingress-entry-point }}"
+          export INGRESS_ENTRY_POINT="${{ env.INGRESS_ENTRY_POINT }}"
+          export INGRESS_TLS="${{ env.INGRESS_TLS }}"
+          export INGRESS_CERT_RESOLVER="${{ env.INGRESS_CERT_RESOLVER }}"
+          export INGRESS_TLS_ENTRY_POINT="${{ env.INGRESS_TLS_ENTRY_POINT }}"
           export RUN_MODE="${{ inputs.environment }}"
           export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
           export CONFIG_MOUNT_PATH="/usr/share/nginx/html/config"
@@ -323,7 +356,6 @@ jobs:
           : ${MIN_REPLICAS:=1}
           : ${MAX_REPLICAS:=5}
           : ${TARGET_CPU_UTILIZATION:=70}
-          : ${INGRESS_ENTRY_POINT:=web}
           : ${RUN_MODE:=dev}
           : ${CONFIGMAP_NAME:=${APP_NAME}-config}
           : ${CONFIG_MOUNT_PATH:=/usr/share/nginx/html/config}
@@ -345,19 +377,34 @@ jobs:
               export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
               export INGRESS_STRIP_NAME="${APP_NAME}-strip"
               envsubst < _deploy-workflows/templates/k8s/frontend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
-              envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip.yaml > ${DEPLOY_DIR}/ingress.yaml
-              echo "IngressRoute: Host + PathPrefix (with StripPrefix middleware)"
+              if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
+                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip-tls.yaml > ${DEPLOY_DIR}/ingress.yaml
+                echo "IngressRoute: Host + PathPrefix + TLS (with StripPrefix middleware, certResolver=${{ env.INGRESS_CERT_RESOLVER }})"
+              else
+                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip.yaml > ${DEPLOY_DIR}/ingress.yaml
+                echo "IngressRoute: Host + PathPrefix (with StripPrefix middleware, no TLS)"
+              fi
             elif [ -n "${{ inputs.ingress-host }}" ]; then
               export INGRESS_MATCH_RULE="Host(\`${{ inputs.ingress-host }}\`)"
-              envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
-              echo "IngressRoute: Host only (no StripPrefix needed)"
+              if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
+                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-tls.yaml > ${DEPLOY_DIR}/ingress.yaml
+                echo "IngressRoute: Host + TLS (certResolver=${{ env.INGRESS_CERT_RESOLVER }})"
+              else
+                envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+                echo "IngressRoute: Host only (no TLS)"
+              fi
             else
               export INGRESS_MATCH_RULE="PathPrefix(\`${{ inputs.ingress-path-prefix }}\`)"
               export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
               export INGRESS_STRIP_NAME="${APP_NAME}"
               envsubst < _deploy-workflows/templates/k8s/frontend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
-              envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip.yaml > ${DEPLOY_DIR}/ingress.yaml
-              echo "IngressRoute: PathPrefix only (with StripPrefix middleware)"
+              if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
+                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip-tls.yaml > ${DEPLOY_DIR}/ingress.yaml
+                echo "IngressRoute: PathPrefix + TLS (with StripPrefix middleware, certResolver=${{ env.INGRESS_CERT_RESOLVER }})"
+              else
+                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip.yaml > ${DEPLOY_DIR}/ingress.yaml
+                echo "IngressRoute: PathPrefix only (with StripPrefix middleware, no TLS)"
+              fi
             fi
           else
             echo "Skipping IngressRoute (no ingress-host or ingress-path-prefix configured)"
@@ -546,6 +593,7 @@ jobs:
           export DEPLOYMENT_TARGET="Kubernetes"
           export NAMESPACE="${{ inputs.namespace }}"
           export HTTP_PORT="${{ inputs.http-port }}"
+          export HTTPS_PORT="${{ inputs.https-port }}"
           export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas }}"
 
           if [ "$STATUS" = "failure" ]; then

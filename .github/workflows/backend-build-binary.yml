@@ -73,6 +73,11 @@ on:
         required: false
         type: string
         default: 'scripts/backend/build-linux.sh'
+      binary-build-dir:
+        description: 'Build directory containing main package (e.g. ./bootstrap), overrides default repo root'
+        required: false
+        type: string
+        default: ''
     secrets:
       APP_ID:
         description: 'GitHub App ID (for app-token auth)'
@@ -191,7 +196,8 @@ jobs:
             --output-dir "${{ inputs.binary-source-dir }}" \
             --os "${{ inputs.os }}" \
             --arch "${{ inputs.arch }}" \
-            --upx-compress "${{ env.UPX_COMPRESS }}"
+            --upx-compress "${{ env.UPX_COMPRESS }}" \
+            --build-dir "${{ inputs.binary-build-dir }}"
 
           echo "Build completed: ${{ inputs.binary-name }}"
           ls -lh "${{ inputs.binary-source-dir }}"

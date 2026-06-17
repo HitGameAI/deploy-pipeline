@@ -46,6 +46,12 @@ on:
         type: string
         default: '80'
 
+      https-port:
+        description: 'HTTPS 端口'
+        required: false
+        type: string
+        default: '443'
+
       environment:
         description: '部署环境'
         required: false
@@ -129,6 +135,7 @@ jobs:
           BASE_IMAGE="${{ inputs.base-image }}"
           TIMEZONE="${{ inputs.timezone }}"
           HTTP_PORT="${{ inputs.http-port }}"
+          HTTPS_PORT="${{ inputs.https-port }}"
           NGINX_CONFIG_PATH="${{ inputs.nginx-config-path }}"
 
           echo "================================================"
@@ -137,6 +144,7 @@ jobs:
           echo "应用名称: $APP_NAME"
           echo "基础镜像: $BASE_IMAGE"
           echo "HTTP 端口: $HTTP_PORT"
+          echo "HTTPS 端口: $HTTPS_PORT"
           echo "自定义 Nginx 配置路径: ${NGINX_CONFIG_PATH:-未指定，将使用默认配置}"
           echo "================================================"
 
@@ -149,7 +157,7 @@ jobs:
           RUN rm -rf /etc/nginx/conf.d/default.conf
           COPY ./${BUILD_OUTPUT_DIR}/nginx.conf /etc/nginx/conf.d/default.conf
           RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx
-          EXPOSE ${HTTP_PORT}
+          EXPOSE ${HTTP_PORT} ${HTTPS_PORT}
           CMD ["nginx", "-g", "daemon off;"]
           EOF
 
@@ -165,6 +173,29 @@ jobs:
               root /usr/share/nginx/html;
               index index.html;
               charset utf-8;
+
+              gzip on;
+              gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
+              location / {
+                  try_files \$uri \$uri/ /index.html;
+              }
+
+              location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$ {
+                  expires 1y;
+                  add_header Cache-Control "public, immutable";
+              }
+          }
+
+          server {
+              listen ${HTTPS_PORT} ssl;
+              server_name localhost;
+              root /usr/share/nginx/html;
+              index index.html;
+              charset utf-8;
+
+              ssl_certificate /etc/nginx/ssl/tls.crt;
+              ssl_certificate_key /etc/nginx/ssl/tls.key;
 
               gzip on;
               gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
