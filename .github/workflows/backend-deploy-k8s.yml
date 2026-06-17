@@ -151,7 +151,7 @@ on:
         type: string
         default: ''
       ingress-path-prefix:
-        description: 'Ingress path prefix (empty to skip Ingress)'
+        description: 'Ingress path (optional, e.g. /api, used with Host)'
         required: false
         type: string
         default: ''
@@ -160,18 +160,8 @@ on:
         required: false
         type: string
         default: ''
-      ingress-tls:
-        description: 'Enable TLS for IngressRoute (overrides vars.INGRESS_TLS, requires Traefik ACME certResolver)'
-        required: false
-        type: string
-        default: ''
-      ingress-cert-resolver:
-        description: 'Traefik ACME certResolver name (overrides vars.INGRESS_CERT_RESOLVER, e.g. letsencrypt)'
-        required: false
-        type: string
-        default: ''
-      ingress-tls-entry-point:
-        description: 'TLS entry point (overrides vars.INGRESS_TLS_ENTRY_POINT)'
+      ingress-host:
+        description: 'Ingress host (overrides vars.INGRESS_HOST, one host per service)'
         required: false
         type: string
         default: ''
@@ -229,9 +219,7 @@ jobs:
       SCALE_DOWN_STABILIZATION_SECONDS: ${{ inputs.scale-down-stabilization-seconds || vars.K8S_SCALE_DOWN_STABILIZATION_SECONDS || '300' }}
       ENABLE_HPA: ${{ inputs.enable-hpa || vars.K8S_ENABLE_HPA || 'true' }}
       INGRESS_ENTRY_POINT: ${{ inputs.ingress-entry-point || vars.INGRESS_ENTRY_POINT || 'web' }}
-      INGRESS_TLS: ${{ inputs.ingress-tls || vars.INGRESS_TLS || 'false' }}
-      INGRESS_CERT_RESOLVER: ${{ inputs.ingress-cert-resolver || vars.INGRESS_CERT_RESOLVER || 'letsencrypt' }}
-      INGRESS_TLS_ENTRY_POINT: ${{ inputs.ingress-tls-entry-point || vars.INGRESS_TLS_ENTRY_POINT || 'websecure' }}
+      INGRESS_HOST: ${{ inputs.ingress-host || vars.INGRESS_HOST || '' }}
 
     steps:
       - name: Normalize Docker Image Name
@@ -309,11 +297,9 @@ jobs:
           export MAX_REPLICAS="${{ env.MAX_REPLICAS }}"
           export TARGET_CPU_UTILIZATION="${{ env.TARGET_CPU_UTILIZATION }}"
           export TARGET_MEMORY_UTILIZATION="${{ env.TARGET_MEMORY_UTILIZATION }}"
-          export INGRESS_PATH_PREFIX="${{ inputs.ingress-path-prefix }}"
+          export INGRESS_PATH="${{ inputs.ingress-path-prefix }}"
           export INGRESS_ENTRY_POINT="${{ env.INGRESS_ENTRY_POINT }}"
-          export INGRESS_TLS="${{ env.INGRESS_TLS }}"
-          export INGRESS_CERT_RESOLVER="${{ env.INGRESS_CERT_RESOLVER }}"
-          export INGRESS_TLS_ENTRY_POINT="${{ env.INGRESS_TLS_ENTRY_POINT }}"
+          export INGRESS_HOST="${{ env.INGRESS_HOST }}"
           export RUN_MODE="${{ inputs.environment }}"
           export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
           export CONFIG_MOUNT_PATH="${{ env.DOCKER_RUN_WORKDIR }}/resources"
@@ -365,13 +351,20 @@ jobs:
             echo "HPA generated"
           fi
 
-          if [ -n "${{ inputs.ingress-path-prefix }}" ]; then
-            if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
-              envsubst < _deploy-workflows/templates/k8s/backend/ingress-tls.yaml > ${DEPLOY_DIR}/ingress.yaml
-              echo "Ingress generated with TLS (certResolver=${{ env.INGRESS_CERT_RESOLVER }})"
-            else
+          if [ -n "${{ env.INGRESS_HOST }}" ]; then
+            if [ -n "${{ inputs.ingress-path-prefix }}" ]; then
+              export INGRESS_MATCH_RULE="Host(\`${{ env.INGRESS_HOST }}\`) && PathPrefix(\`${{ inputs.ingress-path-prefix }}\`)"
+              export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
+              export INGRESS_STRIP_NAME="${APP_NAME}"
+              export MIDDLEWARES_BLOCK="middlewares:\n    - name: ${APP_NAME}\n      namespace: ${{ env.NAMESPACE }}"
+              envsubst < _deploy-workflows/templates/k8s/backend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
               envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
-              echo "Ingress generated (no TLS)"
+              echo "Ingress generated: Host + Path"
+            else
+              export INGRESS_MATCH_RULE="Host(\`${{ env.INGRESS_HOST }}\`)"
+              export MIDDLEWARES_BLOCK=""
+              envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+              echo "Ingress generated: Host only"
             fi
           fi
 

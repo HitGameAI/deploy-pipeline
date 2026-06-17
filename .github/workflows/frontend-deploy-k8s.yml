@@ -43,20 +43,14 @@ on:
         type: string
         default: '80'
 
-      https-port:
-        description: 'HTTPS 端口'
-        required: false
-        type: string
-        default: '443'
-
       ingress-path-prefix:
-        description: 'Ingress 路径前缀（为空则不创建 Ingress）'
+        description: 'Ingress 路径（可选，如 /api，与 Host 配合使用）'
         required: false
         type: string
         default: ''
 
       ingress-host:
-        description: 'Ingress 域名（如 abc.com），为空则仅用 PathPrefix 匹配'
+        description: 'Ingress 域名（如 api.example.com，一个 host 对应一个服务）'
         required: false
         type: string
         default: ''
@@ -299,7 +293,6 @@ jobs:
           export NAMESPACE="${{ inputs.namespace }}"
           export IMAGE_NAME="${{ steps.image-name.outputs.image-name }}"
           export HTTP_PORT="${{ inputs.http-port }}"
-          export HTTPS_PORT="${{ inputs.https-port }}"
           export REPLICAS="${{ inputs.deployment-replicas }}"
           export REVISION_HISTORY_LIMIT="10"
           export IMAGE_PULL_POLICY="IfNotPresent"
@@ -315,7 +308,7 @@ jobs:
           export MIN_REPLICAS="${{ inputs.min-replicas }}"
           export MAX_REPLICAS="${{ inputs.max-replicas }}"
           export TARGET_CPU_UTILIZATION="${{ inputs.target-cpu-utilization }}"
-          export INGRESS_PATH_PREFIX="${{ inputs.ingress-path-prefix }}"
+          export INGRESS_PATH="${{ inputs.ingress-path-prefix }}"
           export INGRESS_HOST="${{ inputs.ingress-host }}"
           export INGRESS_ENTRY_POINT="${{ env.INGRESS_ENTRY_POINT }}"
           export INGRESS_TLS="${{ env.INGRESS_TLS }}"
@@ -371,43 +364,38 @@ jobs:
             echo "HPA 已生成"
           fi
 
-          if [ -n "${{ inputs.ingress-host }}" ] || [ -n "${{ inputs.ingress-path-prefix }}" ]; then
-            if [ -n "${{ inputs.ingress-host }}" ] && [ -n "${{ inputs.ingress-path-prefix }}" ]; then
+          if [ -n "${{ inputs.ingress-host }}" ]; then
+            if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
+              export INGRESS_ENTRY_POINT="${{ env.INGRESS_TLS_ENTRY_POINT }}"
+              export TLS_BLOCK="tls:\n    certResolver: ${INGRESS_CERT_RESOLVER}"
+            else
+              export TLS_BLOCK=""
+            fi
+
+            if [ -n "${{ inputs.ingress-path-prefix }}" ]; then
               export INGRESS_MATCH_RULE="Host(\`${{ inputs.ingress-host }}\`) && PathPrefix(\`${{ inputs.ingress-path-prefix }}\`)"
               export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
-              export INGRESS_STRIP_NAME="${APP_NAME}-strip"
+              export INGRESS_STRIP_NAME="${APP_NAME}"
+              export MIDDLEWARES_BLOCK="middlewares:\n    - name: ${APP_NAME}\n      namespace: ${{ env.NAMESPACE }}"
               envsubst < _deploy-workflows/templates/k8s/frontend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
+              envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
               if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
-                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip-tls.yaml > ${DEPLOY_DIR}/ingress.yaml
-                echo "IngressRoute: Host + PathPrefix + TLS (with StripPrefix middleware, certResolver=${{ env.INGRESS_CERT_RESOLVER }})"
+                echo "IngressRoute: Host + Path + TLS (with StripPrefix)"
               else
-                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip.yaml > ${DEPLOY_DIR}/ingress.yaml
-                echo "IngressRoute: Host + PathPrefix (with StripPrefix middleware, no TLS)"
-              fi
-            elif [ -n "${{ inputs.ingress-host }}" ]; then
-              export INGRESS_MATCH_RULE="Host(\`${{ inputs.ingress-host }}\`)"
-              if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
-                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-tls.yaml > ${DEPLOY_DIR}/ingress.yaml
-                echo "IngressRoute: Host + TLS (certResolver=${{ env.INGRESS_CERT_RESOLVER }})"
-              else
-                envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
-                echo "IngressRoute: Host only (no TLS)"
+                echo "IngressRoute: Host + Path (with StripPrefix)"
               fi
             else
-              export INGRESS_MATCH_RULE="PathPrefix(\`${{ inputs.ingress-path-prefix }}\`)"
-              export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
-              export INGRESS_STRIP_NAME="${APP_NAME}"
-              envsubst < _deploy-workflows/templates/k8s/frontend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
+              export INGRESS_MATCH_RULE="Host(\`${{ inputs.ingress-host }}\`)"
+              export MIDDLEWARES_BLOCK=""
+              envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
               if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
-                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip-tls.yaml > ${DEPLOY_DIR}/ingress.yaml
-                echo "IngressRoute: PathPrefix + TLS (with StripPrefix middleware, certResolver=${{ env.INGRESS_CERT_RESOLVER }})"
+                echo "IngressRoute: Host + TLS"
               else
-                envsubst < _deploy-workflows/templates/k8s/frontend/ingress-with-strip.yaml > ${DEPLOY_DIR}/ingress.yaml
-                echo "IngressRoute: PathPrefix only (with StripPrefix middleware, no TLS)"
+                echo "IngressRoute: Host only"
               fi
             fi
           else
-            echo "Skipping IngressRoute (no ingress-host or ingress-path-prefix configured)"
+            echo "Skipping IngressRoute (no ingress-host configured)"
           fi
 
           echo ""
@@ -593,7 +581,6 @@ jobs:
           export DEPLOYMENT_TARGET="Kubernetes"
           export NAMESPACE="${{ inputs.namespace }}"
           export HTTP_PORT="${{ inputs.http-port }}"
-          export HTTPS_PORT="${{ inputs.https-port }}"
           export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas }}"
 
           if [ "$STATUS" = "failure" ]; then
