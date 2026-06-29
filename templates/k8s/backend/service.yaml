@@ -1,8 +1,8 @@
 # ============================================
-# 后端服务 Service 模板
+# 后端服务 Service 模板（支持 ClusterIP/NodePort/LoadBalancer）
 # ============================================
 apiVersion: v1
-kind: Service
+kind: ${SERVICE_KIND}
 metadata:
   name: ${APP_NAME}
   namespace: ${NAMESPACE}
@@ -10,12 +10,14 @@ metadata:
     app: ${APP_NAME}
     tier: backend
 spec:
+  type: ${SERVICE_TYPE}
   ports:
     - name: http
       port: ${HTTP_PORT}
       protocol: TCP
       targetPort: http
 ${SVC_RPC_PORT_BLOCK}
+${SVC_WS_PORT_BLOCK}
     - name: pprof
       port: ${PPROF_PORT}
       protocol: TCP

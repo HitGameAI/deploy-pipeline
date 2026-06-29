@@ -54,6 +54,11 @@ on:
         required: false
         type: string
         default: ''
+      ws-port:
+        description: 'WebSocket port (overrides vars.WS_PORT)'
+        required: false
+        type: string
+        default: ''
       pprof-port:
         description: 'Pprof port (overrides vars.PPROF_PORT)'
         required: false
@@ -88,6 +93,7 @@ jobs:
       DOCKER_RUN_WORKDIR: ${{ inputs.docker-run-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
       HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '8182' }}
       RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
+      WS_PORT: ${{ inputs.ws-port || vars.WS_PORT || '18085' }}
       PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.actor }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
@@ -120,6 +126,12 @@ jobs:
             RPC_EXPOSE="EXPOSE ${{ env.RPC_PORT }}"
           fi
 
+          # WebSocket 端口可选：部分服务需要 WebSocket 支持
+          WS_EXPOSE=""
+          if [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
+            WS_EXPOSE="EXPOSE ${{ env.WS_PORT }}"
+          fi
+
           cat << EOF > ${BINARY_SOURCE_DIR}/Dockerfile
           FROM ${BASE_IMAGE}
           USER root
@@ -131,6 +143,7 @@ jobs:
           RUN rm -rf ./resources && mkdir -p ./resources
           EXPOSE ${{ env.HTTP_PORT }}
           ${RPC_EXPOSE}
+          ${WS_EXPOSE}
           EXPOSE ${{ env.PPROF_PORT }}
           CMD ["sh", "-c", "./${BUILD_APP_NAME}"]
           EOF

@@ -1,9 +1,9 @@
 # ============================================
-# 后端服务 Deployment 模板
+# 后端服务 Deployment/StatefulSet/DaemonSet 模板
 # 使用方式: envsubst < templates/k8s/backend/deployment.yaml > output.yaml
 # ============================================
 apiVersion: apps/v1
-kind: Deployment
+kind: ${KIND}
 metadata:
   name: ${APP_NAME}
   namespace: ${NAMESPACE}
@@ -38,6 +38,7 @@ spec:
           containerPort: ${HTTP_PORT}
           protocol: TCP
 ${DEPLOY_RPC_PORT_BLOCK}
+${DEPLOY_WS_PORT_BLOCK}
         - name: pprof
           containerPort: ${PPROF_PORT}
           protocol: TCP

@@ -108,6 +108,10 @@ GitHub Actions 支持**环境级别**和**仓库级别**两种配置方式，优
 |----------|------|--------|----------|
 | `IMAGE_REGISTRY` | 镜像仓库地址 | `ghcr.io` | dev/test/prod |
 | `IMAGE_PREFIX` | 镜像前缀（组织名） | `ghcr.io/your-org` | dev/test/prod |
+| `KIND` | Kubernetes workload 类型 | `Deployment` / `StatefulSet` / `DaemonSet` | dev/test/prod |
+| `SERVICE_KIND` | Kubernetes Service 类型 | `Service` | dev/test/prod |
+| `SERVICE_TYPE` | Kubernetes Service 暴露类型 | `ClusterIP` / `NodePort` / `LoadBalancer` | dev/test/prod |
+| `WS_PORT` | WebSocket 端口（可选） | `9090` | dev/test/prod |
 | `DEPLOYMENT_REPLICAS` | 默认副本数 | `3` | dev/test/prod |
 | `HPA_ENABLED` | 是否启用 HPA | `true` | dev/test/prod |
 
@@ -188,6 +192,7 @@ jobs:
       version: '${{ github.sha }}'
       http-port: '8080'
       rpc-port: '9090'
+      ws-port: '9091'        # WebSocket 端口（可选）
       pprof-port: '6060'
       docker-registry: ${{ vars.IMAGE_REGISTRY || 'ghcr.io' }}
       binary-source-dir: 'deployments'
@@ -207,6 +212,7 @@ jobs:
       binary-name: 'your-service'
       http-port: '8080'
       rpc-port: '9090'
+      ws-port: '9091'        # WebSocket 端口（可选）
       pprof-port: '6060'
       notification-provider: 'feishu'
     environment: dev
@@ -530,6 +536,9 @@ build-binary:
 | `version` | string | 是 | - | 版本号 |
 | `http-port` | string | 是 | - | HTTP 端口 |
 | `rpc-port` | string | 是 | - | gRPC 端口 |
+| `ws-port` | string | 否 | `''` | WebSocket 端口（可选） |
+| `ws-deployment-mode` | string | 否 | `combined` | WebSocket 部署模式：combined（混合）或 separate（独立） |
+| `ws-app-name` | string | 否 | `${binary-name}-ws` | WebSocket 独立部署的应用名称 |
 | `pprof-port` | string | 是 | - | Pprof 端口 |
 | `docker-registry` | string | 是 | - | 镜像仓库地址 |
 | `binary-source-dir` | string | 是 | - | 二进制文件目录 |
@@ -552,8 +561,12 @@ build-binary:
 | `environment` | string | 是 | - | 部署环境（用作 K8s namespace） |
 | `image-name` | string | 是 | - | 完整镜像名（带 tag） |
 | `binary-name` | string | 是 | - | 服务名 |
+| `kind` | string | 否 | `Deployment` | Kubernetes workload 类型：Deployment/StatefulSet/DaemonSet |
+| `service-kind` | string | 否 | `Service` | Kubernetes Service kind 类型 |
+| `service-type` | string | 否 | `ClusterIP` | Kubernetes Service 暴露类型：ClusterIP/NodePort/LoadBalancer |
 | `http-port` | string | 是 | - | HTTP 端口 |
 | `rpc-port` | string | 是 | - | gRPC 端口 |
+| `ws-port` | string | 否 | `''` | WebSocket 端口（可选） |
 | `pprof-port` | string | 是 | - | Pprof 端口 |
 | `config-yaml` | string | 否 | `''` | 配置文件路径 |
 | `configmap-name` | string | 否 | `''` | ConfigMap 名称 |
@@ -662,17 +675,18 @@ graph TD
             config[配置文件]
         end
         
-        subgraph Deployment[Deployment]
+        subgraph Workload[Deployment/StatefulSet/DaemonSet]
             subgraph Container[容器]
                 http[HTTP: 8080]
                 rpc[gRPC: 9090]
+                ws[WebSocket: 9091]
                 pprof[Pprof: 6060]
                 probes[健康检查]
             end
         end
         
         subgraph Service[Service]
-            service[ClusterIP]
+            service[ClusterIP/NodePort/LoadBalancer]
         end
         
         subgraph HPA[HorizontalPodAutoscaler]

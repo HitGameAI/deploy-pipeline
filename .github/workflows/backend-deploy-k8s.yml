@@ -25,6 +25,21 @@ on:
       # ============================================
       # 可覆盖的静态配置（优先读 vars，有硬编码默认值兜底）
       # ============================================
+      kind:
+        description: 'Kubernetes workload kind: Deployment/StatefulSet/DaemonSet (overrides vars.KIND)'
+        required: false
+        type: string
+        default: ''
+      service-kind:
+        description: 'Kubernetes Service kind: Service/NodePort/LoadBalancer (overrides vars.SERVICE_KIND)'
+        required: false
+        type: string
+        default: ''
+      service-type:
+        description: 'Kubernetes Service type: ClusterIP/NodePort/LoadBalancer (overrides vars.SERVICE_TYPE)'
+        required: false
+        type: string
+        default: ''
       namespace:
         description: 'Kubernetes namespace (overrides vars.K8S_NAMESPACE)'
         required: false
@@ -37,6 +52,11 @@ on:
         default: ''
       rpc-port:
         description: 'RPC port (overrides vars.RPC_PORT)'
+        required: false
+        type: string
+        default: ''
+      ws-port:
+        description: 'WebSocket port (overrides vars.WS_PORT)'
         required: false
         type: string
         default: ''
@@ -196,8 +216,12 @@ jobs:
       KUBECONFIG: ${{ secrets.KUBECONFIG }}
       # 优先级: input > vars > 硬编码默认值
       NAMESPACE: ${{ inputs.namespace || vars.K8S_NAMESPACE || 'default' }}
+      KIND: ${{ inputs.kind || vars.KIND || 'Deployment' }}
+      SERVICE_KIND: ${{ inputs.service-kind || vars.SERVICE_KIND || 'Service' }}
+      SERVICE_TYPE: ${{ inputs.service-type || vars.SERVICE_TYPE || 'ClusterIP' }}
       HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '8182' }}
       RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
+      WS_PORT: ${{ inputs.ws-port || vars.WS_PORT || '' }}
       PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
       DOCKER_RUN_WORKDIR: ${{ inputs.docker-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
       IMAGE_PULL_SECRETS: ${{ inputs.image-pull-secrets || vars.K8S_IMAGE_PULL_SECRETS || 'ghcr.io' }}
@@ -260,7 +284,7 @@ jobs:
           echo "Generating Kubernetes manifests for: ${{ inputs.binary-name }}"
           echo "  Namespace: ${{ env.NAMESPACE }}"
           echo "  Image: ${{ steps.image-name.outputs.image-name }}"
-          echo "  HTTP: ${{ env.HTTP_PORT }}, RPC: ${{ env.RPC_PORT }}, PProf: ${{ env.PPROF_PORT }}"
+          echo "  HTTP: ${{ env.HTTP_PORT }}, RPC: ${{ env.RPC_PORT }}, WS: ${{ env.WS_PORT }}, PProf: ${{ env.PPROF_PORT }}"
 
           DEPLOY_DIR="${{ inputs.binary-source-dir }}"
           mkdir -p "${DEPLOY_DIR}"
@@ -270,6 +294,7 @@ jobs:
           export IMAGE_NAME="${{ steps.image-name.outputs.image-name }}"
           export HTTP_PORT="${{ env.HTTP_PORT }}"
           export RPC_PORT="${{ env.RPC_PORT }}"
+          export WS_PORT="${{ env.WS_PORT }}"
           export PPROF_PORT="${{ env.PPROF_PORT }}"
 
           # RPC 端口可选：gateway 类服务无 gRPC 端口，设为空/0/none 则跳过
@@ -281,8 +306,20 @@ jobs:
             export SVC_RPC_PORT_BLOCK=""
           fi
 
+          # WebSocket 端口可选：部分服务需要 WebSocket 支持，设为空/0/none 则跳过
+          if [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
+            export DEPLOY_WS_PORT_BLOCK=$(printf '        - name: ws\n          containerPort: %s\n          protocol: TCP\n' "${{ env.WS_PORT }}")
+            export SVC_WS_PORT_BLOCK=$(printf '    - name: ws\n      port: %s\n      protocol: TCP\n      targetPort: ws\n' "${{ env.WS_PORT }}")
+          else
+            export DEPLOY_WS_PORT_BLOCK=""
+            export SVC_WS_PORT_BLOCK=""
+          fi
+
           export REPLICAS="${{ env.DEPLOYMENT_REPLICAS }}"
           export REVISION_HISTORY_LIMIT="10"
+          export KIND="${{ env.KIND }}"
+          export SERVICE_KIND="${{ env.SERVICE_KIND }}"
+          export SERVICE_TYPE="${{ env.SERVICE_TYPE }}"
           export IMAGE_PULL_POLICY="IfNotPresent"
           export IMAGE_PULL_SECRETS="${{ env.IMAGE_PULL_SECRETS }}"
           export READINESS_DELAY="${{ env.READINESS_DELAY }}"
@@ -423,6 +460,8 @@ jobs:
           ELAPSED=0
           INTERVAL=10
 
+          # 等待主 Deployment
+          echo "Waiting for main deployment: ${{ inputs.binary-name }}"
           # 获取当前 Deployment 的 pod-template-hash，只关注新 ReplicaSet 的 Pod
           NEW_RS_HASH=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} \
             -o jsonpath='{.status.latestRevision}' 2>/dev/null || echo "")
@@ -538,6 +577,7 @@ jobs:
           export NAMESPACE="${{ inputs.namespace || vars.K8S_NAMESPACE || 'business' }}"
           export HTTP_PORT="${{ inputs.http-port || vars.HTTP_PORT || '8182' }}"
           export RPC_PORT="${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}"
+          export WS_PORT="${{ inputs.ws-port || vars.WS_PORT || '' }}"
           export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas || vars.K8S_DEPLOYMENT_REPLICAS || '1' }}"
 
           if [ "$STATUS" = "failure" ]; then
