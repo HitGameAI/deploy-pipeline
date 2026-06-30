@@ -200,6 +200,11 @@ on:
         required: false
         type: string
         default: ''
+      ingress-redirect-http-to-https:
+        description: 'Enable HTTP to HTTPS redirect (requires INGRESS_TLS=true)'
+        required: false
+        type: string
+        default: ''
       notification-provider:
         description: 'Notification provider (none/feishu/telegram/all)'
         required: false
@@ -262,6 +267,7 @@ jobs:
       INGRESS_TLS: ${{ inputs.ingress-tls || vars.INGRESS_TLS || 'false' }}
       INGRESS_CERT_RESOLVER: ${{ inputs.ingress-cert-resolver || vars.INGRESS_CERT_RESOLVER || 'letsencrypt' }}
       INGRESS_TLS_ENTRY_POINT: ${{ inputs.ingress-tls-entry-point || vars.INGRESS_TLS_ENTRY_POINT || 'websecure' }}
+      INGRESS_REDIRECT_HTTP_TO_HTTPS: ${{ inputs.ingress-redirect-http-to-https || vars.INGRESS_REDIRECT_HTTP_TO_HTTPS || 'true' }}
 
     steps:
       - name: Normalize Docker Image Name
@@ -409,13 +415,18 @@ jobs:
           export INGRESS_TLS="${{ env.INGRESS_TLS }}"
           export INGRESS_CERT_RESOLVER="${{ env.INGRESS_CERT_RESOLVER }}"
           export INGRESS_TLS_ENTRY_POINT="${{ env.INGRESS_TLS_ENTRY_POINT }}"
+          export INGRESS_REDIRECT_HTTP_TO_HTTPS="${{ env.INGRESS_REDIRECT_HTTP_TO_HTTPS }}"
+          export INGRESS_HTTP_ENTRY_POINT="${{ inputs.ingress-entry-point || vars.INGRESS_ENTRY_POINT || 'web' }}"
 
           if [ -n "${{ env.INGRESS_HOST }}" ]; then
             if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
               export INGRESS_ENTRY_POINT="${{ env.INGRESS_TLS_ENTRY_POINT }}"
               export TLS_BLOCK="tls:\n    certResolver: ${INGRESS_CERT_RESOLVER}"
+              export INGRESS_REDIRECT_MIDDLEWARE="middlewares:\n    - name: redirectscheme-${APP_NAME}\n      namespace: ${{ env.NAMESPACE }}"
             else
+              export INGRESS_ENTRY_POINT="${INGRESS_HTTP_ENTRY_POINT}"
               export TLS_BLOCK=""
+              export INGRESS_REDIRECT_MIDDLEWARE=""
             fi
 
             if [ -n "${{ inputs.ingress-path-prefix }}" ]; then
@@ -424,19 +435,39 @@ jobs:
               export INGRESS_STRIP_NAME="${APP_NAME}"
               export MIDDLEWARES_BLOCK="middlewares:\n    - name: ${APP_NAME}\n      namespace: ${{ env.NAMESPACE }}"
               envsubst < _deploy-workflows/templates/k8s/backend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
-              envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+
               if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
-                echo "Ingress generated: Host + Path + TLS"
+                if [ "${{ env.INGRESS_REDIRECT_HTTP_TO_HTTPS }}" = "true" ]; then
+                  envsubst < _deploy-workflows/templates/k8s/backend/middleware-redirect.yaml > ${DEPLOY_DIR}/middleware-redirect.yaml
+                  envsubst < _deploy-workflows/templates/k8s/backend/ingress-http.yaml > ${DEPLOY_DIR}/ingress-http.yaml
+                fi
+                envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+                if [ "${{ env.INGRESS_REDIRECT_HTTP_TO_HTTPS }}" = "true" ]; then
+                  echo "Ingress generated: Host + Path + TLS (HTTP + HTTPS)"
+                else
+                  echo "Ingress generated: Host + Path + TLS (HTTPS only)"
+                fi
               else
+                envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
                 echo "Ingress generated: Host + Path"
               fi
             else
               export INGRESS_MATCH_RULE="Host(\`${{ env.INGRESS_HOST }}\`)"
               export MIDDLEWARES_BLOCK=""
-              envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+
               if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
-                echo "Ingress generated: Host + TLS"
+                if [ "${{ env.INGRESS_REDIRECT_HTTP_TO_HTTPS }}" = "true" ]; then
+                  envsubst < _deploy-workflows/templates/k8s/backend/middleware-redirect.yaml > ${DEPLOY_DIR}/middleware-redirect.yaml
+                  envsubst < _deploy-workflows/templates/k8s/backend/ingress-http.yaml > ${DEPLOY_DIR}/ingress-http.yaml
+                fi
+                envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
+                if [ "${{ env.INGRESS_REDIRECT_HTTP_TO_HTTPS }}" = "true" ]; then
+                  echo "Ingress generated: Host + TLS (HTTP + HTTPS)"
+                else
+                  echo "Ingress generated: Host + TLS (HTTPS only)"
+                fi
               else
+                envsubst < _deploy-workflows/templates/k8s/backend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
                 echo "Ingress generated: Host only"
               fi
             fi
@@ -484,6 +515,16 @@ jobs:
           if [ "${{ env.ENABLE_HPA }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
             echo "Applying HPA..."
             kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ env.NAMESPACE }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/middleware-redirect.yaml" ]; then
+            echo "Applying Redirect Middleware..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/middleware-redirect.yaml -n ${{ env.NAMESPACE }}
+          fi
+
+          if [ -f "${DEPLOY_DIR}/ingress-http.yaml" ]; then
+            echo "Applying HTTP Ingress..."
+            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress-http.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/ingress.yaml" ]; then
