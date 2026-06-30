@@ -421,8 +421,8 @@ jobs:
           if [ -n "${{ env.INGRESS_HOST }}" ]; then
             if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
               export INGRESS_ENTRY_POINT="${{ env.INGRESS_TLS_ENTRY_POINT }}"
-              export TLS_BLOCK="tls:\n    certResolver: ${INGRESS_CERT_RESOLVER}"
-              export INGRESS_REDIRECT_MIDDLEWARE="middlewares:\n    - name: redirectscheme-${APP_NAME}\n      namespace: ${{ env.NAMESPACE }}"
+              export TLS_BLOCK=$'tls:\n    certResolver: '"${INGRESS_CERT_RESOLVER}"
+              export INGRESS_REDIRECT_MIDDLEWARE=$'middlewares:\n    - name: redirectscheme-'"${APP_NAME}"$'\n      namespace: '"${{ env.NAMESPACE }}"
             else
               export INGRESS_ENTRY_POINT="${INGRESS_HTTP_ENTRY_POINT}"
               export TLS_BLOCK=""
@@ -433,7 +433,7 @@ jobs:
               export INGRESS_MATCH_RULE="Host(\`${{ env.INGRESS_HOST }}\`) && PathPrefix(\`${{ inputs.ingress-path-prefix }}\`)"
               export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
               export INGRESS_STRIP_NAME="${APP_NAME}"
-              export MIDDLEWARES_BLOCK="middlewares:\n    - name: ${APP_NAME}\n      namespace: ${{ env.NAMESPACE }}"
+              export MIDDLEWARES_BLOCK=$'middlewares:\n    - name: '"${APP_NAME}"$'\n      namespace: '"${{ env.NAMESPACE }}"
               envsubst < _deploy-workflows/templates/k8s/backend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
 
               if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
