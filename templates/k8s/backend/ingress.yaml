@@ -1,5 +1,6 @@
 # ============================================
 # 后端服务 IngressRoute 模板 (Traefik)
+# 支持 Host 匹配模式，TLS 作为可选配置
 # ============================================
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -16,3 +17,4 @@ spec:
     - name: ${APP_NAME}
       port: ${HTTP_PORT}
     ${MIDDLEWARES_BLOCK}
+  ${TLS_BLOCK}
