@@ -132,13 +132,19 @@ jobs:
             WS_EXPOSE="EXPOSE ${{ env.WS_PORT }}"
           fi
 
+          # locales 目录可选：部分服务不需要国际化资源
+          COPY_LOCALES=""
+          if [ -d "./locales" ]; then
+            COPY_LOCALES="COPY ./locales ./locales"
+          fi
+
           cat << EOF > ${BINARY_SOURCE_DIR}/Dockerfile
           FROM ${BASE_IMAGE}
           USER root
           STOPSIGNAL 37
           WORKDIR ${DOCKER_RUN_WORKDIR}
           COPY ./${BINARY_SOURCE_DIR}/${BUILD_APP_NAME} ./${BUILD_APP_NAME}
-          COPY ./locales ./locales
+          ${COPY_LOCALES}
           RUN chmod +x ./${BUILD_APP_NAME}
           RUN rm -rf ./resources && mkdir -p ./resources
           EXPOSE ${{ env.HTTP_PORT }}
