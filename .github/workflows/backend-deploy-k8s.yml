@@ -514,7 +514,8 @@ jobs:
 
           if [ "${{ env.ENABLE_HPA }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
             echo "Applying HPA..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ env.NAMESPACE }}
+            # --force-conflicts: 强制接管被 kubectl-patch 等其他 manager 修改过的字段（如 maxReplicas）
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/middleware-redirect.yaml" ]; then
