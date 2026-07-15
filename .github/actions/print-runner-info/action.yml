@@ -1,0 +1,51 @@
+name: 'Print Runner Info'
+description: '打印 GitHub Actions Runner 的机器内核、架构、CPU、内存、磁盘等信息，便于排查构建环境问题'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 🖥️ Print Runner / Machine Info
+      shell: bash
+      run: |
+        echo "================================================"
+        echo "           Runner / 机器信息"
+        echo "================================================"
+        # GitHub runner 上下文
+        echo "Runner OS:         ${{ runner.os }}"
+        echo "Runner Arch:       ${{ runner.arch }}"
+        echo "Runner Name:       ${{ runner.name }}"
+        echo "Workspace:         ${{ runner.workspace }}"
+        echo "------------------------------------------------"
+        # 内核 / 操作系统
+        echo "内核名称:          $(uname -s 2>/dev/null || echo 'unknown')"
+        echo "内核版本:          $(uname -r 2>/dev/null || echo 'unknown')"
+        echo "完整内核信息:      $(uname -a 2>/dev/null || echo 'unknown')"
+        echo "硬件架构:          $(uname -m 2>/dev/null || echo 'unknown')"
+        echo "主机名:            $(hostname 2>/dev/null || echo 'unknown')"
+        echo "------------------------------------------------"
+        # CPU 核心数
+        CPU_CORES=""
+        if command -v nproc &> /dev/null; then
+          CPU_CORES=$(nproc 2>/dev/null)
+        elif [ -f /proc/cpuinfo ]; then
+          CPU_CORES=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)
+        fi
+        echo "CPU 核心数:        ${CPU_CORES:-unknown}"
+        # CPU 型号
+        CPU_MODEL=""
+        if [ -f /proc/cpuinfo ]; then
+          CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^ *//')
+        fi
+        [ -n "$CPU_MODEL" ] && echo "CPU 型号:          ${CPU_MODEL}"
+        echo "------------------------------------------------"
+        # 内存
+        if command -v free &> /dev/null; then
+          free -h 2>/dev/null | awk '/^Mem:/ {print "内存:              " $2 " 总计 / " $7 " 可用"}'
+          free -h 2>/dev/null | awk '/^Swap:/ {print "Swap:              " $2 " 总计 / " $4 " 可用"}'
+        fi
+        echo "------------------------------------------------"
+        # 磁盘
+        if command -v df &> /dev/null; then
+          df -h . 2>/dev/null | awk 'NR==2 {print "磁盘(当前分区):    " $2 " 总计 / " $4 " 可用 (" $5 " 已用)"}'
+        fi
+        echo "================================================"

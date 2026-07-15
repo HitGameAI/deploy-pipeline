@@ -97,6 +97,9 @@ jobs:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
 
+      - name: 🖥️ Print Runner Info
+        uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
+
       # ============================================
       # 步骤2：检出部署工作流仓库（获取脚本）
       # ============================================
