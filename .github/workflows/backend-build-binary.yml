@@ -58,6 +58,11 @@ on:
         required: false
         type: string
         default: ''
+      retention-days:
+        description: 'Artifact retention days (smaller value reduces storage usage)'
+        required: false
+        type: string
+        default: '7'
       os:
         description: 'Target OS'
         required: false
@@ -207,4 +212,4 @@ jobs:
         with:
           name: ${{ inputs.binary-name }}-binary
           path: ${{ inputs.binary-output }}
-          retention-days: 7
+          retention-days: ${{ inputs.retention-days }}

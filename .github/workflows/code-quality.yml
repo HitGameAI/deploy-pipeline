@@ -135,4 +135,4 @@ jobs:
           path: |
             coverage
             coverage.html
-          retention-days: 7
+          retention-days: ${{ inputs.retention-days }}

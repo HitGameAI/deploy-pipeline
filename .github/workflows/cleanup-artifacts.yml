@@ -1,0 +1,331 @@
+name: 🧹 Cleanup
+
+# ============================================
+# 清理工作流（合并 Artifacts + GHCR Images 清理）
+# 用途：释放 GitHub Actions 存储配额和 GHCR 镜像存储
+# 触发方式：workflow_call（被其他工作流调用）或 workflow_dispatch（手动触发）
+# 默认只清理 Artifacts；开启 cleanup-images 时同时清理旧镜像
+# 镜像清理支持指定镜像名或留空自动扫描全部
+# ============================================
+
+on:
+  workflow_call:
+    inputs:
+      # ============================================
+      # Artifacts 清理配置
+      # ============================================
+      cleanup-artifacts:
+        description: '是否清理 Actions artifacts'
+        required: false
+        type: boolean
+        default: true
+      keep-days:
+        description: '保留最近 N 天的 artifacts，删除更早的'
+        required: false
+        type: string
+        default: '7'
+      # ============================================
+      # GHCR 镜像清理配置
+      # ============================================
+      cleanup-images:
+        description: '是否清理 GHCR 镜像'
+        required: false
+        type: boolean
+        default: false
+      project-owner:
+        description: 'GitHub organization/user that owns the package'
+        required: false
+        type: string
+        default: ''
+      image-name:
+        description: 'Docker image name（逗号分隔多个，留空则自动扫描所有 container packages）'
+        required: false
+        type: string
+        default: ''
+      keep-count:
+        description: 'Number of image versions to keep'
+        required: false
+        type: string
+        default: '5'
+  workflow_dispatch:
+    inputs:
+      cleanup-artifacts:
+        description: '是否清理 Actions artifacts'
+        required: false
+        type: boolean
+        default: true
+      keep-days:
+        description: '保留最近 N 天的 artifacts'
+        required: false
+        type: string
+        default: '7'
+      cleanup-images:
+        description: '是否清理 GHCR 镜像'
+        required: false
+        type: boolean
+        default: false
+      project-owner:
+        description: 'GitHub organization/user that owns the package'
+        required: false
+        type: string
+        default: ''
+      image-name:
+        description: 'Docker image name（逗号分隔多个，留空则自动扫描所有 container packages）'
+        required: false
+        type: string
+        default: ''
+      keep-count:
+        description: 'Number of image versions to keep'
+        required: false
+        type: string
+        default: '5'
+
+jobs:
+  cleanup-artifacts:
+    if: ${{ inputs.cleanup-artifacts }}
+    name: 🗑️ Cleanup Artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: 🗑️ Delete Old Artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          KEEP_DAYS: ${{ inputs.keep-days }}
+        run: |
+          set -uo pipefail
+
+          CUTOFF=$(date -u -d "$KEEP_DAYS days ago" +"%Y-%m-%dT%H:%M:%SZ")
+          echo "🧹 Deleting artifacts in $REPO created before $CUTOFF (keep last $KEEP_DAYS day(s))"
+
+          DELETED=0
+          FAILED=0
+          TOTAL_SIZE=0
+          PAGE=1
+
+          while true; do
+            echo ""
+            echo "📄 Fetching artifacts (page $PAGE)..."
+            RESPONSE=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/$REPO/actions/artifacts?per_page=100&page=$PAGE" 2>/dev/null)
+
+            ARTIFACT_COUNT=$(echo "$RESPONSE" | jq -r '.artifacts | length')
+            if [ "$ARTIFACT_COUNT" == "0" ] || [ -z "$ARTIFACT_COUNT" ]; then
+              echo "✅ No more artifacts to process"
+              break
+            fi
+
+            echo "Found $ARTIFACT_COUNT artifact(s) on this page"
+
+            ENTRIES=$(echo "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" \
+              '.artifacts[] | select(.created_at < $cutoff) | "\(.id)|\(.name)|\(.created_at)|\(.size_in_bytes)"')
+
+            if [ -z "$ENTRIES" ]; then
+              echo "  (no artifacts match deletion criteria on this page)"
+              [ "$ARTIFACT_COUNT" -lt 100 ] && break
+              PAGE=$((PAGE + 1))
+              continue
+            fi
+
+            while IFS='|' read -r ID NAME CREATED SIZE; do
+              if [ "${SIZE:-0}" -ge 1048576 ] 2>/dev/null; then
+                SIZE_STR=$(awk "BEGIN {printf \"%.2f MB\", ${SIZE:-0}/1048576}")
+              elif [ "${SIZE:-0}" -ge 1024 ] 2>/dev/null; then
+                SIZE_STR=$(awk "BEGIN {printf \"%.2f KB\", ${SIZE:-0}/1024}")
+              else
+                SIZE_STR="${SIZE:-0} B"
+              fi
+              if gh api --method DELETE "/repos/$REPO/actions/artifacts/$ID" 2>/dev/null; then
+                echo "  ✓ Deleted: $NAME ($SIZE_STR, created: $CREATED)"
+                TOTAL_SIZE=$((TOTAL_SIZE + ${SIZE:-0}))
+                DELETED=$((DELETED + 1))
+              else
+                echo "  ✗ Failed: $NAME ($SIZE_STR, created: $CREATED)"
+                FAILED=$((FAILED + 1))
+              fi
+            done <<< "$ENTRIES"
+
+            [ "$ARTIFACT_COUNT" -lt 100 ] && break
+            PAGE=$((PAGE + 1))
+          done
+
+          # 格式化总释放空间
+          if [ "$TOTAL_SIZE" -ge 1048576 ] 2>/dev/null; then
+            TOTAL_SIZE_STR=$(awk "BEGIN {printf \"%.2f MB\", $TOTAL_SIZE/1048576}")
+          elif [ "$TOTAL_SIZE" -ge 1024 ] 2>/dev/null; then
+            TOTAL_SIZE_STR=$(awk "BEGIN {printf \"%.2f KB\", $TOTAL_SIZE/1024}")
+          else
+            TOTAL_SIZE_STR="${TOTAL_SIZE} B"
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "🧹 Artifacts cleanup summary for $REPO"
+          echo "  - Successfully deleted: $DELETED"
+          echo "  - Failed to delete: $FAILED"
+          echo "  - Total space freed: $TOTAL_SIZE_STR"
+          echo "========================================"
+
+  cleanup-images:
+    if: ${{ inputs.cleanup-images }}
+    name: 🐳 Cleanup GHCR Images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: 🐳 Cleanup Old Images from GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_OWNER: ${{ inputs.project-owner }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+          KEEP_COUNT: ${{ inputs.keep-count }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "$PROJECT_OWNER" ]; then
+            echo "⚠️ project-owner is required when cleanup-images is enabled"
+            exit 1
+          fi
+
+          TOTAL_DELETED=0
+          TOTAL_FAILED=0
+
+          cleanup_image() {
+            local OWNER=$1
+            local IMAGE=$2
+            local KEEP=$3
+
+            # URL 编码斜杠（GHCR 带命名空间的包名如 common-web/common-admin 需编码为 %2F）
+            local IMAGE_ENCODED
+            IMAGE_ENCODED=$(echo "$IMAGE" | sed 's/\//%2F/g')
+
+            echo ""
+            echo "📦 Processing image: $OWNER/$IMAGE (keep latest $KEEP)"
+
+            # 分页获取所有版本（含 tag 信息，untagged 的 tags 字段为空字符串）
+            local ALL_ENTRIES=""
+            local PAGE=1
+
+            while true; do
+              RESPONSE=$(gh api \
+                -H "Accept: application/vnd.github.v3+json" \
+                "/users/$OWNER/packages/container/$IMAGE_ENCODED/versions?per_page=100&page=$PAGE" 2>/dev/null || echo "")
+
+              # 字段顺序：id|tags(逗号分隔)|created_at
+              ENTRIES=$(echo "$RESPONSE" | jq -r '.[] | "\(.id)|\(.metadata.container.tags | join(","))|\(.created_at)"' 2>/dev/null)
+
+              if [ -z "$ENTRIES" ]; then
+                break
+              fi
+
+              ALL_ENTRIES="${ALL_ENTRIES}${ENTRIES}"$'\n'
+
+              local COUNT
+              COUNT=$(echo "$RESPONSE" | jq 'length' 2>/dev/null || echo "0")
+              if [ "$COUNT" -lt 100 ] 2>/dev/null; then
+                break
+              fi
+              PAGE=$((PAGE + 1))
+            done
+
+            # 去除空行
+            ALL_ENTRIES=$(echo "$ALL_ENTRIES" | sed '/^$/d')
+
+            if [ -z "$ALL_ENTRIES" ]; then
+              echo "  No versions found"
+              return
+            fi
+
+            local TOTAL_COUNT
+            TOTAL_COUNT=$(echo "$ALL_ENTRIES" | wc -l)
+            echo "  Total versions: $TOTAL_COUNT"
+
+            # 拆分 untagged（tags 为空）和 tagged 版本
+            local UNTAGGED
+            UNTAGGED=$(echo "$ALL_ENTRIES" | awk -F'|' '$2 == ""')
+            local TAGGED
+            TAGGED=$(echo "$ALL_ENTRIES" | awk -F'|' '$2 != ""')
+
+            # 1) 先删除所有 untagged 版本（dangling 镜像，不参与 keep-count 保留）
+            local UNTAGGED_COUNT=0
+            if [ -n "$UNTAGGED" ]; then
+              UNTAGGED_COUNT=$(echo "$UNTAGGED" | wc -l)
+              echo "  Untagged versions to delete: $UNTAGGED_COUNT"
+
+              while IFS='|' read -r ID TAG CREATED; do
+                echo "  Deleting untagged: id=$ID (created: $CREATED)..."
+                if gh api \
+                  --method DELETE \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "/users/$OWNER/packages/container/$IMAGE_ENCODED/versions/$ID" \
+                  2>/dev/null; then
+                  echo "  ✓ Deleted untagged: id=$ID"
+                  TOTAL_DELETED=$((TOTAL_DELETED + 1))
+                else
+                  echo "  ✗ Failed untagged: id=$ID"
+                  TOTAL_FAILED=$((TOTAL_FAILED + 1))
+                fi
+              done <<< "$UNTAGGED"
+            fi
+
+            # 2) 再处理 tagged 版本：按创建时间降序排序，跳过最新 N 个，删除更早的
+            local TO_DELETE
+            TO_DELETE=$(echo "$TAGGED" | sort -t'|' -k3 -r | tail -n +$((KEEP + 1)))
+
+            if [ -z "$TO_DELETE" ]; then
+              echo "  No old tagged images to clean (keeping latest $KEEP versions)"
+              return
+            fi
+
+            local DELETE_COUNT
+            DELETE_COUNT=$(echo "$TO_DELETE" | wc -l)
+            echo "  Will delete: $DELETE_COUNT old tagged versions (keeping latest $KEEP)"
+
+            while IFS='|' read -r ID TAG CREATED; do
+              echo "  Deleting: $TAG (id: $ID, created: $CREATED)..."
+              if gh api \
+                --method DELETE \
+                -H "Accept: application/vnd.github.v3+json" \
+                "/users/$OWNER/packages/container/$IMAGE_ENCODED/versions/$ID" \
+                2>/dev/null; then
+                echo "  ✓ Deleted: $TAG"
+                TOTAL_DELETED=$((TOTAL_DELETED + 1))
+              else
+                echo "  ✗ Failed: $TAG"
+                TOTAL_FAILED=$((TOTAL_FAILED + 1))
+              fi
+            done <<< "$TO_DELETE"
+          }
+
+          if [ -z "$IMAGE_NAME" ]; then
+            echo "🔍 image-name is empty, scanning ALL container packages for $PROJECT_OWNER..."
+            IMAGES=$(gh api \
+              -H "Accept: application/vnd.github.v3+json" \
+              "/users/$PROJECT_OWNER/packages?package_type=container" \
+              --jq '.[].name' 2>/dev/null || echo "")
+
+            if [ -z "$IMAGES" ]; then
+              echo "No container packages found for $PROJECT_OWNER"
+            else
+              echo "Found images: $(echo "$IMAGES" | tr '\n' ' ')"
+              for IMG in $IMAGES; do
+                cleanup_image "$PROJECT_OWNER" "$IMG" "$KEEP_COUNT"
+              done
+            fi
+          else
+            # 支持逗号分隔的多个镜像名
+            for IMG in $(echo "$IMAGE_NAME" | tr ',' ' '); do
+              cleanup_image "$PROJECT_OWNER" "$IMG" "$KEEP_COUNT"
+            done
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "🧹 Images cleanup summary"
+          echo "  - Successfully deleted: ${TOTAL_DELETED} versions"
+          echo "  - Failed to delete: ${TOTAL_FAILED} versions"
+          echo "========================================"

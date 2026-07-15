@@ -8,7 +8,7 @@
 deploy-pipeline/
 ├── .github/workflows/           # 可复用工作流
 │   ├── code-quality.yml         # 代码质量检查
-│   ├── cleanup-images.yml       # GHCR 旧镜像清理
+│   ├── cleanup-artifacts.yml   # Artifacts + GHCR 镜像清理
 │   ├── backend-build-binary.yml # 编译 Go 二进制文件
 │   ├── backend-build-docker.yml # 构建推送后端 Docker 镜像
 │   ├── backend-deploy-k8s.yml   # K8s 部署（后端服务）
@@ -42,7 +42,7 @@ deploy-pipeline/
 | 分类 | 工作流 | 文件路径 | 说明 |
 |------|--------|----------|------|
 | **共享** | Code Quality | `code-quality.yml` | 代码格式检查、静态分析、单元测试 |
-| **共享** | Cleanup Images | `cleanup-images.yml` | 清理 GHCR 旧版本镜像 |
+| **共享** | Cleanup | `cleanup-artifacts.yml` | 清理 Actions artifacts 和 GHCR 旧镜像 |
 | **后端** | Build Binary | `backend-build-binary.yml` | 编译 Go 二进制文件（支持 UPX 压缩） |
 | **后端** | Build Docker | `backend-build-docker.yml` | 构建并推送后端 Docker 镜像 |
 | **后端** | Deploy K8s | `backend-deploy-k8s.yml` | 部署后端服务到 Kubernetes |
@@ -418,6 +418,7 @@ jobs:
 | `goproxy` | string | 否 | `https://goproxy.cn,direct` | Go 模块代理 |
 | `goprivate` | string | 否 | `''` | 私有模块路径 |
 | `go-auth-method` | string | 否 | `none` | 私有模块认证方式（同 Build Binary） |
+| `retention-days` | string | 否 | `7` | 构建产物保留天数 |
 
 **所需 Secrets（当 `goprivate` 非空时）：**
 
@@ -427,15 +428,65 @@ jobs:
 | `APP_PRIVATE_KEY` | `app-token` | GitHub App 私钥 |
 | `GIT_SSH_PRIVATE_KEY` | `ssh` | SSH 私钥（Legacy） |
 
-#### Cleanup Images
+#### Cleanup
 
-清理 GHCR 旧版本镜像
+清理 Actions artifacts 和 GHCR 旧版本镜像，支持独立开关和按保留天数/版本数清理
+
+**Artifacts 清理参数：**
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `project-owner` | string | 是 | - | GitHub 组织/用户名 |
-| `image-name` | string | 是 | - | 镜像名（包名） |
-| `keep-count` | string | 否 | `5` | 保留版本数 |
+| `cleanup-artifacts` | boolean | 否 | `true` | 是否清理 Actions artifacts |
+| `keep-days` | string | 否 | `7` | 保留最近 N 天的 artifacts |
+
+**GHCR 镜像清理参数：**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `cleanup-images` | boolean | 否 | `false` | 是否清理 GHCR 镜像 |
+| `project-owner` | string | 否 | `''` | GitHub 组织/用户名（cleanup-images 为 true 时必填） |
+| `image-name` | string | 否 | `''` | 镜像名（逗号分隔多个，留空则自动扫描所有 container packages） |
+| `keep-count` | string | 否 | `5` | 保留镜像版本数 |
+
+**调用示例：**
+
+```yaml
+# 只清理 artifacts
+cleanup:
+  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  with:
+    cleanup-artifacts: true
+    keep-days: '7'
+
+# 同时清理 artifacts + 指定镜像
+cleanup:
+  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  with:
+    cleanup-artifacts: true
+    keep-days: '7'
+    cleanup-images: true
+    project-owner: 'your-org'
+    image-name: 'your-service'
+    keep-count: '5'
+
+# 扫描清理所有镜像（image-name 留空）
+cleanup:
+  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  with:
+    cleanup-images: true
+    project-owner: 'your-org'
+    image-name: ''
+    keep-count: '5'
+
+# 清理多个指定镜像（逗号分隔）
+cleanup:
+  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  with:
+    cleanup-images: true
+    project-owner: 'your-org'
+    image-name: 'tenant-admin,ops-admin'
+    keep-count: '5'
+```
 
 ### 后端工作流
 
@@ -458,6 +509,7 @@ jobs:
 | `os` | string | 否 | `linux` | 目标操作系统 |
 | `arch` | string | 否 | `amd64` | 目标架构 |
 | `upx-compress` | string | 否 | `false` | 是否启用 UPX 压缩 |
+| `retention-days` | string | 否 | `7` | 构建产物保留天数 |
 
 **所需 Secrets：**
 
@@ -601,6 +653,7 @@ build-binary:
 | `output-dir` | string | 否 | `dist` | 构建输出目录 |
 | `artifact-name` | string | 否 | `frontend-dist` | 构建产物 Artifact 名称（多应用并行构建时需区分） |
 | `pnpm-version` | string | 否 | `8` | pnpm 版本（仅 package-manager 为 pnpm 时生效） |
+| `retention-days` | string | 否 | `7` | 构建产物保留天数 |
 
 #### Build Docker (Frontend)
 

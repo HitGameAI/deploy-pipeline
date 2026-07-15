@@ -80,6 +80,12 @@ on:
         type: string
         default: '8'
 
+      retention-days:
+        description: '构建产物保留天数（值越小存储占用越低）'
+        required: false
+        type: string
+        default: '7'
+
 jobs:
   build-frontend:
     name: 🎨 Build Frontend
@@ -159,4 +165,4 @@ jobs:
         with:
           name: ${{ inputs.artifact-name }}
           path: ${{ inputs.output-dir }}
-          retention-days: 7
+          retention-days: ${{ inputs.retention-days }}
