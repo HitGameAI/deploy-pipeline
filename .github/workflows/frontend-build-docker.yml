@@ -81,6 +81,12 @@ on:
         required: false
         type: string
         default: 'frontend-dist'
+
+      runner:
+        description: 'GitHub runner 标签（默认 ubuntu-latest=2核；可选 ubuntu-latest-4-cores/8-cores/16-cores/32-cores 等更大付费 runner）'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
     secrets:
       DOCKER_USERNAME:
         description: 'Docker registry username'
@@ -92,7 +98,7 @@ on:
 jobs:
   build-docker:
     name: 🐳 Build Frontend Docker
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     env:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.actor }}

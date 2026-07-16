@@ -73,6 +73,11 @@ on:
         required: false
         type: string
         default: 'amd64'
+      runner:
+        description: 'GitHub runner 标签（默认 ubuntu-latest=2核；可选 ubuntu-latest-4-cores/8-cores/16-cores/32-cores 等更大付费 runner）'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
       build-script:
         description: 'Path to build script (relative to repo root)'
         required: false
@@ -97,7 +102,7 @@ on:
 jobs:
   build-binary:
     name: 🚀 Build Go Binary
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     env:
       # 优先级: input > vars > 硬编码默认值
       GO_VERSION: ${{ inputs.go-version || vars.GO_VERSION || '1.25.1' }}

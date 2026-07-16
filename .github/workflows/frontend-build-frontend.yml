@@ -86,10 +86,16 @@ on:
         type: string
         default: '7'
 
+      runner:
+        description: 'GitHub runner 标签（默认 ubuntu-latest=2核；可选 ubuntu-latest-4-cores/8-cores/16-cores/32-cores 等更大付费 runner）'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
 jobs:
   build-frontend:
     name: 🎨 Build Frontend
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       # ============================================
       # 步骤1：检出代码仓库
