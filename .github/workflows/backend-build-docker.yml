@@ -45,22 +45,22 @@ on:
         type: string
         default: ''
       http-port:
-        description: 'HTTP port (overrides vars.HTTP_PORT)'
+        description: 'HTTP port (overrides vars.HTTP_PORT, empty/0/none to skip)'
         required: false
         type: string
         default: ''
       rpc-port:
-        description: 'RPC port (overrides vars.RPC_PORT)'
+        description: 'RPC port (overrides vars.RPC_PORT, empty/0/none to skip)'
         required: false
         type: string
         default: ''
       ws-port:
-        description: 'WebSocket port (overrides vars.WS_PORT)'
+        description: 'WebSocket port (overrides vars.WS_PORT, empty/0/none to skip)'
         required: false
         type: string
         default: ''
       pprof-port:
-        description: 'Pprof port (overrides vars.PPROF_PORT)'
+        description: 'Pprof port (overrides vars.PPROF_PORT, empty/0/none to skip)'
         required: false
         type: string
         default: ''
@@ -96,7 +96,7 @@ jobs:
       # 优先级: input > vars > 硬编码默认值
       DOCKER_REGISTRY: ${{ inputs.docker-registry || vars.DOCKER_REGISTRY || 'ghcr.io' }}
       DOCKER_RUN_WORKDIR: ${{ inputs.docker-run-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
-      HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '8182' }}
+      HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '' }}
       RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
       WS_PORT: ${{ inputs.ws-port || vars.WS_PORT || '18085' }}
       PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
@@ -128,6 +128,12 @@ jobs:
           BASE_IMAGE="${{ inputs.base-image }}"
           TIMEZONE="${{ inputs.timezone }}"
 
+          # HTTP 端口可选：部分服务（如纯 WS/gRPC 服务）无 HTTP 端口
+          HTTP_EXPOSE=""
+          if [ -n "${{ env.HTTP_PORT }}" ] && [ "${{ env.HTTP_PORT }}" != "0" ] && [ "${{ env.HTTP_PORT }}" != "none" ]; then
+            HTTP_EXPOSE="EXPOSE ${{ env.HTTP_PORT }}"
+          fi
+
           # RPC 端口可选：gateway 类服务无 gRPC 端口
           RPC_EXPOSE=""
           if [ -n "${{ env.RPC_PORT }}" ] && [ "${{ env.RPC_PORT }}" != "0" ] && [ "${{ env.RPC_PORT }}" != "none" ]; then
@@ -138,6 +144,12 @@ jobs:
           WS_EXPOSE=""
           if [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
             WS_EXPOSE="EXPOSE ${{ env.WS_PORT }}"
+          fi
+
+          # Pprof 端口可选：部分服务不需要 pprof
+          PPROF_EXPOSE=""
+          if [ -n "${{ env.PPROF_PORT }}" ] && [ "${{ env.PPROF_PORT }}" != "0" ] && [ "${{ env.PPROF_PORT }}" != "none" ]; then
+            PPROF_EXPOSE="EXPOSE ${{ env.PPROF_PORT }}"
           fi
 
           # locales 目录可选：部分服务不需要国际化资源
@@ -155,10 +167,10 @@ jobs:
           ${COPY_LOCALES}
           RUN chmod +x ./${BUILD_APP_NAME}
           RUN rm -rf ./resources && mkdir -p ./resources
-          EXPOSE ${{ env.HTTP_PORT }}
+          ${HTTP_EXPOSE}
           ${RPC_EXPOSE}
           ${WS_EXPOSE}
-          EXPOSE ${{ env.PPROF_PORT }}
+          ${PPROF_EXPOSE}
           CMD ["sh", "-c", "./${BUILD_APP_NAME}"]
           EOF
 

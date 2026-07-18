@@ -34,24 +34,12 @@ spec:
             exec:
               command: ["sh", "-c", "sleep 5"]
         ports:
-        - name: http
-          containerPort: ${HTTP_PORT}
-          protocol: TCP
+${DEPLOY_HTTP_PORT_BLOCK}
 ${DEPLOY_RPC_PORT_BLOCK}
 ${DEPLOY_WS_PORT_BLOCK}
-        - name: pprof
-          containerPort: ${PPROF_PORT}
-          protocol: TCP
-        readinessProbe:
-          tcpSocket:
-            port: http
-          initialDelaySeconds: ${READINESS_DELAY}
-          periodSeconds: ${READINESS_PERIOD}
-        livenessProbe:
-          tcpSocket:
-            port: http
-          initialDelaySeconds: ${LIVENESS_DELAY}
-          periodSeconds: ${LIVENESS_PERIOD}
+${DEPLOY_PPROF_PORT_BLOCK}
+${READINESS_PROBE_BLOCK}
+${LIVENESS_PROBE_BLOCK}
         resources:
           requests:
             cpu: ${CPU_REQUEST}
