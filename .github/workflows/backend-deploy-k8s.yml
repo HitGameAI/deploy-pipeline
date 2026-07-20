@@ -411,6 +411,16 @@ jobs:
           export INGRESS_PATH="${{ inputs.ingress-path-prefix }}"
           export INGRESS_ENTRY_POINT="${{ env.INGRESS_ENTRY_POINT }}"
           export INGRESS_HOST="${{ env.INGRESS_HOST }}"
+          # IngressRoute 后端端口：优先 HTTP_PORT，否则回退 WS_PORT（纯 WS 服务场景）
+          # 当 HTTP+WS 同时存在时，主 route 走 HTTP_PORT 兜底，额外 WS route 走 WS_PORT（路径 /ws）
+          if [ -n "${{ env.HTTP_PORT }}" ] && [ "${{ env.HTTP_PORT }}" != "0" ] && [ "${{ env.HTTP_PORT }}" != "none" ]; then
+            export INGRESS_PORT="${{ env.HTTP_PORT }}"
+          elif [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
+            export INGRESS_PORT="${{ env.WS_PORT }}"
+          else
+            export INGRESS_PORT=""
+            echo "Warning: No HTTP/WS port available, IngressRoute service port will be empty"
+          fi
           export RUN_MODE="${{ inputs.environment }}"
           export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
           export CONFIG_MOUNT_PATH="${{ env.DOCKER_RUN_WORKDIR }}/resources"
@@ -477,6 +487,15 @@ jobs:
               export INGRESS_ENTRY_POINT="${INGRESS_HTTP_ENTRY_POINT}"
               export TLS_BLOCK=""
               export INGRESS_REDIRECT_MIDDLEWARE=""
+            fi
+
+            # WS route 块：仅当 HTTP+WS 同时存在时生成，将 /ws 前缀流量路由到 WS_PORT
+            # 必须置于主 route 之前，Traefik 按声明顺序匹配，更具体的 PathPrefix 优先
+            if [ -n "${{ env.HTTP_PORT }}" ] && [ "${{ env.HTTP_PORT }}" != "0" ] && [ "${{ env.HTTP_PORT }}" != "none" ] \
+               && [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
+              export INGRESS_WS_ROUTE_BLOCK=$(printf '  - match: Host(`%s`) && PathPrefix(`/ws`)\n    kind: Rule\n    services:\n    - name: %s\n      port: %s\n' "${{ env.INGRESS_HOST }}" "${APP_NAME}" "${{ env.WS_PORT }}")
+            else
+              export INGRESS_WS_ROUTE_BLOCK=""
             fi
 
             if [ -n "${{ inputs.ingress-path-prefix }}" ]; then

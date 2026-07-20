@@ -11,9 +11,10 @@ spec:
   entryPoints:
     - web
   routes:
+${INGRESS_WS_ROUTE_BLOCK}
   - match: ${INGRESS_MATCH_RULE}
     kind: Rule
     services:
     - name: ${APP_NAME}
-      port: ${HTTP_PORT}
+      port: ${INGRESS_PORT}
     ${INGRESS_REDIRECT_MIDDLEWARE}
