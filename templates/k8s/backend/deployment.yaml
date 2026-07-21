@@ -21,6 +21,7 @@ spec:
       labels:
         app: ${APP_NAME}
         tier: backend
+${ANNOTATIONS_BLOCK}
     spec:
       containers:
       - name: ${APP_NAME}

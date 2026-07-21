@@ -70,6 +70,16 @@ on:
         required: false
         type: string
         default: ''
+      metrics-port:
+        description: 'Prometheus metrics port (overrides vars.METRICS_PORT, empty/0/none to skip scraping)'
+        required: false
+        type: string
+        default: ''
+      metrics-path:
+        description: 'Prometheus metrics path (overrides vars.METRICS_PATH, default /metrics)'
+        required: false
+        type: string
+        default: ''
       config-yaml:
         description: 'Configuration YAML file path'
         required: false
@@ -249,6 +259,8 @@ jobs:
       WS_PORT: ${{ inputs.ws-port || vars.WS_PORT || '' }}
       PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
       PROBE_PORT_NAME: ${{ inputs.probe-port || vars.PROBE_PORT_NAME || '' }}
+      METRICS_PORT: ${{ inputs.metrics-port || vars.METRICS_PORT || '' }}
+      METRICS_PATH: ${{ inputs.metrics-path || vars.METRICS_PATH || '/metrics' }}
       DOCKER_RUN_WORKDIR: ${{ inputs.docker-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
       IMAGE_PULL_SECRETS: ${{ inputs.image-pull-secrets || vars.K8S_IMAGE_PULL_SECRETS || 'ghcr.io' }}
       READINESS_DELAY: ${{ inputs.readiness-delay-seconds || vars.K8S_READINESS_DELAY_SECONDS || '5' }}
@@ -314,7 +326,7 @@ jobs:
           echo "Generating Kubernetes manifests for: ${{ inputs.binary-name }}"
           echo "  Namespace: ${{ env.NAMESPACE }}"
           echo "  Image: ${{ steps.image-name.outputs.image-name }}"
-          echo "  HTTP: ${{ env.HTTP_PORT }}, RPC: ${{ env.RPC_PORT }}, WS: ${{ env.WS_PORT }}, PProf: ${{ env.PPROF_PORT }}"
+          echo "  HTTP: ${{ env.HTTP_PORT }}, RPC: ${{ env.RPC_PORT }}, WS: ${{ env.WS_PORT }}, PProf: ${{ env.PPROF_PORT }}, Metrics: ${{ env.METRICS_PORT }}"
 
           DEPLOY_DIR="${{ inputs.binary-source-dir }}"
           mkdir -p "${DEPLOY_DIR}"
@@ -387,6 +399,16 @@ jobs:
             export READINESS_PROBE_BLOCK=""
             export LIVENESS_PROBE_BLOCK=""
             echo "Warning: No ports available, skipping liveness/readiness probes"
+          fi
+
+          # Prometheus 采集注解：配置 metrics-port 时自动注入，动态全量采集器据此识别并抓取指标
+          export METRICS_PORT="${{ env.METRICS_PORT }}"
+          export METRICS_PATH="${{ env.METRICS_PATH }}"
+          if [ -n "${{ env.METRICS_PORT }}" ] && [ "${{ env.METRICS_PORT }}" != "0" ] && [ "${{ env.METRICS_PORT }}" != "none" ]; then
+            export ANNOTATIONS_BLOCK=$(printf '      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "%s"\n        prometheus.io/path: "%s"\n' "${{ env.METRICS_PORT }}" "${{ env.METRICS_PATH }}")
+            echo "Prometheus annotations will be injected (port: ${{ env.METRICS_PORT }}, path: ${{ env.METRICS_PATH }})"
+          else
+            export ANNOTATIONS_BLOCK=""
           fi
 
           export REPLICAS="${{ env.DEPLOYMENT_REPLICAS }}"
