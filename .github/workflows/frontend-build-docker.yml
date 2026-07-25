@@ -82,6 +82,18 @@ on:
         type: string
         default: 'frontend-dist'
 
+      os:
+        description: '目标 OS（为空时回退到 vars.BUILD_DOCKER_OS，再为空用 linux）'
+        required: false
+        type: string
+        default: ''
+
+      arch:
+        description: '目标架构（amd64 或 arm64，为空时回退到 vars.BUILD_DOCKER_ARCH，再为空用 amd64）。与 os 一起拼成 ${os}/${arch} 传给 build-push-action 的 platforms'
+        required: false
+        type: string
+        default: ''
+
       runner:
         description: 'GitHub runner 标签（默认 ubuntu-latest=2核；可选 ubuntu-latest-4-cores/8-cores/16-cores/32-cores 等更大付费 runner）'
         required: false
@@ -97,12 +109,14 @@ on:
 
 jobs:
   build-docker:
-    name: 🐳 Build Frontend Docker
+    name: 🐳 Build Frontend Docker Image (${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }})
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     env:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.actor }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
+      BUILD_BINARY_OS: ${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}
+      BUILD_BINARY_ARCH: ${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }}
 
     permissions:
       contents: read
@@ -238,6 +252,10 @@ jobs:
           context: .
           file: ${{ inputs.build-output-dir }}/Dockerfile
           push: true
+          # 关键：用 ${os}/${arch} 标记镜像 manifest 平台，K8s 调度到对应架构节点时才能正确拉取
+          # 优先级: inputs > vars.BUILD_DOCKER_OS/ARCH > 硬编码默认值
+          # 前端是纯静态文件，nginx:alpine 基础镜像本身支持多架构，Dockerfile 无需 ARG TARGETARCH
+          platforms: ${{ inputs.os || env.BUILD_BINARY_OS || 'linux' }}/${{ inputs.arch || env.BUILD_BINARY_ARCH || 'amd64' }}
           tags: ${{ steps.image-names.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

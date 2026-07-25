@@ -64,15 +64,15 @@ on:
         type: string
         default: '7'
       os:
-        description: 'Target OS'
+        description: 'Target OS（为空时回退到 vars.BUILD_BINARY_OS，再为空用 linux）'
         required: false
         type: string
-        default: 'linux'
+        default: ''
       arch:
-        description: 'Target architecture'
+        description: '目标架构（amd64 或 arm64，为空时回退到 vars.BUILD_BINARY_ARCH，再为空用 amd64）。每次构建只产出一个架构二进制，由调用方按目标集群节点架构选择'
         required: false
         type: string
-        default: 'amd64'
+        default: ''
       runner:
         description: 'GitHub runner 标签（默认 ubuntu-latest=2核；可选 ubuntu-latest-4-cores/8-cores/16-cores/32-cores 等更大付费 runner）'
         required: false
@@ -101,8 +101,10 @@ on:
 
 jobs:
   build-binary:
-    name: 🚀 Build Go Binary
+    # job-level name 不能引用 env.*（此时 env 尚未初始化），用 inputs/vars 表达式直接拼
+    name: 🚀 Build Go Binary (${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }})
     runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
     env:
       # 优先级: input > vars > 硬编码默认值
       GO_VERSION: ${{ inputs.go-version || vars.GO_VERSION || '1.25.1' }}
@@ -110,6 +112,8 @@ jobs:
       GOPRIVATE: ${{ inputs.goprivate || vars.GOPRIVATE || '' }}
       GO_AUTH_METHOD: ${{ inputs.go-auth-method || vars.GO_AUTH_METHOD || 'ssh' }}
       UPX_COMPRESS: ${{ inputs.upx-compress || vars.UPX_COMPRESS || 'false' }}
+      BUILD_BINARY_OS: ${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}
+      BUILD_BINARY_ARCH: ${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }}
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
@@ -207,12 +211,12 @@ jobs:
             --git-commit "${{ inputs.git-commit }}" \
             --binary-name "${{ inputs.binary-name }}" \
             --output-dir "${{ inputs.binary-source-dir }}" \
-            --os "${{ inputs.os }}" \
-            --arch "${{ inputs.arch }}" \
+            --os "${{ env.BUILD_BINARY_OS }}" \
+            --arch "${{ env.BUILD_BINARY_ARCH }}" \
             --upx-compress "${{ env.UPX_COMPRESS }}" \
             --build-dir "${{ inputs.binary-build-dir }}"
 
-          echo "Build completed: ${{ inputs.binary-name }}"
+          echo "Build completed: ${{ inputs.binary-name }} (${{ env.BUILD_BINARY_OS }}/${{ env.BUILD_BINARY_ARCH }})"
           ls -lh "${{ inputs.binary-source-dir }}"
 
       - name: 📤 Upload Binary

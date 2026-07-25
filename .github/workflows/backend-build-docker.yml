@@ -74,6 +74,16 @@ on:
         required: false
         type: string
         default: 'Asia/Shanghai'
+      os:
+        description: '目标 OS（为空时回退到 vars.BUILD_DOCKER_OS，再为空用 linux）。需与 build-binary 的 os 一致'
+        required: false
+        type: string
+        default: ''
+      arch:
+        description: '目标架构（amd64 或 arm64，为空时回退到 vars.BUILD_DOCKER_ARCH，再为空用 amd64）。需与 build-binary 的 arch 一致；build-push-action 用 ${os}/${arch} 标记 manifest，K8s 才能调度到对应架构节点'
+        required: false
+        type: string
+        default: ''
       runner:
         description: 'GitHub runner 标签（默认 ubuntu-latest=2核；可选 ubuntu-latest-4-cores/8-cores/16-cores/32-cores 等更大付费 runner）'
         required: false
@@ -89,7 +99,7 @@ on:
 
 jobs:
   build-docker:
-    name: 🐳 Build Docker Image
+    name: 🐳 Build Docker Image (${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }})
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     env:
@@ -102,6 +112,8 @@ jobs:
       PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.actor }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
+      BUILD_BINARY_OS: ${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}
+      BUILD_BINARY_ARCH: ${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }}
 
     permissions:
       contents: read
@@ -127,6 +139,16 @@ jobs:
           DOCKER_RUN_WORKDIR="${{ env.DOCKER_RUN_WORKDIR }}"
           BASE_IMAGE="${{ inputs.base-image }}"
           TIMEZONE="${{ inputs.timezone }}"
+          # 优先级: inputs > vars.BUILD_DOCKER_OS/ARCH > 硬编码默认值
+          BUILD_OS="${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}"
+          BUILD_ARCH="${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }}"
+
+          echo "=========================================="
+          echo "Single-arch Docker build"
+          echo "  Platform: ${BUILD_OS}/${BUILD_ARCH}"
+          echo "  Binary source dir: ${BINARY_SOURCE_DIR}"
+          echo "=========================================="
+          ls -lh "${BINARY_SOURCE_DIR}"
 
           # HTTP 端口可选：部分服务（如纯 WS/gRPC 服务）无 HTTP 端口
           HTTP_EXPOSE=""
@@ -158,6 +180,8 @@ jobs:
             COPY_LOCALES="COPY ./locales ./locales"
           fi
 
+          # 生成单架构 Dockerfile
+          # build-push-action 通过 platforms=linux/${BUILD_ARCH} 把镜像 manifest 标记为对应架构
           cat << EOF > ${BINARY_SOURCE_DIR}/Dockerfile
           FROM ${BASE_IMAGE}
           USER root
@@ -174,6 +198,7 @@ jobs:
           CMD ["sh", "-c", "./${BUILD_APP_NAME}"]
           EOF
 
+          echo ""
           echo "=== Generated Dockerfile ==="
           cat ${BINARY_SOURCE_DIR}/Dockerfile
           echo "============================"
@@ -210,5 +235,11 @@ jobs:
           context: .
           file: ${{ inputs.binary-source-dir }}/Dockerfile
           push: true
+          # 关键：用 ${os}/${arch} 标记镜像 manifest 平台，K8s 调度到对应架构节点时才能正确拉取
+          # 优先级: inputs > vars.BUILD_DOCKER_OS/ARCH > 硬编码默认值
+          # 二进制已由 build-binary workflow 用 Go 交叉编译为对应 os/arch，Dockerfile 仅 COPY，无需 QEMU
+          platforms: ${{ inputs.os || env.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || env.BUILD_DOCKER_ARCH || 'amd64' }}
           tags: ${{ steps.image-names.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

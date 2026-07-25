@@ -403,6 +403,41 @@ jobs:
 
 ---
 
+## 🏗️ 多架构构建（amd64 / arm64）
+
+K8s 集群同时含 amd64 与 arm64 节点时，镜像 manifest 必须标记正确架构，否则调度到 arm64 节点会拉取失败（`no matching manifest for linux/arm64/v8`）。
+
+本流水线采用**单架构参数化构建**——每次调用只产出一个架构镜像，由调用方按目标集群节点架构选择：
+
+| 工作流 | 参数 | 默认值 | 取值 |
+|--------|------|--------|------|
+| `backend-build-binary` | `arch` | `amd64` | `amd64` / `arm64`（Go 交叉编译，无需 QEMU） |
+| `backend-build-docker` | `os` / `arch` | `linux` / `amd64` | 需与 build-binary 一致；build-push-action 用 `${os}/${arch}` 标记 manifest |
+| `frontend-build-docker` | `os` / `arch` | `linux` / `amd64` | `${os}/${arch}` 传给 platforms；前端纯静态文件，nginx:alpine 基础镜像本身支持多架构 |
+
+### 调用示例：构建 arm64 镜像
+
+```yaml
+jobs:
+  build-arm64:
+    uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
+    with:
+      binary-name: your-service
+      arch: arm64         # 👈 关键：Go 交叉编译 linux/arm64 二进制
+      # ...其他参数
+  docker-arm64:
+    needs: build-arm64
+    uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-docker.yml@master
+    with:
+      binary-name: your-service
+      arch: arm64         # 👈 关键：与 build-binary 一致，manifest 标记为 linux/arm64
+      # ...其他参数
+```
+
+> **注意**：`arch` 必须前后一致。binary workflow 用 arm64 交叉编译，docker workflow 也必须传 arm64，否则 manifest 架构标记与二进制实际架构不匹配，运行时会崩溃。
+
+---
+
 ## 📖 工作流详细说明
 
 ### 共享工作流
@@ -507,7 +542,7 @@ cleanup:
 | `goprivate` | string | 否 | `''` | 私有模块路径（如 `github.com/your-org/*`） |
 | `go-auth-method` | string | 否 | `none` | 私有模块认证方式，详见下方说明 |
 | `os` | string | 否 | `linux` | 目标操作系统 |
-| `arch` | string | 否 | `amd64` | 目标架构 |
+| `arch` | string | 否 | `amd64` | 目标架构（`amd64` 或 `arm64`，每次构建只产出对应架构一个二进制；K8s 集群含 arm64 节点时传 `arm64` 用 Go 交叉编译） |
 | `upx-compress` | string | 否 | `false` | 是否启用 UPX 压缩 |
 | `retention-days` | string | 否 | `7` | 构建产物保留天数 |
 
@@ -596,6 +631,7 @@ build-binary:
 | `binary-source-dir` | string | 是 | - | 二进制文件目录 |
 | `image-base` | string | 是 | - | 基础镜像名（不带 tag） |
 | `image-name` | string | 是 | - | 完整镜像名（带 tag） |
+| `arch` | string | 否 | `amd64` | 目标架构（`amd64` 或 `arm64`），需与 build-binary 一致；build-push-action 用 `linux/${arch}` 标记 manifest，K8s 才能调度到对应架构节点 |
 
 **所需 Secrets：**
 
@@ -670,6 +706,8 @@ build-binary:
 | `base-image` | string | 否 | `nginx:1.25.3-alpine` | 基础 Nginx 镜像 |
 | `nginx-config-path` | string | 否 | `''` | 项目自定义 nginx.conf 路径 |
 | `artifact-name` | string | 否 | `frontend-dist` | 构建产物 Artifact 名称（需与 build-frontend 一致） |
+| `os` | string | 否 | `linux` | 目标 OS |
+| `arch` | string | 否 | `amd64` | 目标架构（`amd64` / `arm64`），与 `os` 拼成 `${os}/${arch}` 传给 build-push-action 的 platforms |
 
 #### Deploy K8s (Frontend)
 
