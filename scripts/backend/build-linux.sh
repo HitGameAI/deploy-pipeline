@@ -22,6 +22,7 @@ BUILD_OS="${BUILD_OS:-linux}"
 BUILD_ARCH="${BUILD_ARCH:-amd64}"
 BATCH_MODE="${BATCH_MODE:-false}"
 UPX_COMPRESS="${UPX_COMPRESS:-false}"
+UPX_LEVEL="${UPX_LEVEL:---best --lzma}"
 BUILD_DIR="${BUILD_DIR:-}"
 
 # 参数解析
@@ -63,13 +64,17 @@ while [[ $# -gt 0 ]]; do
             UPX_COMPRESS="$2"
             shift 2
             ;;
+        --upx-level)
+            UPX_LEVEL="$2"
+            shift 2
+            ;;
         --build-dir)
             BUILD_DIR="$2"
             shift 2
             ;;
         *)
             echo "未知参数: $1"
-            echo "用法: $0 [--version VERSION] [--build-time TIME] [--git-commit COMMIT] [--output-dir DIR] [--binary-name NAME] [--os OS] [--arch ARCH] [--batch] [--build-dir DIR]"
+            echo "用法: $0 [--version VERSION] [--build-time TIME] [--git-commit COMMIT] [--output-dir DIR] [--binary-name NAME] [--os OS] [--arch ARCH] [--batch] [--upx-compress true|false] [--upx-level LEVEL] [--build-dir DIR]"
             exit 1
             ;;
     esac
@@ -196,7 +201,7 @@ build_target() {
         # 可选：使用 UPX 压缩（如果安装了 UPX）
         if command -v upx &> /dev/null && [[ "${UPX_COMPRESS}" == "true" ]]; then
             echo "🗜️  使用 UPX 压缩..."
-            upx --best --lzma ${output} 2>/dev/null || upx --best ${output}
+            upx ${UPX_LEVEL} ${output} 2>/dev/null || upx --best ${output}
             if [[ "$OSTYPE" == "darwin"* ]]; then
                 compressed_size=$(ls -lh ${output} | awk '{print $5}')
             else

@@ -58,6 +58,11 @@ on:
         required: false
         type: string
         default: ''
+      upx-level:
+        description: 'UPX compression level (overrides vars.UPX_LEVEL, e.g. -2 fast / --best --lzma smallest, default --best --lzma)'
+        required: false
+        type: string
+        default: ''
       retention-days:
         description: 'Artifact retention days (smaller value reduces storage usage)'
         required: false
@@ -114,6 +119,7 @@ jobs:
       UPX_COMPRESS: ${{ inputs.upx-compress || vars.UPX_COMPRESS || 'false' }}
       BUILD_BINARY_OS: ${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}
       BUILD_BINARY_ARCH: ${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }}
+      UPX_LEVEL: ${{ inputs.upx-level || vars.UPX_LEVEL || '--best --lzma' }}
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
@@ -214,6 +220,7 @@ jobs:
             --os "${{ env.BUILD_BINARY_OS }}" \
             --arch "${{ env.BUILD_BINARY_ARCH }}" \
             --upx-compress "${{ env.UPX_COMPRESS }}" \
+            --upx-level "${{ env.UPX_LEVEL }}" \
             --build-dir "${{ inputs.binary-build-dir }}"
 
           echo "Build completed: ${{ inputs.binary-name }} (${{ env.BUILD_BINARY_OS }}/${{ env.BUILD_BINARY_ARCH }})"
