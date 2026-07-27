@@ -168,9 +168,9 @@ jobs:
           USER root
           STOPSIGNAL SIGQUIT
           WORKDIR /usr/share/nginx/html
-          COPY ./${BUILD_OUTPUT_DIR}/ .
+          COPY ./ ./
           RUN rm -rf /etc/nginx/conf.d/default.conf
-          COPY ./${BUILD_OUTPUT_DIR}/nginx.conf /etc/nginx/conf.d/default.conf
+          COPY ./nginx.conf /etc/nginx/conf.d/default.conf
           RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx
           EXPOSE ${HTTP_PORT}
           CMD ["nginx", "-g", "daemon off;"]
