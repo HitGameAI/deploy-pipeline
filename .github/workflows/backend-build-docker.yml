@@ -65,10 +65,10 @@ on:
         type: string
         default: ''
       base-image:
-        description: 'Base Docker image for build'
+        description: 'Base Docker image for build (overrides vars.BUILD_DOCKER_BASE_IMAGE, default alpine:3.19.1)'
         required: false
         type: string
-        default: 'alpine:3.19.1'
+        default: ''
       timezone:
         description: 'Container timezone'
         required: false
@@ -114,6 +114,8 @@ jobs:
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
       BUILD_BINARY_OS: ${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}
       BUILD_BINARY_ARCH: ${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }}
+      # 优先级: input > vars.BUILD_DOCKER_BASE_IMAGE > 硬编码默认值
+      BASE_IMAGE: ${{ inputs.base-image || vars.BUILD_DOCKER_BASE_IMAGE || 'alpine:3.19.1' }}
 
     permissions:
       contents: read
@@ -137,7 +139,7 @@ jobs:
           BINARY_SOURCE_DIR="${{ inputs.binary-source-dir }}"
           BUILD_APP_NAME="${{ inputs.binary-name }}"
           DOCKER_RUN_WORKDIR="${{ env.DOCKER_RUN_WORKDIR }}"
-          BASE_IMAGE="${{ inputs.base-image }}"
+          BASE_IMAGE="${{ env.BASE_IMAGE }}"
           TIMEZONE="${{ inputs.timezone }}"
           # 优先级: inputs > vars.BUILD_DOCKER_OS/ARCH > 硬编码默认值
           BUILD_OS="${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}"
