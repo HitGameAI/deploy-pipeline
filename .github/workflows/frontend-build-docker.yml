@@ -249,7 +249,7 @@ jobs:
       - name: 🔨 Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ${{ inputs.build-output-dir }}
           file: ${{ inputs.build-output-dir }}/Dockerfile
           push: true
           # 关键：用 ${os}/${arch} 标记镜像 manifest 平台，K8s 调度到对应架构节点时才能正确拉取
