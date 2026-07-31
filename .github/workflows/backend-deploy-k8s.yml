@@ -627,7 +627,7 @@ jobs:
 
       - name: ⏳ Wait for Deployment
         run: |
-          MAX_WAIT="${{ vars.K8S_HEALTH_MAX_WAIT || '120' }}"
+          MAX_WAIT="${{ vars.K8S_HEALTH_MAX_WAIT || '300' }}"
           ELAPSED=0
           INTERVAL=10
 
