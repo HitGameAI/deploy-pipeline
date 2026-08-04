@@ -632,6 +632,7 @@ build-binary:
 | `image-base` | string | 是 | - | 基础镜像名（不带 tag） |
 | `image-name` | string | 是 | - | 完整镜像名（带 tag） |
 | `arch` | string | 否 | `amd64` | 目标架构（`amd64` 或 `arm64`），需与 build-binary 一致；build-push-action 用 `linux/${arch}` 标记 manifest，K8s 才能调度到对应架构节点 |
+| `extra-copy-dirs` | string | 否 | `''` | 额外拷贝到 Docker 镜像的目录（逗号分隔，支持 `src:dest` 格式，如 `proto` 或 `proto:./proto,locales:./locales`） |
 
 **所需 Secrets：**
 

@@ -89,6 +89,11 @@ on:
         required: false
         type: string
         default: 'ubuntu-latest'
+      extra-copy-dirs:
+        description: '额外拷贝到 Docker context 的目录（逗号分隔，支持 src:dest 格式，如 "proto" 或 "proto:./proto,locales:./locales"）'
+        required: false
+        type: string
+        default: ''
     secrets:
       DOCKER_USERNAME:
         description: 'Docker registry username'
@@ -184,6 +189,37 @@ jobs:
             COPY_LOCALES="COPY ./locales ./locales"
           fi
 
+          # 额外目录拷贝：将指定目录复制到 Docker context（支持 src:dest 格式）
+          EXTRA_COPY=""
+          EXTRA_DIRS_INPUT="${{ inputs.extra-copy-dirs }}"
+          if [ -n "${EXTRA_DIRS_INPUT}" ]; then
+            IFS=',' read -ra EXTRA_DIR_ARRAY <<< "${EXTRA_DIRS_INPUT}"
+            for dir_entry in "${EXTRA_DIR_ARRAY[@]}"; do
+              dir_entry=$(echo "$dir_entry" | xargs)
+              if [ -z "$dir_entry" ]; then continue; fi
+              # 支持 "src" 或 "src:dest" 格式
+              if [[ "$dir_entry" == *":"* ]]; then
+                src="${dir_entry%%:*}"
+                dest="${dir_entry#*:}"
+              else
+                src="$dir_entry"
+                dest="$dir_entry"
+              fi
+              src=$(echo "$src" | xargs)
+              dest=$(echo "$dest" | xargs)
+              if [ -d "./${src}" ]; then
+                dest_parent=$(dirname "${dest}")
+                [ "$dest_parent" != "." ] && mkdir -p "${BINARY_SOURCE_DIR}/${dest_parent}"
+                rm -rf "${BINARY_SOURCE_DIR:?}/${dest}"
+                cp -r "./${src}" "${BINARY_SOURCE_DIR}/${dest}"
+                EXTRA_COPY="${EXTRA_COPY}$(printf '\nCOPY ./%s ./%s' "${dest}" "${dest}")"
+                echo "📋 已复制额外目录: ${src} -> ${dest}"
+              else
+                echo "⚠️ 额外目录不存在: ${src}，跳过"
+              fi
+            done
+          fi
+
           # 生成单架构 Dockerfile
           # build-push-action 通过 platforms=linux/${BUILD_ARCH} 把镜像 manifest 标记为对应架构
           cat << EOF > ${BINARY_SOURCE_DIR}/Dockerfile
@@ -193,6 +229,7 @@ jobs:
           WORKDIR ${DOCKER_RUN_WORKDIR}
           COPY ./${BUILD_APP_NAME} ./${BUILD_APP_NAME}
           ${COPY_LOCALES}
+          ${EXTRA_COPY}
           RUN chmod +x ./${BUILD_APP_NAME}
           RUN rm -rf ./resources && mkdir -p ./resources
           ${HTTP_EXPOSE}
