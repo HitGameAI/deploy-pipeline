@@ -120,6 +120,16 @@ on:
         required: false
         type: string
         default: ''
+      startup-period-seconds:
+        description: 'Startup probe period seconds (overrides vars.K8S_STARTUP_PERIOD_SECONDS)'
+        required: false
+        type: string
+        default: ''
+      startup-failure-threshold:
+        description: 'Startup probe failure threshold, max startup wait = threshold × period (overrides vars.K8S_STARTUP_FAILURE_THRESHOLD)'
+        required: false
+        type: string
+        default: ''
       cpu-request:
         description: 'CPU request (overrides vars.K8S_CPU_REQUEST)'
         required: false
@@ -267,6 +277,8 @@ jobs:
       READINESS_PERIOD: ${{ inputs.readiness-period-seconds || vars.K8S_READINESS_PERIOD_SECONDS || '10' }}
       LIVENESS_DELAY: ${{ inputs.liveness-delay-seconds || vars.K8S_LIVENESS_DELAY_SECONDS || '15' }}
       LIVENESS_PERIOD: ${{ inputs.liveness-period-seconds || vars.K8S_LIVENESS_PERIOD_SECONDS || '20' }}
+      STARTUP_PERIOD: ${{ inputs.startup-period-seconds || vars.K8S_STARTUP_PERIOD_SECONDS || '10' }}
+      STARTUP_FAILURE_THRESHOLD: ${{ inputs.startup-failure-threshold || vars.K8S_STARTUP_FAILURE_THRESHOLD || '30' }}
       CPU_REQUEST: ${{ inputs.cpu-request || vars.K8S_CPU_REQUEST || '100m' }}
       MEMORY_REQUEST: ${{ inputs.memory-request || vars.K8S_MEMORY_REQUEST || '128Mi' }}
       CPU_LIMIT: ${{ inputs.cpu-limit || vars.K8S_CPU_LIMIT || '300m' }}
@@ -393,12 +405,14 @@ jobs:
 
           # 探针块：无可用端口时跳过探针
           if [ -n "${PROBE_PORT_NAME}" ]; then
+            export STARTUP_PROBE_BLOCK=$(printf '        startupProbe:\n          tcpSocket:\n            port: %s\n          failureThreshold: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.STARTUP_FAILURE_THRESHOLD }}" "${{ env.STARTUP_PERIOD }}")
             export READINESS_PROBE_BLOCK=$(printf '        readinessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.READINESS_DELAY }}" "${{ env.READINESS_PERIOD }}")
             export LIVENESS_PROBE_BLOCK=$(printf '        livenessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.LIVENESS_DELAY }}" "${{ env.LIVENESS_PERIOD }}")
           else
+            export STARTUP_PROBE_BLOCK=""
             export READINESS_PROBE_BLOCK=""
             export LIVENESS_PROBE_BLOCK=""
-            echo "Warning: No ports available, skipping liveness/readiness probes"
+            echo "Warning: No ports available, skipping startup/liveness/readiness probes"
           fi
 
           # Prometheus 采集注解：配置 metrics-port 时自动注入，动态全量采集器据此识别并抓取指标
@@ -422,6 +436,8 @@ jobs:
           export READINESS_PERIOD="${{ env.READINESS_PERIOD }}"
           export LIVENESS_DELAY="${{ env.LIVENESS_DELAY }}"
           export LIVENESS_PERIOD="${{ env.LIVENESS_PERIOD }}"
+          export STARTUP_PERIOD="${{ env.STARTUP_PERIOD }}"
+          export STARTUP_FAILURE_THRESHOLD="${{ env.STARTUP_FAILURE_THRESHOLD }}"
           export CPU_REQUEST="${{ env.CPU_REQUEST }}"
           export MEMORY_REQUEST="${{ env.MEMORY_REQUEST }}"
           export CPU_LIMIT="${{ env.CPU_LIMIT }}"
@@ -471,6 +487,8 @@ jobs:
           : ${READINESS_PERIOD:=10}
           : ${LIVENESS_DELAY:=15}
           : ${LIVENESS_PERIOD:=20}
+          : ${STARTUP_PERIOD:=10}
+          : ${STARTUP_FAILURE_THRESHOLD:=30}
           : ${CPU_REQUEST:=300m}
           : ${MEMORY_REQUEST:=250Mi}
           : ${CPU_LIMIT:=600m}
