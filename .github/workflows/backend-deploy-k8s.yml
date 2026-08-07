@@ -619,7 +619,8 @@ jobs:
 
           if [ -f "${DEPLOY_DIR}/service.yaml" ]; then
             echo "Applying Service..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ env.NAMESPACE }}
+            # --force-conflicts: 强制接管 .spec.ports[].name/targetPort 字段（历史 kubectl-patch 修改过的端口会产生冲突）
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ "${{ env.ENABLE_HPA }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
