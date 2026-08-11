@@ -53,7 +53,16 @@ runs:
             fi
           fi
 
-          printf '%s%s' "$(printf '%s' "$repository" | tr '[:upper:]' '[:lower:]')" "$suffix"
+          # repository 转小写；tag 中的 / 替换为 -（Docker tag 不允许 /，分支名如 feature/turnover 需清洗）
+          local normalized_repository
+          normalized_repository=$(printf '%s' "$repository" | tr '[:upper:]' '[:lower:]')
+          local normalized_suffix
+          if [[ "$suffix" == :* ]]; then
+            normalized_suffix=":$(printf '%s' "${suffix:1}" | sed 's/\//-/g')"
+          else
+            normalized_suffix="$suffix"
+          fi
+          printf '%s%s' "$normalized_repository" "$normalized_suffix"
         }
 
         NORMALIZED_BASE=""
