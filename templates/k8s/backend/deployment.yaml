@@ -30,6 +30,7 @@ ${ANNOTATIONS_BLOCK}
         env:
         - name: APP_ENV
           value: "${RUN_MODE}"
+${EXTRA_ENV_BLOCK}
         - name: POD_NAME
           valueFrom:
             fieldRef:

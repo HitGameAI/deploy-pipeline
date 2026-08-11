@@ -235,6 +235,11 @@ on:
         required: false
         type: string
         default: 'none'
+      extra-env-block:
+        description: 'Extra environment variables block (YAML snippet, auto-indented and injected into container env section)'
+        required: false
+        type: string
+        default: ''
 
     secrets:
       KUBECONFIG:
@@ -298,6 +303,7 @@ jobs:
       INGRESS_CERT_RESOLVER: ${{ inputs.ingress-cert-resolver || vars.INGRESS_CERT_RESOLVER || 'letsencrypt' }}
       INGRESS_TLS_ENTRY_POINT: ${{ inputs.ingress-tls-entry-point || vars.INGRESS_TLS_ENTRY_POINT || 'websecure' }}
       INGRESS_REDIRECT_HTTP_TO_HTTPS: ${{ inputs.ingress-redirect-http-to-https || vars.INGRESS_REDIRECT_HTTP_TO_HTTPS || 'true' }}
+      EXTRA_ENV_BLOCK_INPUT: ${{ inputs.extra-env-block }}
 
     steps:
       - name: Normalize Docker Image Name
@@ -462,6 +468,12 @@ jobs:
           export RUN_MODE="${{ inputs.environment }}"
           export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
           export CONFIG_MOUNT_PATH="${{ env.DOCKER_RUN_WORKDIR }}/resources"
+          # Extra env block: 自动缩进 8 空格对齐 env 条目，留空则不注入
+          if [ -n "$EXTRA_ENV_BLOCK_INPUT" ]; then
+            export EXTRA_ENV_BLOCK=$(printf '%s\n' "$EXTRA_ENV_BLOCK_INPUT" | sed 's/^/        /')
+          else
+            export EXTRA_ENV_BLOCK=""
+          fi
 
           if [ -n "${{ inputs.config-yaml }}" ] && [ -f "${{ inputs.config-yaml }}" ]; then
             CONFIG_BASENAME=$(basename "${{ inputs.config-yaml }}")
