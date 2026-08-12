@@ -123,6 +123,8 @@ jobs:
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: 🖥️ Print Runner Info
         uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
@@ -133,6 +135,7 @@ jobs:
           repository: kamalyes/deploy-pipeline
           ref: master
           path: _deploy-workflows
+          fetch-depth: 1
 
       - name: 🗄️ Cache UPX
         if: env.UPX_COMPRESS == 'true'
@@ -191,8 +194,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: false
+          # 内置模块缓存：以 go.sum 为 key，自动管理 cache 生命周期，无需手动配置
           cache: true
-          cache-dependency-path: go.sum
 
       - name: 📦 Download Dependencies
         run: |

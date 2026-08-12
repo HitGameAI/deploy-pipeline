@@ -1,13 +1,3 @@
-#!/bin/bash
-###
- # @Author: kamalyes 501893067@qq.com
- # @Date: 2025-11-29 10:56:54
- # @LastEditors: kamalyes 501893067@qq.com
- # @LastEditTime: 2026-01-13 20:15:08
- # @FilePath: \demo-core-service\scripts\build-linux.sh
- # @Description: Build script for Linux and macOS platforms with version info
- # 
- # Copyright (c) 2025 by kamalyes, All Rights Reserved. 
 ### 
 
 set -e
@@ -163,6 +153,7 @@ LDFLAGS="-s -w -extldflags '-static' -X main.version=${VERSION} -X main.buildTim
 # 构建选项
 BUILD_TAGS="netgo"  # 使用纯 Go 网络实现，避免 cgo 依赖
 TRIM_PATH="-trimpath"  # 移除文件路径信息
+BUILDVCS="-buildvcs=false"  # CI 环境无需 VCS 信息，跳过探测提速
 
 # 构建函数
 build_target() {
@@ -184,7 +175,7 @@ build_target() {
     
     BUILD_TARGET="${BUILD_DIR:-.}"
     if GOOS=${os} GOARCH=${arch} CGO_ENABLED=0 go build \
-        ${TRIM_PATH} \
+        ${TRIM_PATH} ${BUILDVCS} \
         -tags "${BUILD_TAGS}" \
         -ldflags "${LDFLAGS}" \
         -o ${output} ${BUILD_TARGET}; then

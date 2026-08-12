@@ -102,6 +102,8 @@ jobs:
       # ============================================
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: 🖥️ Print Runner Info
         uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
@@ -115,6 +117,7 @@ jobs:
           repository: kamalyes/deploy-pipeline
           ref: master
           path: _deploy-workflows
+          fetch-depth: 1
 
       # ============================================
       # 步骤3：安装 pnpm（如果使用 pnpm，需在 setup-node 之前安装以启用缓存）
