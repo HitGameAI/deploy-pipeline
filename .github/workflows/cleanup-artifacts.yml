@@ -1,10 +1,10 @@
 name: 🧹 Cleanup
 
 # ============================================
-# 清理工作流（合并 Artifacts + GHCR Images 清理）
+# 清理工作流（合并 Artifacts + Cache + GHCR Images 清理）
 # 用途：释放 GitHub Actions 存储配额和 GHCR 镜像存储
 # 触发方式：workflow_call（被其他工作流调用）或 workflow_dispatch（手动触发）
-# 默认只清理 Artifacts；开启 cleanup-images 时同时清理旧镜像
+# 默认只清理 Artifacts；开启 cleanup-cache 时清理 Actions Cache；开启 cleanup-images 时清理旧镜像
 # 镜像清理支持指定镜像名或留空自动扫描全部
 # ============================================
 
@@ -24,6 +24,19 @@ on:
         required: false
         type: string
         default: '7'
+      # ============================================
+      # Cache 清理配置
+      # ============================================
+      cleanup-cache:
+        description: '是否清理 Actions cache（Go Build/Modules/Docker GHA 等）'
+        required: false
+        type: boolean
+        default: false
+      cache-prefix:
+        description: '仅清理匹配前缀的 cache（逗号分隔多个，留空清理全部）'
+        required: false
+        type: string
+        default: ''
       # ============================================
       # GHCR 镜像清理配置
       # ============================================
@@ -59,6 +72,16 @@ on:
         required: false
         type: string
         default: '7'
+      cleanup-cache:
+        description: '是否清理 Actions cache（Go Build/Modules/Docker GHA 等）'
+        required: false
+        type: boolean
+        default: false
+      cache-prefix:
+        description: '仅清理匹配前缀的 cache（逗号分隔多个，留空清理全部）'
+        required: false
+        type: string
+        default: ''
       cleanup-images:
         description: '是否清理 GHCR 镜像'
         required: false
@@ -167,6 +190,86 @@ jobs:
           echo "  - Successfully deleted: $DELETED"
           echo "  - Failed to delete: $FAILED"
           echo "  - Total space freed: $TOTAL_SIZE_STR"
+          echo "========================================"
+
+  cleanup-cache:
+    if: ${{ inputs.cleanup-cache }}
+    name: 🗄️ Cleanup Actions Cache
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: 🗄️ Delete Actions Caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          CACHE_PREFIX: ${{ inputs.cache-prefix }}
+        run: |
+          set -uo pipefail
+
+          echo "🧹 Cleaning up Actions caches for $REPO"
+
+          DELETED=0
+          FAILED=0
+          PAGE=1
+
+          while true; do
+            RESPONSE=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/$REPO/actions/caches?per_page=100&page=$PAGE" 2>/dev/null)
+
+            CACHE_COUNT=$(echo "$RESPONSE" | jq -r '.actions_caches | length')
+            if [ "$CACHE_COUNT" == "0" ] || [ -z "$CACHE_COUNT" ]; then
+              echo "✅ No more caches to process"
+              break
+            fi
+
+            echo "Found $CACHE_COUNT cache(s) on page $PAGE"
+
+            # If cache-prefix is specified, filter by matching any prefix (comma-separated)
+            if [ -n "$CACHE_PREFIX" ]; then
+              FILTER=$(echo "$CACHE_PREFIX" | jq -R 'split(",") | map(. + "*") | join(",")' -r)
+              ENTRIES=$(echo "$RESPONSE" | jq -r --arg filter "$FILTER" \
+                '.actions_caches[] | select(.key as $k | ($filter | split(",") | any($k | startswith(. | rtrimstr("*"))))) | "\(.id)|\(.key)|\(.size_in_bytes)|\(.created_at)"')
+            else
+              ENTRIES=$(echo "$RESPONSE" | jq -r \
+                '.actions_caches[] | "\(.id)|\(.key)|\(.size_in_bytes)|\(.created_at)"')
+            fi
+
+            if [ -z "$ENTRIES" ]; then
+              echo "  (no caches match deletion criteria on this page)"
+              [ "$CACHE_COUNT" -lt 100 ] && break
+              PAGE=$((PAGE + 1))
+              continue
+            fi
+
+            while IFS='|' read -r ID KEY SIZE CREATED; do
+              if [ "${SIZE:-0}" -ge 1048576 ] 2>/dev/null; then
+                SIZE_STR=$(awk "BEGIN {printf \"%.2f MB\", ${SIZE:-0}/1048576}")
+              elif [ "${SIZE:-0}" -ge 1024 ] 2>/dev/null; then
+                SIZE_STR=$(awk "BEGIN {printf \"%.2f KB\", ${SIZE:-0}/1024}")
+              else
+                SIZE_STR="${SIZE:-0} B"
+              fi
+              if gh api --method DELETE "/repos/$REPO/actions/caches/$ID" 2>/dev/null; then
+                echo "  ✓ Deleted: $KEY ($SIZE_STR, created: $CREATED)"
+                DELETED=$((DELETED + 1))
+              else
+                echo "  ✗ Failed: $KEY ($SIZE_STR, created: $CREATED)"
+                FAILED=$((FAILED + 1))
+              fi
+            done <<< "$ENTRIES"
+
+            [ "$CACHE_COUNT" -lt 100 ] && break
+            PAGE=$((PAGE + 1))
+          done
+
+          echo ""
+          echo "========================================"
+          echo "🧹 Cache cleanup summary for $REPO"
+          echo "  - Successfully deleted: $DELETED"
+          echo "  - Failed to delete: $FAILED"
           echo "========================================"
 
   cleanup-images:
