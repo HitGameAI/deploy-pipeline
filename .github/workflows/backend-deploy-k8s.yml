@@ -273,6 +273,7 @@ jobs:
       RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
       WS_PORT: ${{ inputs.ws-port || vars.WS_PORT || '' }}
       PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
+      NODE_GRPC_PORT: ${{ inputs.node-grpc-port || vars.NODE_GRPC_PORT || '' }}
       PROBE_PORT_NAME: ${{ inputs.probe-port || vars.PROBE_PORT_NAME || '' }}
       METRICS_PORT: ${{ inputs.metrics-port || vars.METRICS_PORT || '' }}
       METRICS_PATH: ${{ inputs.metrics-path || vars.METRICS_PATH || '/metrics' }}
@@ -344,7 +345,7 @@ jobs:
           echo "Generating Kubernetes manifests for: ${{ inputs.binary-name }}"
           echo "  Namespace: ${{ env.NAMESPACE }}"
           echo "  Image: ${{ steps.image-name.outputs.image-name }}"
-          echo "  HTTP: ${{ env.HTTP_PORT }}, RPC: ${{ env.RPC_PORT }}, WS: ${{ env.WS_PORT }}, PProf: ${{ env.PPROF_PORT }}, Metrics: ${{ env.METRICS_PORT }}"
+          echo "  HTTP: ${{ env.HTTP_PORT }}, RPC: ${{ env.RPC_PORT }}, WS: ${{ env.WS_PORT }}, PProf: ${{ env.PPROF_PORT }}, Node gRPC: ${{ env.NODE_GRPC_PORT }}, Metrics: ${{ env.METRICS_PORT }}"
 
           DEPLOY_DIR="${{ inputs.binary-source-dir }}"
           mkdir -p "${DEPLOY_DIR}"
@@ -391,6 +392,15 @@ jobs:
           else
             export DEPLOY_PPROF_PORT_BLOCK=""
             export SVC_PPROF_PORT_BLOCK=""
+          fi
+
+          # Node gRPC 端口可选：notify 服务多节点部署时启用节点间 gRPC 通信（其他服务默认跳过）
+          if [ -n "${{ env.NODE_GRPC_PORT }}" ] && [ "${{ env.NODE_GRPC_PORT }}" != "0" ] && [ "${{ env.NODE_GRPC_PORT }}" != "none" ]; then
+            export DEPLOY_NODE_GRPC_PORT_BLOCK=$(printf '        - name: node-grpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.NODE_GRPC_PORT }}")
+            export SVC_NODE_GRPC_PORT_BLOCK=$(printf '    - name: node-grpc\n      port: %s\n      protocol: TCP\n      targetPort: node-grpc\n' "${{ env.NODE_GRPC_PORT }}")
+          else
+            export DEPLOY_NODE_GRPC_PORT_BLOCK=""
+            export SVC_NODE_GRPC_PORT_BLOCK=""
           fi
 
           # 探针端口自动检测：优先使用显式配置，否则按 http > ws > rpc > pprof 顺序取首个可用端口
