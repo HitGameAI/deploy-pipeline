@@ -616,44 +616,43 @@ jobs:
         run: |
           DEPLOY_DIR="${{ inputs.binary-source-dir }}"
 
-          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply --server-side --validate=false -f -
+          # 所有 apply 统一带 --force-conflicts：解决 kubectl-edit/kubectl-patch 历史修改、HPA scale subresource 等
+          # 其他 field manager 占用 .spec 字段（.spec.replicas / .spec.ports / .spec.routes / .spec.maxReplicas 等）导致的冲突
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts --validate=false -f -
 
           if [ -f "${DEPLOY_DIR}/configmap.yaml" ]; then
             echo "Applying ConfigMap..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ env.NAMESPACE }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/deployment.yaml" ]; then
             echo "Applying Deployment..."
-            # --force-conflicts: 强制接管 .spec.replicas 字段（HPA 启用时由 scale subresource 管理，会产生冲突）
             kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/deployment.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/service.yaml" ]; then
             echo "Applying Service..."
-            # --force-conflicts: 强制接管 .spec.ports[].name/targetPort 字段（历史 kubectl-patch 修改过的端口会产生冲突）
             kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ "${{ env.ENABLE_HPA }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
             echo "Applying HPA..."
-            # --force-conflicts: 强制接管被 kubectl-patch 等其他 manager 修改过的字段（如 maxReplicas）
             kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/middleware-redirect.yaml" ]; then
             echo "Applying Redirect Middleware..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/middleware-redirect.yaml -n ${{ env.NAMESPACE }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/middleware-redirect.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/ingress-http.yaml" ]; then
             echo "Applying HTTP Ingress..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress-http.yaml -n ${{ env.NAMESPACE }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/ingress-http.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/ingress.yaml" ]; then
             echo "Applying Ingress..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ env.NAMESPACE }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ env.NAMESPACE }}
           fi
 
       - name: ⏳ Wait for Deployment

@@ -423,39 +423,38 @@ jobs:
         run: |
           DEPLOY_DIR="deployments"
 
-          kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply --server-side --validate=false -f -
+          # 所有 apply 统一带 --force-conflicts：解决 kubectl-edit/kubectl-patch 历史修改、HPA scale subresource 等
+          # 其他 field manager 占用 .spec 字段（.spec.replicas / .spec.ports / .spec.routes / .spec.maxReplicas 等）导致的冲突
+          kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts --validate=false -f -
 
           if [ -f "${DEPLOY_DIR}/configmap.yaml" ]; then
             echo "正在应用 ConfigMap..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ inputs.namespace }}
           fi
 
           if [ -f "${DEPLOY_DIR}/deployment.yaml" ]; then
             echo "正在应用 Deployment..."
-            # --force-conflicts: 强制接管 .spec.replicas 字段（HPA 启用时由 scale subresource 管理，会产生冲突）
             kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/deployment.yaml -n ${{ inputs.namespace }}
           fi
 
           if [ -f "${DEPLOY_DIR}/service.yaml" ]; then
             echo "正在应用 Service..."
-            # --force-conflicts: 强制接管 .spec.ports[].name/targetPort 字段（历史 kubectl-patch 修改过的端口会产生冲突）
             kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ inputs.namespace }}
           fi
 
           if [ "${{ inputs.enable-hpa }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
             echo "正在应用 HPA..."
-            # --force-conflicts: 强制接管被 kubectl-patch 等其他 manager 修改过的字段（如 maxReplicas）
             kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ inputs.namespace }}
           fi
 
           if [ -f "${DEPLOY_DIR}/ingress.yaml" ]; then
             echo "正在应用 IngressRoute..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ inputs.namespace }}
           fi
 
           if [ -f "${DEPLOY_DIR}/middleware.yaml" ]; then
             echo "正在应用 Middleware..."
-            kubectl apply --server-side --validate=false -f ${DEPLOY_DIR}/middleware.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/middleware.yaml -n ${{ inputs.namespace }}
           fi
 
       # ============================================
