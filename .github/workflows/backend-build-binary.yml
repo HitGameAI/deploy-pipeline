@@ -93,6 +93,11 @@ on:
         required: false
         type: string
         default: ''
+      build-tags:
+        description: '额外 Go 构建标签，附加在默认 netgo 之后（如 swagger 用于嵌入 swagger 文档，仅需要的服务启用）'
+        required: false
+        type: string
+        default: ''
     secrets:
       APP_ID:
         description: 'GitHub App ID (for app-token auth)'
@@ -224,7 +229,8 @@ jobs:
             --arch "${{ env.BUILD_BINARY_ARCH }}" \
             --upx-compress "${{ env.UPX_COMPRESS }}" \
             --upx-level "${{ env.UPX_LEVEL }}" \
-            --build-dir "${{ inputs.binary-build-dir }}"
+            --build-dir "${{ inputs.binary-build-dir }}" \
+            --build-tags "${{ inputs.build-tags }}"
 
           echo "Build completed: ${{ inputs.binary-name }} (${{ env.BUILD_BINARY_OS }}/${{ env.BUILD_BINARY_ARCH }})"
           ls -lh "${{ inputs.binary-source-dir }}"

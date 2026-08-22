@@ -14,6 +14,8 @@ BATCH_MODE="${BATCH_MODE:-false}"
 UPX_COMPRESS="${UPX_COMPRESS:-false}"
 UPX_LEVEL="${UPX_LEVEL:---best --lzma}"
 BUILD_DIR="${BUILD_DIR:-}"
+# 额外构建标签，附加在默认 netgo 之后（如 swagger 用于嵌入 swagger 文档）
+EXTRA_BUILD_TAGS="${EXTRA_BUILD_TAGS:-}"
 
 # 参数解析
 while [[ $# -gt 0 ]]; do
@@ -62,9 +64,13 @@ while [[ $# -gt 0 ]]; do
             BUILD_DIR="$2"
             shift 2
             ;;
+        --build-tags)
+            EXTRA_BUILD_TAGS="$2"
+            shift 2
+            ;;
         *)
             echo "未知参数: $1"
-            echo "用法: $0 [--version VERSION] [--build-time TIME] [--git-commit COMMIT] [--output-dir DIR] [--binary-name NAME] [--os OS] [--arch ARCH] [--batch] [--upx-compress true|false] [--upx-level LEVEL] [--build-dir DIR]"
+            echo "用法: $0 [--version VERSION] [--build-time TIME] [--git-commit COMMIT] [--output-dir DIR] [--binary-name NAME] [--os OS] [--arch ARCH] [--batch] [--build-tags TAGS] [--upx-compress true|false] [--upx-level LEVEL] [--build-dir DIR]"
             exit 1
             ;;
     esac
@@ -152,6 +158,10 @@ LDFLAGS="-s -w -extldflags '-static' -X main.version=${VERSION} -X main.buildTim
 
 # 构建选项
 BUILD_TAGS="netgo"  # 使用纯 Go 网络实现，避免 cgo 依赖
+# 附加额外构建标签（如 swagger，仅 access-control 等需要嵌入 swagger 文档的服务启用）
+if [[ -n "${EXTRA_BUILD_TAGS}" ]]; then
+    BUILD_TAGS="${BUILD_TAGS} ${EXTRA_BUILD_TAGS}"
+fi
 TRIM_PATH="-trimpath"  # 移除文件路径信息
 BUILDVCS="-buildvcs=false"  # CI 环境无需 VCS 信息，跳过探测提速
 
