@@ -96,7 +96,7 @@ GitHub Actions 支持**环境级别**和**仓库级别**两种配置方式，优
 | Variable | 说明 | 默认值 | 必填 |
 |----------|------|--------|------|
 | `GO_VERSION` | 默认 Go 版本 | `1.25.1` | ❌ |
-| `GOPROXY` | Go 模块代理地址 | `https://goproxy.cn,direct` | ❌ |
+| `GOPROXY` | Go 模块代理地址 | `https://goproxy.cn\|direct` | ❌ |
 | `GOPRIVATE` | Go 私有模块路径 | `''` | ❌ |
 | `GO_AUTH_METHOD` | Go 私有模块认证方式 | `none` | ❌ |
 | `NODE_VERSION` | 默认 Node.js 版本 | `20` | ❌ |
@@ -450,7 +450,7 @@ jobs:
 |------|------|------|--------|------|
 | `go-version` | string | 否 | `1.25.1` | Go 版本 |
 | `gotestsum-version` | string | 否 | `v1.13.0` | gotestsum 版本 |
-| `goproxy` | string | 否 | `https://goproxy.cn,direct` | Go 模块代理 |
+| `goproxy` | string | 否 | `https://goproxy.cn\|direct` | Go 模块代理 |
 | `goprivate` | string | 否 | `''` | 私有模块路径 |
 | `go-auth-method` | string | 否 | `none` | 私有模块认证方式（同 Build Binary） |
 | `retention-days` | string | 否 | `7` | 构建产物保留天数 |
@@ -538,7 +538,7 @@ cleanup:
 | `version` | string | 是 | - | 版本号 |
 | `build-time` | string | 是 | - | 构建时间 |
 | `git-commit` | string | 是 | - | Git commit hash |
-| `goproxy` | string | 否 | `https://goproxy.cn,direct` | Go 模块代理 |
+| `goproxy` | string | 否 | `https://goproxy.cn\|direct` | Go 模块代理 |
 | `goprivate` | string | 否 | `''` | 私有模块路径（如 `github.com/your-org/*`） |
 | `go-auth-method` | string | 否 | `none` | 私有模块认证方式，详见下方说明 |
 | `os` | string | 否 | `linux` | 目标操作系统 |

@@ -50,7 +50,7 @@ jobs:
       # 优先级: input > vars > 硬编码默认值
       GO_VERSION: ${{ inputs.go-version || vars.GO_VERSION || '1.25.1' }}
       GOTESTSUM_VERSION: ${{ inputs.gotestsum-version || vars.GOTESTSUM_VERSION || 'v1.13.0' }}
-      GOPROXY: ${{ inputs.goproxy || vars.GOPROXY || 'https://goproxy.cn,direct' }}
+      GOPROXY: ${{ inputs.goproxy || vars.GOPROXY || 'https://goproxy.cn|direct' }}
       GOPRIVATE: ${{ inputs.goprivate || vars.GOPRIVATE || '' }}
       GO_AUTH_METHOD: ${{ inputs.go-auth-method || vars.GO_AUTH_METHOD || 'none' }}
     steps:
