@@ -30,9 +30,7 @@ ${ANNOTATIONS_BLOCK}
         env:
         - name: APP_ENV
           value: "${RUN_MODE}"
-${GOMEMLIMIT_ENV_BLOCK}
-${EXTRA_ENV_BLOCK}
-        - name: POD_NAME
+${GOMEMLIMIT_ENV_BLOCK}${EXTRA_ENV_BLOCK}        - name: POD_NAME
           valueFrom:
             fieldRef:
               fieldPath: metadata.name

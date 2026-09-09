@@ -563,7 +563,7 @@ jobs:
             esac
             goml_mib=$((mem_mib * 10#$goml_pct / 100))
             if [ "$mem_mib" -ge 10 ] && [ "$goml_mib" -ge 1 ]; then
-              export GOMEMLIMIT_ENV_BLOCK=$(printf '        - name: GOMEMLIMIT\n          value: "%dMiB"' "$goml_mib")
+              export GOMEMLIMIT_ENV_BLOCK="$(printf '        - name: GOMEMLIMIT\n          value: "%dMiB"' "$goml_mib")"$'\n'
               echo "GOMEMLIMIT injected: ${goml_mib}MiB (${goml_pct}% of ${MEMORY_LIMIT})"
             else
               echo "Warning: GOMEMLIMIT_PERCENT=${goml_pct} but MEMORY_LIMIT '${MEMORY_LIMIT}' unparsable or too small (need <n>Ki/Mi/Gi/Ti, >=10Mi), skip"
