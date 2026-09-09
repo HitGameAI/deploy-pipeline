@@ -195,6 +195,11 @@ on:
         required: false
         type: string
         default: ''
+      gomemlimit-percent:
+        description: 'GOMEMLIMIT as percentage of memory limit, e.g. 90 (overrides vars.K8S_GOMEMLIMIT_PERCENT; empty = disabled)'
+        required: false
+        type: string
+        default: ''
       ingress-path-prefix:
         description: 'Ingress path (optional, e.g. /api, used with Host)'
         required: false
@@ -298,6 +303,7 @@ jobs:
       SCALE_DOWN_PERCENT: ${{ inputs.scale-down-percent || vars.K8S_SCALE_DOWN_PERCENT || '50' }}
       SCALE_DOWN_STABILIZATION_SECONDS: ${{ inputs.scale-down-stabilization-seconds || vars.K8S_SCALE_DOWN_STABILIZATION_SECONDS || '300' }}
       ENABLE_HPA: ${{ inputs.enable-hpa || vars.K8S_ENABLE_HPA || 'true' }}
+      GOMEMLIMIT_PERCENT: ${{ inputs.gomemlimit-percent || vars.K8S_GOMEMLIMIT_PERCENT || '' }}
       INGRESS_ENTRY_POINT: ${{ inputs.ingress-entry-point || vars.INGRESS_ENTRY_POINT || 'web' }}
       INGRESS_HOST: ${{ inputs.ingress-host || vars.INGRESS_HOST || '' }}
       INGRESS_TLS: ${{ inputs.ingress-tls || vars.INGRESS_TLS || 'false' }}
@@ -522,6 +528,48 @@ jobs:
           : ${RUN_MODE:=dev}
           : ${CONFIGMAP_NAME:=${APP_NAME}-config}
           : ${CONFIG_MOUNT_PATH:=/usr/local/services/resources}
+
+          # GOMEMLIMIT 注入：按 GOMEMLIMIT_PERCENT（1~100 整数）比例从 MEMORY_LIMIT 计算（如 90 → limit 的 90%）
+          # 未配置 → 不注入；配置非法（非整数 / 越界）→ 告警不注入；extra-env-block 显式配置 GOMEMLIMIT → 跳过（用户值优先生效）
+          # MEMORY_LIMIT 仅识别 <整数>Ki/Mi/Gi/Ti；换算后 <1MiB 不注入（GOMEMLIMIT 过小会使 GC 持续满负荷）
+          # 算术统一 10# 前缀强制十进制，防 "090" 这类前导零被按八进制解析报错
+          goml_pct="$GOMEMLIMIT_PERCENT"
+          goml_valid=0
+          case "$goml_pct" in
+            '') ;; # 未配置 → 静默跳过
+            *[!0-9]*|[0-9][0-9][0-9][0-9]*)
+              echo "Warning: K8S_GOMEMLIMIT_PERCENT '${goml_pct}' invalid (need integer 1~100), GOMEMLIMIT not injected" ;;
+            *)
+              if [ "$goml_pct" -ge 1 ] && [ "$goml_pct" -le 100 ]; then
+                goml_valid=1
+              else
+                echo "Warning: K8S_GOMEMLIMIT_PERCENT '${goml_pct}' out of range (1~100), GOMEMLIMIT not injected"
+              fi ;;
+          esac
+          if [ "$goml_valid" -eq 1 ] && ! printf '%s' "$EXTRA_ENV_BLOCK_INPUT" | grep -q 'GOMEMLIMIT'; then
+            mem_unit=${MEMORY_LIMIT##*[0-9]}
+            mem_num=${MEMORY_LIMIT%"$mem_unit"}
+            mem_mib=0
+            case "$mem_num" in
+              ''|*[!0-9]*) ;;
+              *)
+                case "$mem_unit" in
+                  Ki|ki) mem_mib=$((10#$mem_num / 1024)) ;;
+                  Mi|mi) mem_mib=$((10#$mem_num)) ;;
+                  Gi|gi) mem_mib=$((10#$mem_num * 1024)) ;;
+                  Ti|ti) mem_mib=$((10#$mem_num * 1048576)) ;;
+                esac
+                ;;
+            esac
+            goml_mib=$((mem_mib * 10#$goml_pct / 100))
+            if [ "$mem_mib" -ge 10 ] && [ "$goml_mib" -ge 1 ]; then
+              export GOMEMLIMIT_ENV_BLOCK=$(printf '        - name: GOMEMLIMIT\n          value: "%dMiB"' "$goml_mib")
+              echo "GOMEMLIMIT injected: ${goml_mib}MiB (${goml_pct}% of ${MEMORY_LIMIT})"
+            else
+              echo "Warning: GOMEMLIMIT_PERCENT=${goml_pct} but MEMORY_LIMIT '${MEMORY_LIMIT}' unparsable or too small (need <n>Ki/Mi/Gi/Ti, >=10Mi), skip"
+            fi
+          fi
+          : ${GOMEMLIMIT_ENV_BLOCK:=}
 
           envsubst < _deploy-workflows/templates/k8s/backend/deployment.yaml > ${DEPLOY_DIR}/deployment.yaml
           echo "Deployment generated"
