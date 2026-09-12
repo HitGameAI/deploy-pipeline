@@ -485,8 +485,10 @@ jobs:
           export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
           export CONFIG_MOUNT_PATH="${{ env.DOCKER_RUN_WORKDIR }}/resources"
           # Extra env block: 自动缩进 8 空格对齐 env 条目，留空则不注入
+          # 尾换行必须外挂 $'\n'：$(...) 命令替换会剥掉尾部换行，
+          # 模板中本块与 POD_NAME 行同处一行，靠自带收尾换行断行（见 deployment.yaml 拼接处）
           if [ -n "$EXTRA_ENV_BLOCK_INPUT" ]; then
-            export EXTRA_ENV_BLOCK=$(printf '%s\n' "$EXTRA_ENV_BLOCK_INPUT" | sed 's/^/        /')
+            export EXTRA_ENV_BLOCK="$(printf '%s' "$EXTRA_ENV_BLOCK_INPUT" | sed 's/^/        /')"$'\n'
           else
             export EXTRA_ENV_BLOCK=""
           fi
