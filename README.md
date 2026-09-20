@@ -482,6 +482,8 @@ jobs:
 | `project-owner` | string | 否 | `''` | GitHub 组织/用户名（cleanup-images 为 true 时必填） |
 | `image-name` | string | 否 | `''` | 镜像名（逗号分隔多个，留空则自动扫描所有 container packages） |
 | `keep-count` | string | 否 | `5` | 保留镜像版本数 |
+| `tag-include-prefix` | string | 否 | `''` | 仅清理 tag 命中前缀的镜像版本（逗号分隔，如 `dev,uat,sit`）；每个前缀分组各自保留最新 `keep-count` 个；留空回退 `vars.CLEANUP_TAG_INCLUDE_PREFIX` |
+| `tag-exclude-prefix` | string | 否 | `''` | 永不清理 tag 命中前缀的镜像版本（逗号分隔，如 `prod,master`），命中的版本也不占用保留名额；留空回退 `vars.CLEANUP_TAG_EXCLUDE_PREFIX` |
 
 **调用示例：**
 
@@ -521,6 +523,34 @@ cleanup:
     project-owner: 'your-org'
     image-name: 'tenant-admin,ops-admin'
     keep-count: '5'
+```
+
+**Tag 前缀过滤说明：**
+
+- 镜像 tag 由调用方在构建时拼接（如 `${branch}-${commit}-${timestamp}`），前缀即分支/环境名（dev/uat/sit…）
+- `tag-include-prefix`（白名单）：仅清理命中前缀的版本，每个前缀各自保留最新 `keep-count` 个，避免高频环境把低频环境的保留名额挤掉；未命中任何前缀的版本（如 prod/master）不清理
+- `tag-exclude-prefix`（黑名单）：命中前缀的版本永不清理；两者可同时配置，exclude 优先保护
+- untagged（dangling）版本不受前缀过滤影响，始终清理
+- 配置优先级：`inputs > vars.CLEANUP_TAG_INCLUDE_PREFIX` / `vars.CLEANUP_TAG_EXCLUDE_PREFIX`（仓库级 GitHub Variables，调用方仓库设置后无需修改 pipeline）
+
+```yaml
+# 只清理 dev/uat/sit 前缀的旧镜像，其他前缀（prod/master 等）不动
+cleanup:
+  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  with:
+    cleanup-images: true
+    project-owner: 'your-org'
+    keep-count: '5'
+    tag-include-prefix: 'dev,uat,sit'
+
+# 反向：清理所有旧镜像，但 prod/master 前缀的版本永不清理
+cleanup:
+  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  with:
+    cleanup-images: true
+    project-owner: 'your-org'
+    keep-count: '5'
+    tag-exclude-prefix: 'prod,master'
 ```
 
 ### 后端工作流

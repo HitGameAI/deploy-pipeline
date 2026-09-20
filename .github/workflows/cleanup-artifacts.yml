@@ -6,6 +6,8 @@ name: 🧹 Cleanup
 # 触发方式：workflow_call（被其他工作流调用）或 workflow_dispatch（手动触发）
 # 默认只清理 Artifacts；开启 cleanup-cache 时清理 Actions Cache；开启 cleanup-images 时清理旧镜像
 # 镜像清理支持指定镜像名或留空自动扫描全部
+# 镜像清理支持 tag 前缀过滤：tag-include-prefix 仅清理命中前缀的版本（按前缀分组各自保留 keep-count 个），
+# tag-exclude-prefix 永不清理命中前缀的版本；配置优先级 inputs > vars.CLEANUP_TAG_*_PREFIX
 # ============================================
 
 on:
@@ -60,6 +62,16 @@ on:
         required: false
         type: string
         default: '5'
+      tag-include-prefix:
+        description: '仅清理 tag 命中前缀的镜像版本（逗号分隔，如 dev,uat,sit；按前缀分组各自保留 keep-count 个；留空回退 vars.CLEANUP_TAG_INCLUDE_PREFIX）'
+        required: false
+        type: string
+        default: ''
+      tag-exclude-prefix:
+        description: '永不清理 tag 命中前缀的镜像版本（逗号分隔，如 prod,master；留空回退 vars.CLEANUP_TAG_EXCLUDE_PREFIX）'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       cleanup-artifacts:
@@ -102,6 +114,16 @@ on:
         required: false
         type: string
         default: '5'
+      tag-include-prefix:
+        description: '仅清理 tag 命中前缀的镜像版本（逗号分隔，如 dev,uat,sit；按前缀分组各自保留 keep-count 个；留空回退 vars.CLEANUP_TAG_INCLUDE_PREFIX）'
+        required: false
+        type: string
+        default: ''
+      tag-exclude-prefix:
+        description: '永不清理 tag 命中前缀的镜像版本（逗号分隔，如 prod,master；留空回退 vars.CLEANUP_TAG_EXCLUDE_PREFIX）'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   cleanup-artifacts:
@@ -286,6 +308,8 @@ jobs:
           PROJECT_OWNER: ${{ inputs.project-owner }}
           IMAGE_NAME: ${{ inputs.image-name }}
           KEEP_COUNT: ${{ inputs.keep-count }}
+          TAG_INCLUDE_PREFIX: ${{ inputs.tag-include-prefix || vars.CLEANUP_TAG_INCLUDE_PREFIX || '' }}
+          TAG_EXCLUDE_PREFIX: ${{ inputs.tag-exclude-prefix || vars.CLEANUP_TAG_EXCLUDE_PREFIX || '' }}
         run: |
           set -uo pipefail
 
@@ -294,8 +318,27 @@ jobs:
             exit 1
           fi
 
+          echo "🧹 Tag prefix filters:"
+          echo "  - include: ${TAG_INCLUDE_PREFIX:-<not set, all prefixes cleanable>}"
+          echo "  - exclude: ${TAG_EXCLUDE_PREFIX:-<not set>}"
+
           TOTAL_DELETED=0
           TOTAL_FAILED=0
+
+          # tag_matches_prefix 判断版本 tags（逗号分隔）中是否存在以 prefixes（逗号分隔）任一前缀开头的 tag
+          tag_matches_prefix() {
+            local TAGS="$1" PREFIXES="$2"
+            local tag prefix
+            for tag in $(echo "$TAGS" | tr ',' ' '); do
+              for prefix in $(echo "$PREFIXES" | tr ',' ' '); do
+                [ -z "$prefix" ] && continue
+                if [[ "$tag" == "$prefix"* ]]; then
+                  return 0
+                fi
+              done
+            done
+            return 1
+          }
 
           cleanup_image() {
             local OWNER=$1
@@ -375,9 +418,72 @@ jobs:
               done <<< "$UNTAGGED"
             fi
 
-            # 2) 再处理 tagged 版本：按创建时间降序排序，跳过最新 N 个，删除更早的
-            local TO_DELETE
-            TO_DELETE=$(echo "$TAGGED" | sort -t'|' -k3 -r | tail -n +$((KEEP + 1)))
+            # 2) 再处理 tagged 版本：先应用 tag 前缀过滤，再按创建时间降序排序，跳过最新 N 个，删除更早的
+            #    - TAG_EXCLUDE_PREFIX 命中的版本永不清理（如 prod/master），也不占用保留名额
+            #    - TAG_INCLUDE_PREFIX 设置时仅清理命中前缀的版本（如 dev/uat/sit），
+            #      且按前缀分组各自保留最新 KEEP 个，避免高频前缀挤占低频前缀的保留名额
+            #    - untagged（dangling）版本不受前缀过滤影响，始终清理
+            local CANDIDATES="$TAGGED"
+
+            if [ -n "$TAG_EXCLUDE_PREFIX" ]; then
+              local EXCLUDE_FILTERED=""
+              while IFS='|' read -r ID TAG CREATED; do
+                [ -z "$ID" ] && continue
+                if tag_matches_prefix "$TAG" "$TAG_EXCLUDE_PREFIX"; then
+                  echo "  🛡️ Protected (exclude-prefix): $TAG"
+                  continue
+                fi
+                EXCLUDE_FILTERED="${EXCLUDE_FILTERED}${ID}|${TAG}|${CREATED}"$'\n'
+              done <<< "$CANDIDATES"
+              CANDIDATES=$(echo "$EXCLUDE_FILTERED" | sed '/^$/d')
+            fi
+
+            local TO_DELETE=""
+            if [ -n "$TAG_INCLUDE_PREFIX" ]; then
+              # include 模式：每个前缀各自分组保留最新 KEEP 个；未命中任何前缀的版本不清理
+              local KEEP_IDS=""
+              for PREFIX in $(echo "$TAG_INCLUDE_PREFIX" | tr ',' ' '); do
+                PREFIX=$(echo "$PREFIX" | xargs)
+                [ -z "$PREFIX" ] && continue
+
+                local GROUP=""
+                while IFS='|' read -r ID TAG CREATED; do
+                  [ -z "$ID" ] && continue
+                  if tag_matches_prefix "$TAG" "$PREFIX"; then
+                    GROUP="${GROUP}${ID}|${TAG}|${CREATED}"$'\n'
+                  fi
+                done <<< "$CANDIDATES"
+                GROUP=$(echo "$GROUP" | sed '/^$/d')
+                if [ -z "$GROUP" ]; then
+                  echo "  Prefix '$PREFIX': no matching versions"
+                  continue
+                fi
+
+                local GROUP_COUNT
+                GROUP_COUNT=$(echo "$GROUP" | wc -l)
+                echo "  Prefix '$PREFIX': $GROUP_COUNT version(s) in cleanup scope"
+
+                # 组内按创建时间降序，最新 KEEP 个入保留名单，其余进入待删名单
+                KEEP_IDS="${KEEP_IDS}$(echo "$GROUP" | sort -t'|' -k3 -r | head -n "$KEEP" | cut -d'|' -f1)"$'\n'
+                TO_DELETE="${TO_DELETE}$(echo "$GROUP" | sort -t'|' -k3 -r | tail -n +$((KEEP + 1)))"$'\n'
+              done
+              TO_DELETE=$(echo "$TO_DELETE" | sed '/^$/d' | sort -u)
+
+              # 同一版本命中多个前缀（多 tag）时，任一分组保留即保留
+              if [ -n "$KEEP_IDS" ] && [ -n "$TO_DELETE" ]; then
+                local FINAL_DELETE=""
+                while IFS='|' read -r ID TAG CREATED; do
+                  [ -z "$ID" ] && continue
+                  if echo "$KEEP_IDS" | grep -qxF "$ID"; then
+                    continue
+                  fi
+                  FINAL_DELETE="${FINAL_DELETE}${ID}|${TAG}|${CREATED}"$'\n'
+                done <<< "$TO_DELETE"
+                TO_DELETE=$(echo "$FINAL_DELETE" | sed '/^$/d')
+              fi
+            else
+              TO_DELETE=$(echo "$CANDIDATES" | sort -t'|' -k3 -r | tail -n +$((KEEP + 1)))
+            fi
 
             if [ -z "$TO_DELETE" ]; then
               echo "  No old tagged images to clean (keeping latest $KEEP versions)"
