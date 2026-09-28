@@ -45,12 +45,18 @@ runs:
           if [[ "$image" == *@* ]]; then
             repository="${image%@*}"
             suffix="@${image##*@}"
-          else
-            local last_part="${image##*/}"
-            if [[ "$last_part" == *:* ]]; then
-              repository="${image%:*}"
-              suffix=":${image##*:}"
+          elif [[ "$image" == */* ]]; then
+            # tag 分隔符是第一个 / 之后的首个 :（registry:5000/app:v1 的端口冒号在 / 之前，天然跳过；
+            # tag 本身可含 /（如分支名 feature/xxx），不能按最后一个 / 切分，否则 tag 会被误并入 repository）
+            local head="${image%%/*}"
+            local tail="/${image#*/}"
+            if [[ "$tail" == *:* ]]; then
+              repository="${head}${tail%%:*}"
+              suffix=":${tail#*:}"
             fi
+          elif [[ "$image" == *:* ]]; then
+            repository="${image%%:*}"
+            suffix=":${image#*:}"
           fi
 
           # repository 转小写；tag 中的 / 替换为 -（Docker tag 不允许 /，分支名如 feature/turnover 需清洗）
