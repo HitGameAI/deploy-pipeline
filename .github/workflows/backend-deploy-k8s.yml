@@ -100,6 +100,11 @@ on:
         required: false
         type: string
         default: ''
+      termination-grace-period-seconds:
+        description: 'Termination grace period seconds, must be >= service graceful shutdown max timeout (overrides vars.K8S_TERMINATION_GRACE_PERIOD_SECONDS)'
+        required: false
+        type: string
+        default: ''
       readiness-delay-seconds:
         description: 'Readiness probe initial delay seconds (overrides vars.K8S_READINESS_DELAY_SECONDS)'
         required: false
@@ -294,6 +299,7 @@ jobs:
       MEMORY_REQUEST: ${{ inputs.memory-request || vars.K8S_MEMORY_REQUEST || '128Mi' }}
       CPU_LIMIT: ${{ inputs.cpu-limit || vars.K8S_CPU_LIMIT || '300m' }}
       MEMORY_LIMIT: ${{ inputs.memory-limit || vars.K8S_MEMORY_LIMIT || '256Mi' }}
+      TERMINATION_GRACE_PERIOD_SECONDS: ${{ inputs.termination-grace-period-seconds || vars.K8S_TERMINATION_GRACE_PERIOD_SECONDS || '30' }}
       MIN_REPLICAS: ${{ inputs.min-replicas || vars.K8S_MIN_REPLICAS || '2' }}
       MAX_REPLICAS: ${{ inputs.max-replicas || vars.K8S_MAX_REPLICAS || '10' }}
       DEPLOYMENT_REPLICAS: ${{ inputs.deployment-replicas || vars.K8S_DEPLOYMENT_REPLICAS || '2' }}

@@ -23,6 +23,9 @@ spec:
         tier: backend
 ${ANNOTATIONS_BLOCK}
     spec:
+      # 终止宽限期：必须 >= 服务优雅停机最大超时（如 go-wsc shutdown-max-timeout 60s），
+      # 否则 kubelet 到点 SIGKILL，剩余长连接收到裸 RST 而非 close 1001
+      terminationGracePeriodSeconds: ${TERMINATION_GRACE_PERIOD_SECONDS}
       containers:
       - name: ${APP_NAME}
         image: ${IMAGE_NAME}
