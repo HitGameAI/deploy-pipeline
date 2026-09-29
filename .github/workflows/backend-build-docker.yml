@@ -227,7 +227,7 @@ jobs:
           cat << EOF > ${BINARY_SOURCE_DIR}/Dockerfile
           FROM ${BASE_IMAGE}
           USER root
-          STOPSIGNAL 37
+          STOPSIGNAL SIGTERM
           WORKDIR ${DOCKER_RUN_WORKDIR}
           COPY ./${BUILD_APP_NAME} ./${BUILD_APP_NAME}
           ${COPY_LOCALES}
@@ -238,7 +238,7 @@ jobs:
           ${RPC_EXPOSE}
           ${WS_EXPOSE}
           ${PPROF_EXPOSE}
-          CMD ["sh", "-c", "./${BUILD_APP_NAME}"]
+          CMD ["./${BUILD_APP_NAME}"]
           EOF
 
           echo ""
