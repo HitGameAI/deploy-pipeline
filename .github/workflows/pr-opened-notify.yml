@@ -1,0 +1,80 @@
+name: PR Opened Notify
+
+# 公共能力：PR 开启时机器人评论变更摘要并推送飞书
+# 各仓库薄入口（on: pull_request opened）通过 workflow_call 调用，
+# github 上下文自动为调用方仓库的 PR 事件，需配合 secrets: inherit 传递 FEISHU_WEBHOOK_URL
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  summarize:
+    name: Summarize & Notify
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📋 Generate Summary
+        id: summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${{ github.repository }}"
+          PR="${{ github.event.pull_request.number }}"
+
+          # commit 要点（每个 commit 首行）
+          gh api --paginate "repos/${REPO}/pulls/${PR}/commits" \
+            --jq '.[] | "- " + (.commit.message | split("\n")[0])' > "${RUNNER_TEMP}/commits.txt"
+
+          # 文件变更明细（状态/文件名/增/删）
+          gh api --paginate "repos/${REPO}/pulls/${PR}/files" \
+            --jq -r '.[] | [.status, .filename, (.additions|tostring), (.deletions|tostring)] | @tsv' > "${RUNNER_TEMP}/files.tsv"
+
+          ADDED=$(grep -c "^added" "${RUNNER_TEMP}/files.tsv" || true)
+          MODIFIED=$(grep -c "^modified" "${RUNNER_TEMP}/files.tsv" || true)
+          REMOVED=$(grep -c "^removed" "${RUNNER_TEMP}/files.tsv" || true)
+          TOTAL=$(wc -l < "${RUNNER_TEMP}/files.tsv" | tr -d ' ')
+
+          {
+            echo "stat=📦 ${TOTAL} 个文件：➕ ${ADDED} 新增 / 📝 ${MODIFIED} 修改 / ➖ ${REMOVED} 删除（+${{ github.event.pull_request.additions }}/-${{ github.event.pull_request.deletions }} 行）"
+          } >> "$GITHUB_OUTPUT"
+
+          # 组装评论与飞书正文（markdown 通用子集）
+          {
+            echo "body<<SUMMARY_BODY_EOF"
+            echo "## 📋 PR 变更摘要"
+            echo ""
+            echo "📦 ${TOTAL} 个文件：➕ ${ADDED} 新增 / 📝 ${MODIFIED} 修改 / ➖ ${REMOVED} 删除（+${{ github.event.pull_request.additions }}/-${{ github.event.pull_request.deletions }} 行）"
+            echo ""
+            echo "### Commits"
+            echo ""
+            cat "${RUNNER_TEMP}/commits.txt"
+            echo ""
+            echo "### 文件变更"
+            echo ""
+            awk -F'\t' 'NR<=20 {
+              icon="📝"; if ($1=="added") icon="➕"; else if ($1=="removed") icon="➖"
+              print icon " " $2 " （+" $3 "/-" $4 "）"
+            } NR>20 { c++ } END { if (c>0) print "…等 " c " 个文件" }' "${RUNNER_TEMP}/files.tsv"
+            echo "SUMMARY_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 💬 Comment On PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "${{ steps.summary.outputs.body }}"
+
+      - name: 📢 Notify Lark
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        if: ${{ env.FEISHU_WEBHOOK_URL != '' }}
+        uses: kamalyes/deploy-pipeline/.github/actions/notify@master
+        with:
+          provider: feishu
+          status: info
+          title: 📣 新 PR · ${{ github.event.repository.name }} · ${{ github.event.pull_request.title }}
+          message: ${{ steps.summary.outputs.stat }}
