@@ -353,6 +353,7 @@ jobs:
           path: _deploy-workflows
 
       - name: 📝 Generate K8s Manifests
+        id: manifests
         run: |
           echo "Generating Kubernetes manifests for: ${{ inputs.binary-name }}"
           echo "  Namespace: ${{ env.NAMESPACE }}"
@@ -679,6 +680,7 @@ jobs:
           done
 
       - name: 🚀 Apply Kubernetes Resources
+        id: apply
         run: |
           DEPLOY_DIR="${{ inputs.binary-source-dir }}"
 
@@ -722,6 +724,7 @@ jobs:
           fi
 
       - name: ⏳ Wait for Deployment
+        id: wait
         run: |
           MAX_WAIT="${{ vars.K8S_HEALTH_MAX_WAIT || '300' }}"
           ELAPSED=0
@@ -775,6 +778,8 @@ jobs:
             ELAPSED=$((ELAPSED + INTERVAL))
           done
 
+          echo "elapsed=${ELAPSED}" >> "$GITHUB_OUTPUT"
+
           if [ $ELAPSED -ge $MAX_WAIT ]; then
             echo "Deployment timed out ($MAX_WAIT seconds)!"
             kubectl describe deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }}
@@ -783,6 +788,7 @@ jobs:
           fi
 
       - name: ✅ Verify Deployment
+        id: verify
         run: |
           # 获取当前 Deployment 的 pod-template-hash，只验证新 Pod
           NEW_RS_HASH=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} \
@@ -809,6 +815,76 @@ jobs:
           fi
 
           echo "Deployment verified successfully!"
+
+      - name: 📊 Generate Deployment Report
+        if: ${{ always() }}
+        run: |
+          # 阶段状态图标
+          icon() { case "$1" in success) echo "✅";; skipped) echo "⏭️";; *) echo "❌";; esac; }
+
+          # 集群最终状态（前置步骤失败时可能查询不到，做兜底）
+          REPLICAS=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
+          READY=$(kubectl get deployment/${{ inputs.binary-name }} -n ${{ env.NAMESPACE }} -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+          [ -z "$READY" ] && READY=0
+          [ -z "$REPLICAS" ] && REPLICAS=0
+          if [ "$READY" = "$REPLICAS" ] && [ "$REPLICAS" != "0" ]; then
+            FINAL="✅ 全部就绪"
+          else
+            FINAL="⚠️ ${READY}/${REPLICAS} 就绪"
+          fi
+
+          # 端口汇总（仅列启用端口）
+          PORTS=""
+          for p in "HTTP:${{ env.HTTP_PORT }}" "RPC:${{ env.RPC_PORT }}" "WS:${{ env.WS_PORT }}" "PProf:${{ env.PPROF_PORT }}" "Metrics:${{ env.METRICS_PORT }}"; do
+            pname="${p%%:*}"; pport="${p#*:}"
+            if [ -n "$pport" ] && [ "$pport" != "0" ] && [ "$pport" != "none" ]; then PORTS="${PORTS}${pname} ${pport} · "; fi
+          done
+          PORTS="${PORTS%· }"
+          [ -z "$PORTS" ] && PORTS="无"
+
+          # Ingress 汇总
+          INGRESS="未配置"
+          if [ -n "${{ env.INGRESS_HOST }}" ]; then
+            SCHEME="http"
+            [ "${{ env.INGRESS_TLS }}" = "true" ] && SCHEME="https"
+            INGRESS="${SCHEME}://${{ env.INGRESS_HOST }}${{ inputs.ingress-path-prefix }}"
+          fi
+
+          # HPA 汇总
+          HPA="未启用"
+          if [ "${{ env.ENABLE_HPA }}" = "true" ]; then
+            HPA="${{ env.MIN_REPLICAS }} ~ ${{ env.MAX_REPLICAS }}（CPU ${{ env.TARGET_CPU_UTILIZATION }}% / 内存 ${{ env.TARGET_MEMORY_UTILIZATION }}%）"
+          fi
+
+          WAIT_ELAPSED="${{ steps.wait.outputs.elapsed }}"
+          [ -z "$WAIT_ELAPSED" ] && WAIT_ELAPSED="-"
+
+          {
+            echo "# 🚀 部署报告 · ${{ inputs.binary-name }}"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 状态 | ${FINAL} |"
+            echo "| 环境 | ${{ inputs.environment }} |"
+            echo "| 命名空间 | ${{ env.NAMESPACE }} |"
+            echo "| 镜像 | \`${{ steps.image-name.outputs.image-name }}\` |"
+            echo "| 副本 | ${READY}/${REPLICAS} |"
+            echo "| HPA | ${HPA} |"
+            echo "| 资源 | CPU ${{ env.CPU_REQUEST }} ~ ${{ env.CPU_LIMIT }} · 内存 ${{ env.MEMORY_REQUEST }} ~ ${{ env.MEMORY_LIMIT }} |"
+            echo "| 端口 | ${PORTS} |"
+            echo "| Ingress | ${INGRESS} |"
+            echo "| 操作人 | @${{ github.actor }} |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo "## 执行阶段"
+            echo ""
+            echo "| 阶段 | 结果 |"
+            echo "|---|---|"
+            echo "| 生成 Manifests | $(icon ${{ steps.manifests.outcome }}) |"
+            echo "| Apply 资源 | $(icon ${{ steps.apply.outcome }}) |"
+            echo "| 等待就绪 | $(icon ${{ steps.wait.outcome }})（${WAIT_ELAPSED}s） |"
+            echo "| 验证部署 | $(icon ${{ steps.verify.outcome }}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   notify:
     name: 🔔 Send Deployment Notification

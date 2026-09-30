@@ -273,6 +273,7 @@ jobs:
           driver: docker-container
 
       - name: 🔨 Build and Push Docker Image
+        id: build-push
         uses: docker/build-push-action@v5
         with:
           context: ${{ inputs.binary-source-dir }}
@@ -286,3 +287,35 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: 📊 Generate Build Report
+        if: ${{ always() }}
+        run: |
+          # 二进制大小
+          BIN_SIZE=$(ls -lh "${{ inputs.binary-source-dir }}/${{ inputs.binary-name }}" 2>/dev/null | awk '{print $5}')
+          [ -z "$BIN_SIZE" ] && BIN_SIZE="-"
+
+          # Tags 多行合并为单行
+          TAGS=$(echo "${{ steps.image-names.outputs.tags }}" | tr '\n' ' ' | sed 's/  */ /g')
+          [ -z "$TAGS" ] && TAGS="-"
+
+          if [ "${{ steps.build-push.outcome }}" = "success" ]; then
+            BUILD_RESULT="✅ 构建并推送成功"
+          else
+            BUILD_RESULT="❌ 构建失败"
+          fi
+
+          {
+            echo "# 🐳 镜像构建报告 · ${{ inputs.binary-name }}"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 状态 | ${BUILD_RESULT} |"
+            echo "| 镜像 | \`${{ steps.image-names.outputs.image-base }}\` |"
+            echo "| Tags | ${TAGS} |"
+            echo "| 平台 | ${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }} |"
+            echo "| 基础镜像 | ${{ env.BASE_IMAGE }} |"
+            echo "| 二进制大小 | ${BIN_SIZE} |"
+            echo "| Registry | ${{ env.DOCKER_REGISTRY }} |"
+            echo "| 操作人 | @${{ github.actor }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
