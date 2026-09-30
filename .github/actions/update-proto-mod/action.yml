@@ -1,0 +1,29 @@
+name: Update Proto Mod
+description: 下游仓库手动升级 proto 模块引用（go get + tidy + build 验证 + 推送目标分支）
+
+inputs:
+  branch:
+    description: 推送目标分支
+    required: true
+  module:
+    description: proto 模块名（如 xxx-share-proto）
+    required: true
+  module-ref:
+    description: 模块版本引用（默认 master）
+    required: false
+    default: master
+
+runs:
+  using: composite
+  steps:
+    - name: Run Update Proto Mod
+      shell: bash
+      env:
+        PROTO_READ_TOKEN: ${{ env.PROTO_READ_TOKEN }}
+        PUSH_TOKEN: ${{ env.PUSH_TOKEN }}
+      run: |
+        git clone --quiet --depth 1 https://github.com/kamalyes/deploy-pipeline.git "${RUNNER_TEMP}/deploy-pipeline"
+        bash "${RUNNER_TEMP}/deploy-pipeline/scripts/update-proto-mod.sh" \
+          "${{ inputs.branch }}" \
+          "${{ inputs.module }}" \
+          "${{ inputs.module-ref }}"
