@@ -9,8 +9,10 @@ source "${SCRIPT_DIR}/common.sh"
 
 # ==================== 环境变量配置 ====================
 NOTIFICATION_PROVIDER="${NOTIFICATION_PROVIDER:-none}"  # feishu | telegram | all | none
-NOTIFICATION_TYPE="${NOTIFICATION_TYPE:-deployment}"    # deployment | rollback
-STATUS="${STATUS:-success}"                              # success | failure
+NOTIFICATION_TYPE="${NOTIFICATION_TYPE:-deployment}"    # deployment | rollback | custom
+STATUS="${STATUS:-success}"                              # success | failure | warning | info（warning/info 仅 custom 使用）
+CUSTOM_TITLE="${CUSTOM_TITLE:-}"                         # custom 类型：自定义标题
+CUSTOM_MESSAGE="${CUSTOM_MESSAGE:-}"                     # custom 类型：自定义正文（lark_md / Markdown）
 ENVIRONMENT="${ENVIRONMENT:-dev}"                        # dev | test | prod | uat
 BINARY_NAME="${BINARY_NAME:-demo-core-service}"
 VERSION="${VERSION:-}"
@@ -88,7 +90,20 @@ get_operator_avatar() {
 
 # 获取状态信息
 get_status_info() {
-    if [ "${STATUS}" = "success" ]; then
+    if [ "${NOTIFICATION_TYPE}" = "custom" ]; then
+        # custom 类型：标题由调用方指定，颜色/图标按 STATUS 映射
+        local title="${CUSTOM_TITLE:-自定义通知}"
+        local color="green" icon="✅" text="成功"
+        case "${STATUS}" in
+            failure) color="red";    icon="❌"; text="失败" ;;
+            warning) color="yellow"; icon="⚠️"; text="警告" ;;
+            info)    color="blue";   icon="ℹ️"; text="提醒" ;;
+        esac
+        echo "title=${title}"
+        echo "color=${color}"
+        echo "icon=${icon}"
+        echo "text=${text}"
+    elif [ "${STATUS}" = "success" ]; then
         if [ "${NOTIFICATION_TYPE}" = "deployment" ]; then
             echo "title=✅ 部署成功"
             echo "color=green"
@@ -123,12 +138,44 @@ send_feishu_notification() {
     fi
 
     log_info "发送飞书通知..."
-    
+
     local status_info=$(get_status_info)
     local title=$(echo "${status_info}" | grep "^title=" | cut -d= -f2-)
     local color=$(echo "${status_info}" | grep "^color=" | cut -d= -f2-)
     local env_label=$(get_env_label)
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    # custom 类型：自定义标题与正文，jq 构造保证任意内容转义安全
+    if [ "${NOTIFICATION_TYPE}" = "custom" ]; then
+        local payload
+        payload=$(jq -n \
+            --arg title "${title}" \
+            --arg color "${color}" \
+            --arg repo "$(get_repo_name)" \
+            --arg operator "${OPERATOR}" \
+            --arg message "${CUSTOM_MESSAGE:-}" \
+            --arg timestamp "${timestamp}" \
+            --arg url "${WORKFLOW_URL}" \
+            '{msg_type:"interactive", card:{header:{title:{tag:"plain_text", content:$title}, template:$color}, elements:[
+                {tag:"div", fields:[
+                    {is_short:true, text:{tag:"lark_md", content:("**仓库:**\n"+$repo)}},
+                    {is_short:true, text:{tag:"lark_md", content:("**操作人:**\n["+ $operator +"](https://github.com/"+ $operator +")")}}
+                ]},
+                {tag:"div", text:{tag:"lark_md", content:$message}},
+                {tag:"hr"},
+                {tag:"div", text:{tag:"lark_md", content:("**完成时间:** "+$timestamp+"\n**Workflow:** [查看详情]("+ $url +")")}}
+            ]}}')
+        local response=$(curl -s -X POST "${FEISHU_WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}")
+        if echo "${response}" | grep -q '"code":0'; then
+            log_info "飞书通知发送成功"
+            return 0
+        else
+            log_error "飞书通知发送失败: ${response}"
+            return 1
+        fi
+    fi
     local operation_type=$([ "${NOTIFICATION_TYPE}" = "deployment" ] && echo "📦 部署" || echo "⏮️ 回滚")
     local version_display="${VERSION:-${GIT_COMMIT:-N/A}}"
     local operator_avatar=$(get_operator_avatar)
@@ -367,12 +414,34 @@ send_telegram_notification() {
     
     local status_info=$(get_status_info)
     local icon=$(echo "${status_info}" | grep "^icon=" | cut -d= -f2-)
+    local title=$(echo "${status_info}" | grep "^title=" | cut -d= -f2-)
     local status_text=$(echo "${status_info}" | grep "^text=" | cut -d= -f2-)
     local env_emoji=$(get_env_emoji)
     local repo_name=$(get_repo_name)
     local operation_type=$([ "${NOTIFICATION_TYPE}" = "deployment" ] && echo "📦 部署" || echo "⏮️ 回滚")
     local version_display="${VERSION:-${GIT_COMMIT:-latest}}"
     local operator_avatar=$(get_operator_avatar)
+
+    # custom 类型：自定义标题与正文
+    if [ "${NOTIFICATION_TYPE}" = "custom" ]; then
+        local message
+        message="*${icon} [${repo_name}] ${title}*
+*操作人:* [${OPERATOR}](https://github.com/${OPERATOR})
+${CUSTOM_MESSAGE:-}
+*Workflow:* [查看详情](${WORKFLOW_URL})"
+        local response=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode=Markdown \
+            -d disable_web_page_preview=true \
+            --data-urlencode text="${message}")
+        if echo "${response}" | grep -q '"ok":true'; then
+            log_info "Telegram通知发送成功"
+            return 0
+        else
+            log_error "Telegram通知发送失败: ${response}"
+            return 1
+        fi
+    fi
 
     # 构建消息
     if [ "${STATUS}" = "success" ]; then

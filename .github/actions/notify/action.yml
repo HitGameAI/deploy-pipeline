@@ -1,0 +1,38 @@
+name: 'Notify'
+description: '通用通知（飞书/Telegram），支持自定义标题与正文，供任意 workflow 复用；webhook 凭证通过调用方 step env 注入（FEISHU_WEBHOOK_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID）'
+
+inputs:
+  provider:
+    description: '通知提供商: feishu | telegram | all | none'
+    required: true
+  status:
+    description: '通知状态: success | failure | warning | info'
+    required: false
+    default: 'success'
+  title:
+    description: '自定义标题'
+    required: false
+    default: ''
+  message:
+    description: '自定义正文（飞书 lark_md / Telegram Markdown，支持多行）'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Send Notification
+      shell: bash
+      env:
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_STATUS: ${{ inputs.status }}
+        INPUT_TITLE: ${{ inputs.title }}
+        INPUT_MESSAGE: ${{ inputs.message }}
+      run: |
+        export NOTIFICATION_PROVIDER="${INPUT_PROVIDER}"
+        export NOTIFICATION_TYPE="custom"
+        export STATUS="${INPUT_STATUS}"
+        export CUSTOM_TITLE="${INPUT_TITLE}"
+        export CUSTOM_MESSAGE="${INPUT_MESSAGE}"
+        export WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        bash "${GITHUB_ACTION_PATH}/../../scripts/notify.sh"
