@@ -7,7 +7,8 @@ name: 🧹 Cleanup
 # 默认只清理 Artifacts；开启 cleanup-cache 时清理 Actions Cache；开启 cleanup-images 时清理旧镜像
 # 镜像清理支持指定镜像名或留空自动扫描全部
 # 镜像清理支持 tag 前缀过滤：tag-include-prefix 仅清理命中前缀的版本（按前缀分组各自保留 keep-count 个），
-# tag-exclude-prefix 永不清理命中前缀的版本；配置优先级 inputs > vars.CLEANUP_TAG_*_PREFIX
+# tag-exclude-prefix 永不清理命中前缀的版本；配置优先级 inputs > vars.CLEANUP_TAG_*_PREFIX，
+# 未配置时默认豁免发布 tag 前缀（v,prod），发布镜像永不被清理
 # ============================================
 
 on:
@@ -68,7 +69,7 @@ on:
         type: string
         default: ''
       tag-exclude-prefix:
-        description: '永不清理 tag 命中前缀的镜像版本（逗号分隔，如 prod,master；留空回退 vars.CLEANUP_TAG_EXCLUDE_PREFIX）'
+        description: '永不清理 tag 命中前缀的镜像版本（逗号分隔；留空回退 vars.CLEANUP_TAG_EXCLUDE_PREFIX，默认豁免发布前缀 v,prod）'
         required: false
         type: string
         default: ''
@@ -120,7 +121,7 @@ on:
         type: string
         default: ''
       tag-exclude-prefix:
-        description: '永不清理 tag 命中前缀的镜像版本（逗号分隔，如 prod,master；留空回退 vars.CLEANUP_TAG_EXCLUDE_PREFIX）'
+        description: '永不清理 tag 命中前缀的镜像版本（逗号分隔；留空回退 vars.CLEANUP_TAG_EXCLUDE_PREFIX，默认豁免发布前缀 v,prod）'
         required: false
         type: string
         default: ''
@@ -309,7 +310,7 @@ jobs:
           IMAGE_NAME: ${{ inputs.image-name }}
           KEEP_COUNT: ${{ inputs.keep-count }}
           TAG_INCLUDE_PREFIX: ${{ inputs.tag-include-prefix || vars.CLEANUP_TAG_INCLUDE_PREFIX || '' }}
-          TAG_EXCLUDE_PREFIX: ${{ inputs.tag-exclude-prefix || vars.CLEANUP_TAG_EXCLUDE_PREFIX || '' }}
+          TAG_EXCLUDE_PREFIX: ${{ inputs.tag-exclude-prefix || vars.CLEANUP_TAG_EXCLUDE_PREFIX || 'v,prod' }}
         run: |
           set -uo pipefail
 
@@ -419,7 +420,7 @@ jobs:
             fi
 
             # 2) 再处理 tagged 版本：先应用 tag 前缀过滤，再按创建时间降序排序，跳过最新 N 个，删除更早的
-            #    - TAG_EXCLUDE_PREFIX 命中的版本永不清理（如 prod/master），也不占用保留名额
+            #    - TAG_EXCLUDE_PREFIX 命中的版本永不清理，也不占用保留名额（未配置时默认豁免发布前缀 v,prod）
             #    - TAG_INCLUDE_PREFIX 设置时仅清理命中前缀的版本（如 dev/uat/sit），
             #      且按前缀分组各自保留最新 KEEP 个，避免高频前缀挤占低频前缀的保留名额
             #    - untagged（dangling）版本不受前缀过滤影响，始终清理
