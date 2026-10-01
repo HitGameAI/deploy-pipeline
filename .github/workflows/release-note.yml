@@ -1,0 +1,130 @@
+name: 📋 Release Note
+
+# 发布单生成公共能力：tag push 发布模式构建成功后调用
+# 收集上一 tag 到本 tag 之间的全部 PR（多个需求 PR 逐条列出）与直接提交，
+# 生成 GitHub Release 发布单
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: '发布的镜像全名（展示在发布单中）'
+        required: true
+        type: string
+      platform:
+        description: '镜像平台（如 linux/amd64）'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: read # 收集 PR 明细需要
+
+jobs:
+  release-note:
+    name: 📋 Release Note
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: 📋 Generate Release Note
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_FULL: ${{ github.repository }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "🏷️ 当前发布 tag：${TAG}"
+
+          # 定位上一个 tag（首个 tag 时区间为全历史）
+          PREV_TAG=$(git describe --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+            PREV_LABEL="${PREV_TAG}"
+          else
+            RANGE="${TAG}"
+            PREV_LABEL="(首个发布)"
+          fi
+          echo "📏 变更区间：${RANGE}"
+
+          # 主干轨迹逐条解析：Merge PR (#N) / Squash PR (标题 (#N)) / 直接提交
+          PR_IDS=""
+          DIRECT_COMMITS=""
+          while IFS='|' read -r subject author; do
+            [ -z "$subject" ] && continue
+            pr_id=$(echo "$subject" | grep -oE '#[0-9]+' | head -1 | tr -d '#')
+            if [ -n "$pr_id" ]; then
+              PR_IDS="${PR_IDS} ${pr_id}"
+            else
+              DIRECT_COMMITS="${DIRECT_COMMITS}${subject} @${author}\n"
+            fi
+          done < <(git log --first-parent --format='%s|%an' "$RANGE")
+
+          # 逐个 PR 拉取标题/作者（多个需求 PR 全部列出）
+          PR_LINES=""
+          PR_COUNT=0
+          for pr_id in $PR_IDS; do
+            PR_INFO=$(gh api "repos/${REPO_FULL}/pulls/${pr_id}" --jq '[.title, .user.login] | @tsv' 2>/dev/null || true)
+            if [ -n "$PR_INFO" ]; then
+              PR_TITLE=$(echo "$PR_INFO" | cut -f1)
+              PR_AUTHOR=$(echo "$PR_INFO" | cut -f2)
+              PR_LINES="${PR_LINES}- [#${pr_id}](${GITHUB_SERVER_URL}/${REPO_FULL}/pull/${pr_id}) ${PR_TITLE} @${PR_AUTHOR}\n"
+              PR_COUNT=$((PR_COUNT + 1))
+            fi
+          done
+
+          DIRECT_COUNT=$(echo "$DIRECT_COMMITS" | grep -c . || true)
+          [ -z "$(echo "$DIRECT_COMMITS" | tr -d '\n')" ] && DIRECT_COUNT=0
+          STAT=$(git diff --shortstat "$RANGE" | sed 's/^ //')
+          COMMIT_COUNT=$(git rev-list --count --first-parent "$RANGE")
+
+          NOW=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M')
+
+          {
+            echo "## 📋 发布单 · ${REPO_FULL##*/} \`${TAG}\`"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 版本 | \`${TAG}\` |"
+            echo "| 上一版本 | ${PREV_LABEL} |"
+            echo "| 镜像 | \`${IMAGE_NAME}\` |"
+            echo "| 平台 | ${PLATFORM:-linux} |"
+            echo "| 发布人 | @${GITHUB_ACTOR} |"
+            echo "| 发布时间 | ${NOW} |"
+            echo ""
+            echo "### 🔄 变更内容（${PR_COUNT} 个 PR / ${COMMIT_COUNT} 个提交 / ${STAT}）"
+            echo ""
+            if [ -n "$(echo "$PR_LINES" | tr -d '\n')" ]; then
+              echo -e "$PR_LINES"
+            fi
+            if [ "$DIRECT_COUNT" -gt 0 ]; then
+              echo "**直接提交（未走 PR）：**"
+              echo -e "$DIRECT_COMMITS"
+            fi
+            if [ "$PR_COUNT" -eq 0 ] && [ "$DIRECT_COUNT" -eq 0 ]; then
+              echo "（区间内无变更记录）"
+            fi
+          } > release-note.md
+
+          echo "================ 发布单内容 ================"
+          cat release-note.md
+          echo "==========================================="
+
+          # 幂等：release 已存在则更新 notes，否则创建
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "♻️ Release 已存在，更新发布单"
+            gh release edit "$TAG" --notes-file release-note.md
+          else
+            gh release create "$TAG" --title "${REPO_FULL##*/} ${TAG}" --notes-file release-note.md --verify-tag
+          fi
+
+          {
+            echo "## 📋 发布单已生成 · \`${TAG}\`"
+            echo ""
+            cat release-note.md
+          } >> "$GITHUB_STEP_SUMMARY"

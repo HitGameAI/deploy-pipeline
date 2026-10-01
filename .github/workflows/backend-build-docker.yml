@@ -107,6 +107,9 @@ jobs:
     name: 🐳 Build Docker Image (${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }})
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      packages: write
     env:
       # 优先级: input > vars > 硬编码默认值
       DOCKER_REGISTRY: ${{ inputs.docker-registry || vars.DOCKER_REGISTRY || 'ghcr.io' }}
@@ -121,10 +124,6 @@ jobs:
       BUILD_BINARY_ARCH: ${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }}
       # 优先级: input > vars.BUILD_DOCKER_BASE_IMAGE > 硬编码默认值
       BASE_IMAGE: ${{ inputs.base-image || vars.BUILD_DOCKER_BASE_IMAGE || 'alpine:3.19.1' }}
-
-    permissions:
-      contents: read
-      packages: write
 
     steps:
       - name: 📥 Checkout Repository
@@ -319,3 +318,19 @@ jobs:
             echo "| Registry | ${{ env.DOCKER_REGISTRY }} |"
             echo "| 操作人 | @${{ github.actor }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 发布单生成：tag push 发布模式构建成功后调用公共能力（多 PR 全量收集 + GitHub Release）
+  release-note:
+    name: 📋 Release Note
+    needs: build-docker
+    if: >-
+      needs.build-docker.result == 'success' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+      pull-requests: read # 发布单收集 PR 明细需要
+    uses: kamalyes/deploy-pipeline/.github/workflows/release-note.yml@master
+    with:
+      image-name: ${{ inputs.image-name }}
+      platform: ${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }}

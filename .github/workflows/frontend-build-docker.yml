@@ -295,3 +295,19 @@ jobs:
             echo "| Registry | ${{ inputs.docker-registry }} |"
             echo "| 操作人 | @${{ github.actor }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 发布单生成：tag push 发布模式构建成功后调用公共能力（多 PR 全量收集 + GitHub Release）
+  release-note:
+    name: 📋 Release Note
+    needs: build-docker
+    if: >-
+      needs.build-docker.result == 'success' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+      pull-requests: read # 发布单收集 PR 明细需要
+    uses: kamalyes/deploy-pipeline/.github/workflows/release-note.yml@master
+    with:
+      image-name: ${{ inputs.image-name }}
+      platform: ${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }}
