@@ -41,8 +41,8 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           echo "🏷️ 当前发布 tag：${TAG}"
 
-          # 定位上一个 tag（首个 tag 时区间为全历史）
-          PREV_TAG=$(git describe --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          # 定位上一个 tag（首个 tag 时区间为全历史；--tags 兼容 lightweight tag，默认仅识别 annotated tag 会误判首个发布）
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
           if [ -n "$PREV_TAG" ]; then
             RANGE="${PREV_TAG}..${TAG}"
             PREV_LABEL="${PREV_TAG}"
