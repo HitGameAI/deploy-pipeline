@@ -6,15 +6,24 @@
 
 ```bash
 deploy-pipeline/
-├── .github/workflows/           # 可复用工作流
-│   ├── code-quality.yml         # 代码质量检查
-│   ├── cleanup-artifacts.yml   # Artifacts + GHCR 镜像清理
-│   ├── backend-build-binary.yml # 编译 Go 二进制文件
-│   ├── backend-build-docker.yml # 构建推送后端 Docker 镜像
-│   ├── backend-deploy-k8s.yml   # K8s 部署（后端服务）
-│   ├── frontend-build-frontend.yml # 前端构建（支持 npm/pnpm/yarn）
-│   ├── frontend-build-docker.yml   # 构建推送前端 Docker 镜像
-│   └── frontend-deploy-k8s.yml     # K8s 部署（前端应用）
+├── .github/
+│   ├── workflows/               # 可复用工作流
+│   │   ├── code-quality.yml         # 代码质量检查
+│   │   ├── cleanup-artifacts.yml   # Artifacts + GHCR 镜像清理
+│   │   ├── backend-build-binary.yml # 编译 Go 二进制文件
+│   │   ├── backend-build-docker.yml # 构建推送后端 Docker 镜像（tag 发布模式自动生成发布单）
+│   │   ├── backend-deploy-k8s.yml   # K8s 部署（后端服务）
+│   │   ├── frontend-build-frontend.yml # 前端构建（支持 npm/pnpm/yarn）
+│   │   ├── frontend-build-docker.yml   # 构建推送前端 Docker 镜像（tag 发布模式自动生成发布单）
+│   │   ├── frontend-deploy-k8s.yml     # K8s 部署（前端应用）
+│   │   ├── release-note.yml           # tag 发布单（自动生成 GitHub Release）
+│   │   ├── pr-opened-notify.yml       # PR 开启变更摘要通知
+│   │   └── pr-merged-notify.yml       # PR 合并通知
+│   └── actions/                 # 可复用 Composite Actions
+│       ├── notify/              # 通用通知（飞书/Telegram，支持自定义标题正文）
+│       ├── update-proto-mod/    # 升级 go.mod 中 proto 模块引用并提 PR
+│       ├── print-runner-info/   # 打印 Runner 环境信息
+│       └── normalize-image-name/ # 镜像名规范与 tag 生成
 ├── scripts/                     # 公共脚本
 │   ├── backend/                 # 后端脚本
 │   │   └── build-linux.sh       # Go 构建脚本
@@ -44,11 +53,14 @@ deploy-pipeline/
 | **共享** | Code Quality | `code-quality.yml` | 代码格式检查、静态分析、单元测试 |
 | **共享** | Cleanup | `cleanup-artifacts.yml` | 清理 Actions artifacts 和 GHCR 旧镜像 |
 | **后端** | Build Binary | `backend-build-binary.yml` | 编译 Go 二进制文件（支持 UPX 压缩） |
-| **后端** | Build Docker | `backend-build-docker.yml` | 构建并推送后端 Docker 镜像 |
+| **后端** | Build Docker | `backend-build-docker.yml` | 构建并推送后端 Docker 镜像（含 Summary 报告） |
 | **后端** | Deploy K8s | `backend-deploy-k8s.yml` | 部署后端服务到 Kubernetes |
 | **前端** | Build Frontend | `frontend-build-frontend.yml` | 前端构建（支持 npm/pnpm/yarn） |
-| **前端** | Build Docker | `frontend-build-docker.yml` | 构建并推送前端 Docker 镜像 |
+| **前端** | Build Docker | `frontend-build-docker.yml` | 构建并推送前端 Docker 镜像（含 Summary 报告） |
 | **前端** | Deploy K8s | `frontend-deploy-k8s.yml` | 部署前端应用到 Kubernetes |
+| **通知** | Release Note | `release-note.yml` | tag 发布模式构建成功后自动生成 GitHub Release 发布单 |
+| **通知** | PR Opened Notify | `pr-opened-notify.yml` | PR 开启时推送变更摘要到飞书/TG |
+| **通知** | PR Merged Notify | `pr-merged-notify.yml` | PR 合并后推送通知到飞书/TG |
 
 > GitHub reusable workflow 的 `uses:` 目标必须直接位于 `.github/workflows/` 顶层，不能放在 `backend/`、`frontend/`、`shared/` 等二级目录。
 
@@ -438,6 +450,90 @@ jobs:
 
 ---
 
+## 📣 通知与发布单
+
+### 发布单（Release Note）
+
+**无需单独接入**：调用方 pipeline 开启 tag 发布模式（push `v*` / `prod-*` tag → 仅构建推送镜像、跳过 K8s 部署），构建成功后 `release-note` job 自动运行：
+
+- 自动定位上一 tag，收集区间内**全部 PR（含标题/作者/链接）与直接提交**
+- 幂等创建/更新 GitHub Release 发布单（版本、镜像、变更统计、发布人、时间）
+- 同步写入 Actions Summary，无需翻日志
+- **零 secrets 依赖**（仅用 `GITHUB_TOKEN`），任何仓库接入即用
+
+**调用方需要**：
+
+| 项 | 说明 |
+|---|---|
+| 触发 | `on.push.tags: ['v*', 'prod-*']`（参考 ops-gateway 的 `pipeline.yml` 发布模式决策块） |
+| 权限 | workflow 级声明 `permissions: contents: write`（创建 Release）+ `pull-requests: read`（收集 PR 明细） |
+| 镜像 tag | 发布模式下镜像 tag = git tag 名（如 `v0.0.1`），且默认被镜像清理豁免 |
+
+### PR 通知
+
+PR 开启推送**变更文件摘要**、PR 合并推送**合并通知**，均支持飞书/TG 双通道：
+
+```yaml
+# .github/workflows/pr-opened-notify.yml（PR 开启摘要）
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  notify:
+    if: github.event_name == 'pull_request'
+    uses: kamalyes/deploy-pipeline/.github/workflows/pr-opened-notify.yml@master
+    secrets: inherit  # 需 FEISHU_WEBHOOK_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+```
+
+```yaml
+# .github/workflows/pr-merged-notify.yml（PR 合并通知）
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  notify:
+    if: github.event.pull_request.merged == true
+    uses: kamalyes/deploy-pipeline/.github/workflows/pr-merged-notify.yml@master
+    secrets: inherit
+```
+
+### 通用通知 Action
+
+任意 workflow 中发送自定义通知（标题 + 多行正文）：
+
+```yaml
+- name: Notify
+  uses: kamalyes/deploy-pipeline/.github/actions/notify@master
+  with:
+    provider: all        # feishu | telegram | all | none
+    status: success      # success | failure | warning | info
+    title: '📋 自定义标题'
+    message: |
+      **变更内容**
+      - xxx
+  env:
+    FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+    TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+```
+
+### proto 模块引用升级（update-proto-mod）
+
+proto 仓库 master 更新后，业务仓库一键升级 `go.mod` 中 proto 模块引用并自动提 PR：
+
+```yaml
+- name: Update proto mod
+  uses: kamalyes/deploy-pipeline/.github/actions/update-proto-mod@master
+  with:
+    token: ${{ secrets.GH_PAT }}
+    proto-repo: 'your-org/demo-share-proto'
+    proto-module: 'github.com/your-org/demo-share-proto'
+```
+
+---
+
 ## 📖 工作流详细说明
 
 ### 共享工作流
@@ -483,7 +579,7 @@ jobs:
 | `image-name` | string | 否 | `''` | 镜像名（逗号分隔多个，留空则自动扫描所有 container packages） |
 | `keep-count` | string | 否 | `5` | 保留镜像版本数 |
 | `tag-include-prefix` | string | 否 | `''` | 仅清理 tag 命中前缀的镜像版本（逗号分隔，如 `dev,uat,sit`）；每个前缀分组各自保留最新 `keep-count` 个；留空回退 `vars.CLEANUP_TAG_INCLUDE_PREFIX` |
-| `tag-exclude-prefix` | string | 否 | `''` | 永不清理 tag 命中前缀的镜像版本（逗号分隔，如 `prod,master`），命中的版本也不占用保留名额；留空回退 `vars.CLEANUP_TAG_EXCLUDE_PREFIX` |
+| `tag-exclude-prefix` | string | 否 | `v,prod` | 永不清理 tag 命中前缀的镜像版本（逗号分隔），命中的版本也不占用保留名额；留空回退 `vars.CLEANUP_TAG_EXCLUDE_PREFIX`，仍未配置时默认豁免发布 tag 前缀 `v,prod`（发布镜像永不清理，保障可回滚） |
 
 **调用示例：**
 
@@ -529,9 +625,9 @@ cleanup:
 
 - 镜像 tag 由调用方在构建时拼接（如 `${branch}-${commit}-${timestamp}`），前缀即分支/环境名（dev/uat/sit…）
 - `tag-include-prefix`（白名单）：仅清理命中前缀的版本，每个前缀各自保留最新 `keep-count` 个，避免高频环境把低频环境的保留名额挤掉；未命中任何前缀的版本（如 prod/master）不清理
-- `tag-exclude-prefix`（黑名单）：命中前缀的版本永不清理；两者可同时配置，exclude 优先保护
+- `tag-exclude-prefix`（黑名单）：命中前缀的版本永不清理；两者可同时配置，exclude 优先保护；**未配置时默认豁免发布 tag 前缀 `v,prod`，发布镜像（tag 发布模式产物）永不参与清理**
 - untagged（dangling）版本不受前缀过滤影响，始终清理
-- 配置优先级：`inputs > vars.CLEANUP_TAG_INCLUDE_PREFIX` / `vars.CLEANUP_TAG_EXCLUDE_PREFIX`（仓库级 GitHub Variables，调用方仓库设置后无需修改 pipeline）
+- 配置优先级：`inputs > vars.CLEANUP_TAG_INCLUDE_PREFIX` / `vars.CLEANUP_TAG_EXCLUDE_PREFIX` > 默认值 `v,prod`（仅 exclude；仓库级 GitHub Variables 设置后无需修改 pipeline）
 
 ```yaml
 # 只清理 dev/uat/sit 前缀的旧镜像，其他前缀（prod/master 等）不动
@@ -952,16 +1048,24 @@ bash scripts/frontend/build-frontend.sh \
 
 ### notify.sh
 
-通用通知脚本，支持飞书和 Telegram
+通用通知脚本，支持飞书和 Telegram（单通道失败不影响另一通道）
 
 ```bash
 export NOTIFICATION_PROVIDER=feishu  # feishu | telegram | all | none
-export NOTIFICATION_TYPE=deployment  # deployment | rollback
-export STATUS=success                # success | failure
+export NOTIFICATION_TYPE=deployment  # deployment | rollback | custom
+export STATUS=success                # success | failure | warning | info
 export ENVIRONMENT=dev
 export BINARY_NAME=your-service
 export WORKFLOW_URL=https://github.com/...
 export FEISHU_WEBHOOK_URL=https://open.feishu.cn/...
+bash scripts/notify.sh
+
+# custom 类型：自定义标题与正文（飞书 lark_md / Telegram Markdown，支持多行）
+export NOTIFICATION_TYPE=custom
+export CUSTOM_TITLE="📋 自定义标题"
+export CUSTOM_MESSAGE="**变更内容**
+- PR #12 xxx
+- PR #13 yyy"
 bash scripts/notify.sh
 ```
 
