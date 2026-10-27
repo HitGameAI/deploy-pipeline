@@ -241,7 +241,7 @@ on:
         type: string
         default: ''
       notification-provider:
-        description: 'Notification provider (none/feishu/telegram/all)'
+        description: 'Notification provider (none/feishu/wecom/telegram/all)'
         required: false
         type: string
         default: 'none'
@@ -257,6 +257,12 @@ on:
         required: true
       FEISHU_WEBHOOK_URL:
         description: '飞书通知 Webhook URL'
+        required: false
+      WECOM_WEBHOOK_URL:
+        description: '企业微信群机器人 Webhook URL（完整地址）'
+        required: false
+      WECOM_WEBHOOK_KEY:
+        description: '企业微信群机器人 Webhook key（仅存 key 时用，与 URL 二选一）'
         required: false
       TELEGRAM_BOT_TOKEN:
         description: 'Telegram 通知 Bot Token'
@@ -912,6 +918,8 @@ jobs:
           export OPERATOR="${{ github.actor }}"
           export WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           export FEISHU_WEBHOOK_URL="${{ secrets.FEISHU_WEBHOOK_URL }}"
+          export WECOM_WEBHOOK_URL="${{ secrets.WECOM_WEBHOOK_URL }}"
+          export WECOM_WEBHOOK_KEY="${{ secrets.WECOM_WEBHOOK_KEY }}"
           export TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
           export TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
           export GITHUB_REPOSITORY="${{ github.repository }}"

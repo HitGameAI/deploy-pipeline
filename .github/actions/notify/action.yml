@@ -1,9 +1,9 @@
 name: 'Notify'
-description: '通用通知（飞书/Telegram），支持自定义标题与正文，供任意 workflow 复用；webhook 凭证通过调用方 step env 注入（FEISHU_WEBHOOK_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID）'
+description: '通用通知（飞书/企业微信/Telegram），支持自定义标题与正文，供任意 workflow 复用；webhook 凭证通过调用方 step env 注入（FEISHU_WEBHOOK_URL / WECOM_WEBHOOK_URL / WECOM_WEBHOOK_KEY / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID）'
 
 inputs:
   provider:
-    description: '通知提供商: feishu | telegram | all | none'
+    description: '通知提供商: feishu | wecom | telegram | all | none（all 只发已配置的渠道）'
     required: true
   status:
     description: '通知状态: success | failure | warning | info'
@@ -14,7 +14,7 @@ inputs:
     required: false
     default: ''
   message:
-    description: '自定义正文（飞书 lark_md / Telegram Markdown，支持多行）'
+    description: '自定义正文（飞书 lark_md / 企业微信 markdown / Telegram Markdown，支持多行）'
     required: false
     default: ''
 
