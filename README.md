@@ -20,7 +20,7 @@ deploy-pipeline/
 │   │   ├── pr-opened-notify.yml       # PR 开启变更摘要通知
 │   │   └── pr-merged-notify.yml       # PR 合并通知
 │   └── actions/                 # 可复用 Composite Actions
-│       ├── notify/              # 通用通知（飞书/Telegram，支持自定义标题正文）
+│       ├── notify/              # 通用通知（飞书/企业微信/Telegram，支持自定义标题正文）
 │       ├── update-proto-mod/    # 升级 go.mod 中 proto 模块引用并提 PR
 │       ├── print-runner-info/   # 打印 Runner 环境信息
 │       └── normalize-image-name/ # 镜像名规范与 tag 生成
@@ -30,7 +30,7 @@ deploy-pipeline/
 │   ├── frontend/                # 前端脚本
 │   │   └── build-frontend.sh    # 前端构建脚本
 │   ├── common.sh                # 通用函数库
-│   └── notify.sh                # 飞书/Telegram 通知
+│   └── notify.sh                # 飞书/企业微信/Telegram 通知
 ├── templates/                   # K8s 资源模板
 │   └── k8s/                     # Kubernetes 模板
 │       ├── backend/             # 后端服务模板
@@ -59,8 +59,8 @@ deploy-pipeline/
 | **前端** | Build Docker | `frontend-build-docker.yml` | 构建并推送前端 Docker 镜像（含 Summary 报告） |
 | **前端** | Deploy K8s | `frontend-deploy-k8s.yml` | 部署前端应用到 Kubernetes |
 | **通知** | Release Note | `release-note.yml` | tag 发布模式构建成功后自动生成 GitHub Release 发布单 |
-| **通知** | PR Opened Notify | `pr-opened-notify.yml` | PR 开启时推送变更摘要到飞书/TG |
-| **通知** | PR Merged Notify | `pr-merged-notify.yml` | PR 合并后推送通知到飞书/TG |
+| **通知** | PR Opened Notify | `pr-opened-notify.yml` | PR 开启时推送变更摘要到飞书/企微/TG |
+| **通知** | PR Merged Notify | `pr-merged-notify.yml` | PR 合并后推送通知到飞书/企微/TG |
 
 > GitHub reusable workflow 的 `uses:` 目标必须直接位于 `.github/workflows/` 顶层，不能放在 `backend/`、`frontend/`、`shared/` 等二级目录。
 
@@ -98,6 +98,8 @@ GitHub Actions 支持**环境级别**和**仓库级别**两种配置方式，优
 |--------|------|------|----------|
 | `KUBECONFIG` | Kubernetes 集群访问配置 | K8s 部署 | dev/test/prod |
 | `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook | 部署通知 | dev/test/prod |
+| `WECOM_WEBHOOK_URL` | 企业微信群机器人 Webhook（完整地址） | 部署通知 | dev/test/prod |
+| `WECOM_WEBHOOK_KEY` | 企业微信群机器人 key（与 URL 二选一） | 部署通知 | dev/test/prod |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 部署通知 | dev/test/prod |
 | `TELEGRAM_CHAT_ID` | Telegram 聊天群组 ID | 部署通知 | dev/test/prod |
 
@@ -145,11 +147,11 @@ Settings > Environments > [环境名称] > Environment variables
 
 #### 环境配置示例
 
-| 环境名称 | KUBECONFIG | FEISHU_WEBHOOK_URL | DEPLOYMENT_REPLICAS |
-|----------|------------|---------------------|---------------------|
-| `dev` | dev-cluster-config | <https://open.feishu.cn/>... | `2` |
-| `test` | test-cluster-config | <https://open.feishu.cn/>... | `3` |
-| `prod` | prod-cluster-config | <https://open.feishu.cn/>... | `5` |
+| 环境名称 | KUBECONFIG | FEISHU_WEBHOOK_URL | WECOM_WEBHOOK_URL | DEPLOYMENT_REPLICAS |
+|----------|------------|---------------------|-------------------|---------------------|
+| `dev` | dev-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `2` |
+| `test` | test-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `3` |
+| `prod` | prod-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `5` |
 
 ---
 
@@ -231,6 +233,7 @@ jobs:
     secrets:
       KUBECONFIG: ${{ secrets.KUBECONFIG }}
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 ```
@@ -285,6 +288,7 @@ jobs:
     secrets:
       KUBECONFIG: ${{ secrets.KUBECONFIG }}
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 ```
@@ -409,6 +413,7 @@ jobs:
     secrets:
       KUBECONFIG: ${{ secrets.KUBECONFIG }}
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 ```
@@ -471,7 +476,7 @@ jobs:
 
 ### PR 通知
 
-PR 开启推送**变更文件摘要**、PR 合并推送**合并通知**，均支持飞书/TG 双通道：
+PR 开启推送**变更文件摘要**、PR 合并推送**合并通知**，渠道由 `provider` 入参选择（默认 `feishu`）：
 
 ```yaml
 # .github/workflows/pr-opened-notify.yml（PR 开启摘要）
@@ -483,7 +488,9 @@ jobs:
   notify:
     if: github.event_name == 'pull_request'
     uses: kamalyes/deploy-pipeline/.github/workflows/pr-opened-notify.yml@master
-    secrets: inherit  # 需 FEISHU_WEBHOOK_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+    with:
+      provider: wecom   # 可选，默认 feishu；feishu | wecom | telegram | all
+    secrets: inherit    # 需对应渠道的 webhook secret
 ```
 
 ```yaml
@@ -496,8 +503,12 @@ jobs:
   notify:
     if: github.event.pull_request.merged == true
     uses: kamalyes/deploy-pipeline/.github/workflows/pr-merged-notify.yml@master
+    with:
+      provider: wecom   # 可选，默认 feishu
     secrets: inherit
 ```
+
+> 所选渠道的 webhook 未配置时静默跳过，不会把 job 判红。
 
 ### 通用通知 Action
 
@@ -507,7 +518,7 @@ jobs:
 - name: Notify
   uses: kamalyes/deploy-pipeline/.github/actions/notify@master
   with:
-    provider: all        # feishu | telegram | all | none
+    provider: all        # feishu | wecom | telegram | all | none（all 只发已配置的渠道）
     status: success      # success | failure | warning | info
     title: '📋 自定义标题'
     message: |
@@ -515,9 +526,44 @@ jobs:
       - xxx
   env:
     FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+    WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
     TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
     TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 ```
+
+### 企业微信群机器人
+
+群设置 → 群机器人 → 添加，复制 Webhook 地址存为 secret `WECOM_WEBHOOK_URL`
+（只想存 key 时用 `WECOM_WEBHOOK_KEY`，脚本会自行拼 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=`；两者都给时 URL 优先）。
+
+```yaml
+# 部署通知
+with:
+  notification-provider: 'wecom'
+secrets:
+  WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+```
+
+消息用群机器人的 `markdown` 类型。平台侧的硬限制与本脚本的处理：
+
+| 限制 | 说明 | 脚本处理 |
+|------|------|----------|
+| 正文 ≤ 4096 字节 | 超限整条被拒收 | 按 UTF-8 字节裁剪并标注"内容过长已截断"，不会截出非法字符 |
+| 频率 20 条/分钟 | 超限返回 `errcode: 45009` | 每次通知 1 条消息（配了手机号 @ 时 2 条） |
+| 字体色只有 3 种 | `info`(绿) / `comment`(灰) / `warning`(橙红) | 从飞书色值映射：green→info、red/yellow→warning、其他→comment |
+| `markdown` 不支持 @all、手机号 @ | 仅 `text` 类型支持 | 见下 |
+
+**@ 成员**（可选，两个变量可同时用）：
+
+```yaml
+env:
+  WECOM_MENTIONED_LIST: 'zhangsan,lisi'          # userid，内联 <@userid>，不额外占配额
+  WECOM_MENTIONED_MOBILE_LIST: '@all'            # 手机号或 @all，需 text 类型，额外补发 1 条
+```
+
+`WECOM_MENTIONED_MOBILE_LIST` 补发的那条 text 只含标题；它失败不影响主通知的成败判定。
+
+> 没选企业微信的 `markdown_v2`：v2 支持表格和代码块，但不支持字体色，也不支持 `<@userid>` 扩展语法，拿不到与飞书卡片一致的状态配色。
 
 ### proto 模块引用升级（update-proto-mod）
 
@@ -787,7 +833,7 @@ build-binary:
 | `configmap-name` | string | 否 | `''` | ConfigMap 名称 |
 | `enable-hpa` | string | 否 | `true` | 是否启用 HPA |
 | `ingress-path-prefix` | string | 否 | `''` | Ingress 路径前缀 |
-| `notification-provider` | string | 否 | `none` | 通知方式 |
+| `notification-provider` | string | 否 | `none` | 通知方式：`none`/`feishu`/`wecom`/`telegram`/`all` |
 
 **所需环境级 Secrets：**
 
@@ -795,6 +841,8 @@ build-binary:
 |--------|------|------|
 | `KUBECONFIG` | 是 | K8s 集群配置 |
 | `FEISHU_WEBHOOK_URL` | 否 | 飞书通知 Webhook URL |
+| `WECOM_WEBHOOK_URL` | 否 | 企业微信群机器人 Webhook URL（完整地址） |
+| `WECOM_WEBHOOK_KEY` | 否 | 企业微信群机器人 key（与 URL 二选一） |
 | `TELEGRAM_BOT_TOKEN` | 否 | Telegram Bot Token |
 | `TELEGRAM_CHAT_ID` | 否 | Telegram 聊天群组 ID |
 
@@ -848,7 +896,7 @@ build-binary:
 | `http-port` | string | 否 | `80` | HTTP 端口 |
 | `ingress-path-prefix` | string | 否 | `''` | Ingress 路径前缀 |
 | `enable-hpa` | string | 否 | `true` | 是否启用 HPA |
-| `notification-provider` | string | 否 | `none` | 通知方式 |
+| `notification-provider` | string | 否 | `none` | 通知方式：`none`/`feishu`/`wecom`/`telegram`/`all` |
 
 **所需 Secrets：**
 
@@ -869,7 +917,7 @@ build-binary:
 | `http-port` | string | 否 | `80` | HTTP 端口 |
 | `ingress-path-prefix` | string | 否 | `''` | Ingress 路径前缀 |
 | `enable-hpa` | string | 否 | `true` | 是否启用 HPA |
-| `notification-provider` | string | 否 | `none` | 通知方式 |
+| `notification-provider` | string | 否 | `none` | 通知方式：`none`/`feishu`/`wecom`/`telegram`/`all` |
 
 **所需环境级 Secrets：**
 
@@ -877,6 +925,8 @@ build-binary:
 |--------|------|------|
 | `KUBECONFIG` | 是 | K8s 集群配置 |
 | `FEISHU_WEBHOOK_URL` | 否 | 飞书通知 Webhook URL |
+| `WECOM_WEBHOOK_URL` | 否 | 企业微信群机器人 Webhook URL（完整地址） |
+| `WECOM_WEBHOOK_KEY` | 否 | 企业微信群机器人 key（与 URL 二选一） |
 | `TELEGRAM_BOT_TOKEN` | 否 | Telegram Bot Token |
 | `TELEGRAM_CHAT_ID` | 否 | Telegram 聊天群组 ID |
 
@@ -1048,10 +1098,10 @@ bash scripts/frontend/build-frontend.sh \
 
 ### notify.sh
 
-通用通知脚本，支持飞书和 Telegram（单通道失败不影响另一通道）
+通用通知脚本，支持飞书 / 企业微信 / Telegram（单通道失败不影响其他通道）
 
 ```bash
-export NOTIFICATION_PROVIDER=feishu  # feishu | telegram | all | none
+export NOTIFICATION_PROVIDER=feishu  # feishu | wecom | telegram | all | none
 export NOTIFICATION_TYPE=deployment  # deployment | rollback | custom
 export STATUS=success                # success | failure | warning | info
 export ENVIRONMENT=dev
@@ -1060,7 +1110,15 @@ export WORKFLOW_URL=https://github.com/...
 export FEISHU_WEBHOOK_URL=https://open.feishu.cn/...
 bash scripts/notify.sh
 
-# custom 类型：自定义标题与正文（飞书 lark_md / Telegram Markdown，支持多行）
+# 企业微信
+export NOTIFICATION_PROVIDER=wecom
+export WECOM_WEBHOOK_URL='https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx'
+# export WECOM_WEBHOOK_KEY=xxx                   # 与上面二选一
+# export WECOM_MENTIONED_LIST=zhangsan,lisi      # 可选，内联 <@userid>
+# export WECOM_MENTIONED_MOBILE_LIST=@all        # 可选，额外补发 1 条 text
+bash scripts/notify.sh
+
+# custom 类型：自定义标题与正文（飞书 lark_md / 企业微信 markdown / Telegram Markdown，支持多行）
 export NOTIFICATION_TYPE=custom
 export CUSTOM_TITLE="📋 自定义标题"
 export CUSTOM_MESSAGE="**变更内容**
