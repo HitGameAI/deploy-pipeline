@@ -1,5 +1,5 @@
 #!/bin/bash
-# 通用通知脚本 - 支持飞书和Telegram
+# 通用通知脚本 - 支持飞书 / 企业微信 / Telegram
 
 set -e
 
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 # ==================== 环境变量配置 ====================
-NOTIFICATION_PROVIDER="${NOTIFICATION_PROVIDER:-none}"  # feishu | telegram | all | none
+NOTIFICATION_PROVIDER="${NOTIFICATION_PROVIDER:-none}"  # feishu | wecom | telegram | all | none
 NOTIFICATION_TYPE="${NOTIFICATION_TYPE:-deployment}"    # deployment | rollback | custom
 STATUS="${STATUS:-success}"                              # success | failure | warning | info（warning/info 仅 custom 使用）
 CUSTOM_TITLE="${CUSTOM_TITLE:-}"                         # custom 类型：自定义标题
@@ -41,6 +41,12 @@ FEISHU_WEBHOOK_URL="${FEISHU_WEBHOOK_URL:-}"
 # Telegram 配置
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+
+# 企业微信配置（WECOM_WEBHOOK_URL 为完整地址；只存 key 时用 WECOM_WEBHOOK_KEY）
+WECOM_WEBHOOK_URL="${WECOM_WEBHOOK_URL:-}"
+WECOM_WEBHOOK_KEY="${WECOM_WEBHOOK_KEY:-}"
+WECOM_MENTIONED_LIST="${WECOM_MENTIONED_LIST:-}"                 # userid，逗号分隔，内联 <@userid>
+WECOM_MENTIONED_MOBILE_LIST="${WECOM_MENTIONED_MOBILE_LIST:-}"   # 手机号或 @all，逗号分隔，额外发一条 text
 
 # ==================== 函数定义 ====================
 
@@ -128,6 +134,74 @@ get_status_info() {
             echo "text=回滚失败"
         fi
     fi
+}
+
+# 企业微信 webhook 地址：优先完整 URL，其次用 key 拼接
+get_wecom_webhook_url() {
+    if [ -n "${WECOM_WEBHOOK_URL}" ]; then
+        echo "${WECOM_WEBHOOK_URL}"
+    elif [ -n "${WECOM_WEBHOOK_KEY}" ]; then
+        echo "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${WECOM_WEBHOOK_KEY}"
+    fi
+}
+
+# 企业微信 markdown 字体色仅支持 info(绿)/comment(灰)/warning(橙红)，需从飞书色值映射
+get_wecom_color() {
+    case "$1" in
+        green)  echo "info" ;;
+        red)    echo "warning" ;;
+        yellow) echo "warning" ;;
+        *)      echo "comment" ;;
+    esac
+}
+
+# 按 UTF-8 字节裁剪：企业微信 markdown 上限 4096 字节，超限整条被拒收
+# iconv -c 丢弃尾部残缺的多字节字符，避免截出非法 UTF-8
+clip_utf8_bytes() {
+    local text="$1" limit="$2"
+    if [ "$(printf '%s' "${text}" | wc -c)" -le "${limit}" ]; then
+        printf '%s' "${text}"
+        return 0
+    fi
+    printf '%s' "${text}" | head -c "$((limit - 64))" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true
+    printf '\n…（内容过长已截断）'
+    return 0
+}
+
+# markdown 类型的 @ 成员：官方扩展语法 <@userid>，@all 与手机号不支持
+build_wecom_mentions() {
+    local out="" id
+    if [ -n "${WECOM_MENTIONED_LIST}" ]; then
+        local IFS=','
+        for id in ${WECOM_MENTIONED_LIST}; do
+            id="${id//[[:space:]]/}"
+            [ -n "${id}" ] && out="${out}<@${id}>"
+        done
+    fi
+    [ -n "${out}" ] && printf '\n%s' "${out}"
+    return 0
+}
+
+# @all 与手机号 @ 仅 text 类型支持，markdown 卡片之后补发一条极简 text（额外占用 1 条配额）
+send_wecom_mention_text() {
+    [ -n "${WECOM_MENTIONED_MOBILE_LIST}" ] || return 0
+
+    local webhook_url payload response
+    webhook_url="$(get_wecom_webhook_url)"
+    payload=$(jq -n \
+        --arg content "$1" \
+        --arg list "${WECOM_MENTIONED_MOBILE_LIST}" \
+        '{msgtype:"text", text:{content:$content,
+          mentioned_mobile_list:($list | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length>0)))}}')
+    response=$(curl -s --max-time 20 -X POST "${webhook_url}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}")
+    if echo "${response}" | grep -q '"errcode":0[,}]'; then
+        log_info "企业微信 @ 提醒发送成功"
+    else
+        log_warn "企业微信 @ 提醒发送失败（主通知已送达，忽略）: ${response}"
+    fi
+    return 0
 }
 
 # 发送飞书通知
@@ -403,6 +477,103 @@ EOF
     fi
 }
 
+# 发送企业微信通知（群机器人 markdown 类型）
+send_wecom_notification() {
+    local webhook_url
+    webhook_url="$(get_wecom_webhook_url)"
+    if [ -z "${webhook_url}" ]; then
+        log_error "企业微信通知：WECOM_WEBHOOK_URL / WECOM_WEBHOOK_KEY 均未配置，跳过"
+        return 1
+    fi
+
+    log_info "发送企业微信通知..."
+
+    local status_info=$(get_status_info)
+    local title=$(echo "${status_info}" | grep "^title=" | cut -d= -f2-)
+    local color=$(echo "${status_info}" | grep "^color=" | cut -d= -f2-)
+    local status_text=$(echo "${status_info}" | grep "^text=" | cut -d= -f2-)
+    local wecom_color=$(get_wecom_color "${color}")
+    local repo_name=$(get_repo_name)
+    local env_label=$(get_env_label)
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local content
+
+    if [ "${NOTIFICATION_TYPE}" = "custom" ]; then
+        # custom 类型：标题与正文由调用方指定
+        content="## <font color=\"${wecom_color}\">${title}</font>
+> **仓库:** ${repo_name}
+> **操作人:** [${OPERATOR}](https://github.com/${OPERATOR})
+
+${CUSTOM_MESSAGE:-}
+
+> **时间:** ${timestamp}
+> **Workflow:** [查看详情](${WORKFLOW_URL})"
+    else
+        local operation_type=$([ "${NOTIFICATION_TYPE}" = "deployment" ] && echo "📦 部署" || echo "⏮️ 回滚")
+        local version_display="${VERSION:-${GIT_COMMIT:-N/A}}"
+
+        content="## <font color=\"${wecom_color}\">${title}</font>
+> **仓库:** ${repo_name}
+> **服务:** \`${BINARY_NAME}\`
+> **环境:** ${env_label}
+> **操作:** ${operation_type}
+> **版本:** \`${version_display}\`
+> **操作人:** [${OPERATOR}](https://github.com/${OPERATOR})
+> **状态:** <font color=\"${wecom_color}\">${status_text}</font>"
+
+        if [ "${STATUS}" = "success" ]; then
+            local deployment_info=""
+            [ -n "${DEPLOYMENT_TARGET}" ]    && deployment_info+="> **部署目标:** ${DEPLOYMENT_TARGET}"$'\n'
+            [ -n "${NAMESPACE}" ]            && deployment_info+="> **命名空间:** \`${NAMESPACE}\`"$'\n'
+            [ -n "${DEPLOYMENT_REPLICAS}" ]  && deployment_info+="> **副本数:** ${DEPLOYMENT_REPLICAS}"$'\n'
+            if [ -n "${HTTP_PORT}" ] || [ -n "${RPC_PORT}" ]; then
+                local ports=""
+                [ -n "${HTTP_PORT}" ] && ports="${ports}HTTP:${HTTP_PORT} "
+                [ -n "${RPC_PORT}" ] && ports="${ports}RPC:${RPC_PORT} "
+                deployment_info+="> **端口:** \`${ports}\`"$'\n'
+            fi
+            [ -n "${CPU_REQUEST}" ] && [ -n "${MEMORY_REQUEST}" ] && deployment_info+="> **资源请求:** CPU:${CPU_REQUEST} / Memory:${MEMORY_REQUEST}"$'\n'
+            [ -n "${CPU_LIMIT}" ] && [ -n "${MEMORY_LIMIT}" ]     && deployment_info+="> **资源限制:** CPU:${CPU_LIMIT} / Memory:${MEMORY_LIMIT}"$'\n'
+            [ -n "${CONFIGMAP_NAME}" ]       && deployment_info+="> **ConfigMap:** \`${CONFIGMAP_NAME}\`"$'\n'
+            [ -n "${CONFIG_YAML}" ]          && deployment_info+="> **配置文件:** \`${CONFIG_YAML}\`"$'\n'
+
+            content="${content}
+> **完成时间:** ${timestamp}"
+            [ -n "${deployment_info}" ] && content="${content}
+
+${deployment_info%$'\n'}"
+        else
+            local error_msg="${ERROR_MESSAGE:-操作失败，请查看日志获取详细信息}"
+            content="${content}
+> **失败时间:** ${timestamp}
+
+> **错误信息:** <font color=\"warning\">${error_msg}</font>"
+        fi
+
+        content="${content}
+
+> **Workflow:** [查看详情](${WORKFLOW_URL})"
+    fi
+
+    content="$(clip_utf8_bytes "${content}$(build_wecom_mentions)" 4096)"
+
+    local payload
+    payload=$(jq -n --arg content "${content}" '{msgtype:"markdown", markdown:{content:$content}}')
+
+    local response=$(curl -s --max-time 20 -X POST "${webhook_url}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}")
+
+    if echo "${response}" | grep -q '"errcode":0[,}]'; then
+        log_info "企业微信通知发送成功"
+        send_wecom_mention_text "${title}"
+        return 0
+    else
+        log_error "企业微信通知发送失败: ${response}"
+        return 1
+    fi
+}
+
 # 发送Telegram通知
 send_telegram_notification() {
     if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
@@ -523,27 +694,49 @@ main() {
             log_info "发送飞书通知..."
             send_feishu_notification || exit 1
             ;;
+        wecom)
+            log_info "发送企业微信通知..."
+            send_wecom_notification || exit 1
+            ;;
         telegram)
             log_info "发送Telegram通知..."
             send_telegram_notification || exit 1
             ;;
         all)
-            log_info "发送所有通知..."
-            local feishu_result=0
-            local telegram_result=0
-            
-            send_feishu_notification || feishu_result=$?
-            send_telegram_notification || telegram_result=$?
-            
-            if [ ${feishu_result} -ne 0 ] && [ ${telegram_result} -ne 0 ]; then
-                log_error "所有通知渠道都发送失败"
-                exit 1
-            elif [ ${feishu_result} -ne 0 ]; then
-                log_info "Telegram通知成功，但飞书通知失败（已忽略）"
-            elif [ ${telegram_result} -ne 0 ]; then
-                log_info "飞书通知成功，但Telegram通知失败（已忽略）"
+            # all 只发已配置的渠道：未配置的跳过且不计入失败，避免未配置就红 job
+            log_info "发送所有已配置渠道的通知..."
+            local attempted=0 failed=0 failed_names=""
+
+            if [ -n "${FEISHU_WEBHOOK_URL}" ]; then
+                attempted=$((attempted + 1))
+                send_feishu_notification || { failed=$((failed + 1)); failed_names="${failed_names} 飞书"; }
             else
-                log_info "所有通知发送成功"
+                log_warn "飞书未配置，跳过"
+            fi
+
+            if [ -n "$(get_wecom_webhook_url)" ]; then
+                attempted=$((attempted + 1))
+                send_wecom_notification || { failed=$((failed + 1)); failed_names="${failed_names} 企业微信"; }
+            else
+                log_warn "企业微信未配置，跳过"
+            fi
+
+            if [ -n "${TELEGRAM_BOT_TOKEN}" ] && [ -n "${TELEGRAM_CHAT_ID}" ]; then
+                attempted=$((attempted + 1))
+                send_telegram_notification || { failed=$((failed + 1)); failed_names="${failed_names} Telegram"; }
+            else
+                log_warn "Telegram未配置，跳过"
+            fi
+
+            if [ ${attempted} -eq 0 ]; then
+                log_warn "没有任何已配置的通知渠道，跳过（不视为失败）"
+            elif [ ${failed} -eq ${attempted} ]; then
+                log_error "所有已配置渠道都发送失败:${failed_names}"
+                exit 1
+            elif [ ${failed} -gt 0 ]; then
+                log_warn "部分渠道发送失败（已忽略）:${failed_names}"
+            else
+                log_info "所有已配置渠道发送成功"
             fi
             ;;
         none)
@@ -551,7 +744,7 @@ main() {
             ;;
         *)
             log_error "未知的通知提供商: ${NOTIFICATION_PROVIDER}"
-            log_error "支持的值: feishu | telegram | all | none"
+            log_error "支持的值: feishu | wecom | telegram | all | none"
             exit 1
             ;;
     esac
