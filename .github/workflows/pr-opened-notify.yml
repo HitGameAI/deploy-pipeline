@@ -28,8 +28,9 @@ jobs:
             --jq '.[] | "- " + (.commit.message | split("\n")[0])' > "${RUNNER_TEMP}/commits.txt"
 
           # 文件变更明细（状态/文件名/增/删）
+          # 注意：gh api --jq 只接受一个参数且字符串输出本身即为 raw，不要写 -r（会被当作过滤器导致参数溢出）
           gh api --paginate "repos/${REPO}/pulls/${PR}/files" \
-            --jq -r '.[] | [.status, .filename, (.additions|tostring), (.deletions|tostring)] | @tsv' > "${RUNNER_TEMP}/files.tsv"
+            --jq '.[] | [.status, .filename, (.additions|tostring), (.deletions|tostring)] | @tsv' > "${RUNNER_TEMP}/files.tsv"
 
           ADDED=$(grep -c "^added" "${RUNNER_TEMP}/files.tsv" || true)
           MODIFIED=$(grep -c "^modified" "${RUNNER_TEMP}/files.tsv" || true)
