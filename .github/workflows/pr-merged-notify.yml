@@ -1,27 +1,37 @@
 name: PR Merged Notify
 
-# 公共能力：PR 合并后飞书机器人推送
+# 公共能力：PR 合并后机器人推送（飞书 / 企业微信 / Telegram，由 provider 入参选择）
 # 各仓库薄入口（on: pull_request closed + merged 过滤）通过 workflow_call 调用，
-# github 上下文自动为调用方仓库的 PR 事件，需配合 secrets: inherit 传递 FEISHU_WEBHOOK_URL
+# github 上下文自动为调用方仓库的 PR 事件，需配合 secrets: inherit 传递对应渠道的 webhook secret
 on:
   workflow_call:
+    inputs:
+      provider:
+        description: '通知渠道：feishu | wecom | telegram | all（all 只发已配置的渠道）'
+        required: false
+        type: string
+        default: 'feishu'
 
 permissions:
   contents: read
 
 jobs:
   notify:
-    name: Notify Lark
+    name: Notify
     runs-on: ubuntu-latest
     steps:
-      # 与 pr-opened-notify 行为对齐：webhook 未配置（调用方仓库无此 secret）时静默跳过，不红 job
-      - name: 📢 Notify Lark
+      # 与 pr-opened-notify 行为对齐：所选渠道的 webhook 未配置（调用方仓库无此 secret）时静默跳过，不红 job
+      - name: 📢 Notify
         uses: kamalyes/deploy-pipeline/.github/actions/notify@master
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-        if: ${{ env.FEISHU_WEBHOOK_URL != '' }}
+          WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+          WECOM_WEBHOOK_KEY: ${{ secrets.WECOM_WEBHOOK_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        if: ${{ env.FEISHU_WEBHOOK_URL != '' || env.WECOM_WEBHOOK_URL != '' || env.WECOM_WEBHOOK_KEY != '' || env.TELEGRAM_BOT_TOKEN != '' }}
         with:
-          provider: feishu
+          provider: ${{ inputs.provider }}
           status: success
           title: ✅ PR 已合并 · ${{ github.event.repository.name }}
           message: |
