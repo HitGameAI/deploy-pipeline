@@ -14,10 +14,12 @@ jobs:
     name: Notify Lark
     runs-on: ubuntu-latest
     steps:
+      # 与 pr-opened-notify 行为对齐：webhook 未配置（调用方仓库无此 secret）时静默跳过，不红 job
       - name: 📢 Notify Lark
         uses: kamalyes/deploy-pipeline/.github/actions/notify@master
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        if: ${{ env.FEISHU_WEBHOOK_URL != '' }}
         with:
           provider: feishu
           status: success
