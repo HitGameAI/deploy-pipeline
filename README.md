@@ -2,6 +2,27 @@
 
 可复用的 GitHub Actions 工作流集合，支持 **Go 后端服务** 和 **前端应用** 的完整 CI/CD 流程及 Kubernetes 部署
 
+## 📑 目录
+
+| 章节 | 看这里解决什么问题 |
+|------|-------------------|
+| [项目架构](#️-项目架构) | 这个仓库里有什么、各目录的职责 |
+| [工作流列表](#-工作流列表) | 有哪些可复用工作流，分别干什么 |
+| [Secrets 和 Variables 配置](#-secrets-和-variables-配置) | 接入前要在仓库里配哪些变量与密钥 |
+| [GitHub App 创建与配置](#-github-app-创建与配置) | 拉私有 Go 模块 / 跨仓库推送要的 APP_ID 怎么来 |
+| [快速接入](#-快速接入) | 复制一份能跑的 pipeline.yml |
+| [多架构构建](#️-多架构构建amd64--arm64) | 怎么出 arm64 镜像 |
+| [通知与发布单](#-通知与发布单) | 飞书 / 企业微信 / Telegram 通知与 Release Note |
+| [工作流详细说明](#-工作流详细说明) | 每个工作流的完整入参与 Secrets |
+| [K8s 部署架构](#-k8s-部署架构) | 部署出来的资源长什么样 |
+| [K8s 模板清单与占位符](#-k8s-模板清单与占位符) | 12 个 yaml 模板分别何时渲染、占位符从哪来 |
+| [Composite Actions](#-composite-actions) | 四个复合 Action 的入参与出参 |
+| [公共脚本](#-公共脚本) | scripts/ 下每个脚本的用法 |
+| [工作流脚本引用机制](#-工作流脚本引用机制) | 工作流是怎么找到这些脚本的 |
+| [自测清单](#-自测清单) | 改完之后怎么验 |
+
+---
+
 ## 🏗️ 项目架构
 
 ```bash
@@ -152,6 +173,142 @@ Settings > Environments > [环境名称] > Environment variables
 | `dev` | dev-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `2` |
 | `test` | test-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `3` |
 | `prod` | prod-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `5` |
+
+---
+
+## 🔑 GitHub App 创建与配置
+
+`APP_ID` + `APP_PRIVATE_KEY` 这两个 Secret 不是随手填的字符串，它们来自一个你自己注册的
+GitHub App。本节把「从零注册到工作流跑通」这条路写完整，官方文档见
+[注册 GitHub App](https://docs.github.com/zh/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)。
+
+### 为什么用 App 而不是 PAT
+
+| 维度 | GitHub App | 个人访问令牌（PAT） |
+|------|------------|---------------------|
+| 令牌有效期 | 每次运行现签，1 小时自动失效 | 手动设定，常年有效甚至永不过期 |
+| 授权范围 | 按仓库逐个安装，按权限项勾选 | 跟着人走，默认能碰到这个人所有仓库 |
+| 人员流动 | 与个人账号无关，离职不影响 | 发证人离职 / 改密码即全线崩 |
+| 审计 | 操作记录显示为 App 身份，可追溯 | 只能看到个人账号，分不清是人还是流水线 |
+| 成员席位 | 不占用组织席位 | 机器人账号要占席位（私有仓库要付费）|
+
+工作流里用的是 [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)：
+它拿 App ID 与私钥换一个**短时效的安装令牌**，用完即弃。
+
+### 这个仓库用 App 做什么
+
+| 用途 | 哪个工作流 | 需要的权限 |
+|------|-----------|-----------|
+| 拉取私有 Go 模块（`go mod download`）| `code-quality.yml`、`backend-build-binary.yml` | Contents: **Read-only** |
+| 下游仓库升级 proto 引用并推回（`update-proto-mod`）| 业务仓库调用该 Action | Contents: **Read and write** |
+| 机器人评论 PR（pb 同步报告、变更摘要）| `pr-opened-notify.yml` 及业务仓库的生成流程 | Pull requests: **Read and write** |
+
+只做前一件事时，权限给到 `Contents: Read-only` 就够了。
+把三件事放在同一个 App 上没问题 —— 权限是按安装仓库生效的，不会让只读场景拿到写权限。
+
+### 令牌是怎么换出来的
+
+弄清这条链路，才知道为什么「App 建好了但还是 403」——问题几乎总出在第 3 步的安装关系上。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant WF as 业务仓库 Workflow
+    participant ACT as actions/create-github-app-token
+    participant GH as GitHub API
+    participant REPO as 私有 proto 仓库
+    participant GO as go mod download
+
+    WF->>ACT: 传入 APP_ID + APP_PRIVATE_KEY + owner
+    ACT->>GH: 用私钥签 JWT，查该 App 在 owner 下的安装记录
+    GH-->>ACT: 返回 installation_id
+    Note over GH,ACT: 这一步要求 App 已安装到该组织<br/>没装则查不到安装记录，直接失败
+    ACT->>GH: 用 installation_id 申请安装令牌
+    GH-->>ACT: 返回短时效令牌，1 小时过期
+    ACT-->>WF: 输出 steps.app_token.outputs.token
+    WF->>WF: git config url.insteadOf 注入令牌
+    WF->>GO: go mod download
+    GO->>REPO: https 拉取私有模块
+    REPO-->>GO: 返回模块内容
+    Note over REPO,GO: 令牌的权限是 App 在「这个仓库」上的权限<br/>App 没装到 proto 仓库时这里 404，而不是 401
+```
+
+### 注册步骤
+
+1. **进入注册页**
+   - 组织用（推荐）：`https://github.com/organizations/<你的组织>/settings/apps/new`
+   - 个人用：Settings → Developer settings → GitHub Apps → New GitHub App
+
+2. **填基本信息**
+
+   | 字段 | 填什么 | 说明 |
+   |------|--------|------|
+   | GitHub App name | 如 `<org>-ops-cli` | 全局唯一，重名会被拒 |
+   | Homepage URL | 组织或仓库地址即可 | 必填但不影响功能 |
+   | Webhook → Active | **取消勾选** | 我们只用它换令牌，不接收事件；不取消会一直给你推送失败告警 |
+
+3. **勾权限**（Permissions → Repository permissions）
+
+   | 权限项 | 给什么 | 为什么 |
+   |--------|--------|--------|
+   | Contents | Read-only（需推送时 Read and write）| 拉私有模块 / 推送 go.mod 变更 |
+   | Pull requests | Read and write（只拉模块可不给）| 机器人评论 PR |
+   | Metadata | Read-only（勾了上面会自动带上）| GitHub 强制要求 |
+
+   其余一律不动。多给的权限不会让流程更顺，只会扩大泄露后的影响面。
+
+4. **选安装范围**：Where can this GitHub App be installed → **Only on this account**
+
+5. **创建并记下 App ID**：创建后页面顶部的 `App ID`（纯数字）就是 `APP_ID`
+
+6. **生成私钥**：同一页 → Private keys → Generate a private key，浏览器会下载一个
+   `.pem` 文件。**这个文件只能下载这一次**，关掉页面就拿不回来了（可以再生成新的）
+
+7. **安装到仓库**：左侧 Install App → 选择账号/组织 → 选 `Only select repositories`，
+   勾上需要被访问的仓库（比如 proto 仓库 + 所有要拉它的业务仓库）
+
+   > 漏装是最常见的失败原因：App 创建好了但没装到目标仓库，换令牌会成功，
+   > 但用它 `git clone` 私有仓库仍然 404。
+
+8. **写进 Secrets**（仓库 Settings → Secrets and variables → Actions）
+
+   | Secret | 值 |
+   |--------|----|
+   | `APP_ID` | 第 5 步那串数字 |
+   | `APP_PRIVATE_KEY` | `.pem` 文件的**全部内容**，含 `-----BEGIN RSA PRIVATE KEY-----` 和 `-----END` 两行 |
+
+   粘贴私钥时保持原始换行，不要手动删空行或加缩进 —— 粘成一行会报
+   `error:0909006C:PEM routines:get_name:no start line`。
+
+   组织多仓库复用时，用 **Organization secrets** 配一次，再按仓库授权，比每个仓库各存一份好维护。
+
+9. **在工作流里启用**：把认证方式切到 `app-token` 并把两个 Secret 透传给可复用工作流
+
+   ```yaml
+   jobs:
+     code-quality:
+       uses: kamalyes/deploy-pipeline/.github/workflows/code-quality.yml@master
+       with:
+         goprivate: github.com/<你的组织>/*      # 不填则不会触发私有模块认证
+         go-auth-method: app-token
+       secrets:
+         APP_ID: ${{ secrets.APP_ID }}
+         APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+   ```
+
+   也可以把 `go-auth-method` 配成仓库 Variable `GO_AUTH_METHOD=app-token`，省掉每个
+   工作流都写一遍。
+
+### 常见错误对照
+
+| 报错 / 现象 | 原因 | 处理 |
+|------------|------|------|
+| `Input required and not supplied: app-id` | Secret 没配，或可复用工作流没透传 `secrets:` | 补 `secrets:` 段，或改用 `secrets: inherit` |
+| `PEM routines:get_name:no start line` | 私钥粘成了一行 / 丢了 BEGIN-END 行 | 重新粘贴完整 `.pem` 内容 |
+| 换令牌成功但 `go mod download` 仍 403/404 | App 没安装到被依赖的那个私有仓库 | Install App 里补勾该仓库 |
+| `GOPRIVATE` 没生效，走了公网代理 | `goprivate` 入参为空 | 填 `github.com/<org>/*` 或配 `vars.GOPRIVATE` |
+| 推送被拒 `403 Resource not accessible by integration` | Contents 只给了 Read-only | 改成 Read and write 并重新安装 |
+| App 一直收到 webhook 投递失败邮件 | 注册时没取消 Webhook → Active | 回 App 设置取消勾选 |
 
 ---
 
@@ -581,6 +738,42 @@ proto 仓库 master 更新后，业务仓库一键升级 `go.mod` 中 proto 模�
 ---
 
 ## 📖 工作流详细说明
+
+
+**跨仓库升级时序**：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OPS as 维护者
+    participant SVC as 业务仓库 Workflow
+    participant ACT as update-proto-mod Action
+    participant SH as update-proto-mod.sh
+    participant PROTO as proto 仓库
+    participant GO as Go 模块代理
+
+    OPS->>SVC: workflow_dispatch，填模块名与版本
+    SVC->>ACT: 传 PROTO_READ_TOKEN 与 PUSH_TOKEN
+    ACT->>SH: 执行脚本，参数为分支 / 模块 / 版本
+    SH->>SH: git config url.insteadOf 注入 PROTO_READ_TOKEN
+    SH->>SH: export GOPRIVATE=github.com/ORG/*
+    SH->>GO: go get github.com/ORG/MODULE@REF
+    GO->>PROTO: 拉取指定版本
+    PROTO-->>GO: 返回模块
+    GO-->>SH: 更新 go.mod 与 go.sum
+    SH->>SH: go mod tidy
+    alt go.mod 有变化
+        SH->>SVC: 用 PUSH_TOKEN 提交并推送到目标分支
+        SVC-->>OPS: 通知升级完成
+    else 无变化
+        SH-->>OPS: 直接退出，不产生空提交
+    end
+```
+
+> 两个令牌职责不同：`PROTO_READ_TOKEN` 只需要对 proto 仓库有读权限，
+> `PUSH_TOKEN` 需要对**当前仓库**有写权限。混用一个全权令牌能跑通，
+> 但一旦泄露影响面要大得多。
+
 
 ### 共享工作流
 
@@ -1064,6 +1257,236 @@ flowchart TD
 
 ---
 
+
+### CI/CD 调用时序
+
+上面的流程图讲「有哪些环节」，这张图讲「谁在什么时候调了谁」——
+可复用工作流的交接点、产物在哪一步落地、通知在哪一步发出。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DEV as 开发者
+    participant REPO as 业务仓库
+    participant PIPE as deploy-pipeline 可复用工作流
+    participant RUNNER as Runner
+    participant REG as 镜像仓库
+    participant K8S as K8s 集群
+    participant IM as 飞书 / 企业微信 / Telegram
+
+    DEV->>REPO: push 或 workflow_dispatch
+    REPO->>PIPE: uses: code-quality.yml
+    PIPE->>RUNNER: gofmt + go vet + 单测 + 覆盖率
+    RUNNER-->>PIPE: 上传覆盖率报告 artifact
+
+    REPO->>PIPE: uses: backend-build-binary.yml
+    PIPE->>RUNNER: 换 App 令牌，拉私有模块，交叉编译
+    RUNNER-->>PIPE: 上传二进制 artifact
+
+    REPO->>PIPE: uses: backend-build-docker.yml
+    PIPE->>RUNNER: 下载二进制 artifact，docker buildx
+    RUNNER->>REG: push 多架构镜像
+    REG-->>RUNNER: digest
+
+    REPO->>PIPE: uses: backend-deploy-k8s.yml
+    PIPE->>RUNNER: checkout deploy-pipeline，envsubst 渲染模板
+    RUNNER->>K8S: kubectl apply + rollout status
+    alt 滚动更新成功
+        K8S-->>RUNNER: 所有副本就绪
+        RUNNER->>IM: 发部署成功卡片
+    else 超时或失败
+        K8S-->>RUNNER: rollout 超时
+        RUNNER->>K8S: kubectl rollout undo 回滚
+        RUNNER->>IM: 发失败卡片，附 Actions 链接
+    end
+```
+
+> 每个 `uses:` 都是一次独立的 job 交接：产物只能通过 artifact 传递，环境变量与 Secret
+> 不会自动跨 job 继承 —— 这就是为什么调用方必须显式写 `secrets:` 或 `secrets: inherit`。
+
+---
+
+## 📦 K8s 模板清单与占位符
+
+`templates/k8s/` 下的 12 个 yaml 不是直接 apply 的成品，而是 **envsubst 模板**。
+部署工作流会把本仓库 checkout 到 `_deploy-workflows/`，导出一堆环境变量，再逐个渲染。
+
+```text
+deploy-pipeline checkout → _deploy-workflows/templates/k8s/<backend|frontend>/*.yaml
+        ↓ export APP_NAME / NAMESPACE / IMAGE_NAME / ...（来自 inputs、vars、计算结果）
+        ↓ envsubst < 模板 > ${DEPLOY_DIR}/<资源>.yaml
+        ↓ kubectl apply -f ${DEPLOY_DIR}/
+```
+
+> ⚠️ **Ingress 相关模板是 Traefik CRD**（`traefik.io/v1alpha1` 的 `IngressRoute` 与
+> `Middleware`），不是 k8s 原生 `Ingress`。集群里没装 Traefik 的话，这几个资源
+> apply 会失败 —— 要么装 Traefik，要么 fork 掉这几个模板换成自己的 Ingress 实现。
+
+### 后端模板（templates/k8s/backend/）
+
+| 模板 | 资源类型 | 渲染条件 | 作用 |
+|------|---------|---------|------|
+| `deployment.yaml` | `${KIND}`（Deployment / StatefulSet / DaemonSet）| 总是 | 主工作负载：镜像、探针、资源限额、端口、配置挂载、环境变量 |
+| `service.yaml` | `${SERVICE_KIND}`（默认 Service）| 总是 | 服务暴露，端口按 HTTP / RPC / WS / pprof / node-grpc 分块拼装 |
+| `hpa.yaml` | HorizontalPodAutoscaler | `ENABLE_HPA=true` | CPU + 内存双指标自动扩缩容 |
+| `ingress.yaml` | Traefik IngressRoute | `INGRESS_HOST` 非空 | 主路由，按需带 TLS、StripPrefix 中间件、WebSocket 子路由 |
+| `ingress-http.yaml` | Traefik IngressRoute | `INGRESS_TLS=true` 且 `INGRESS_REDIRECT_HTTP_TO_HTTPS=true` | 额外的 80 端口路由，专门用来跳转到 HTTPS |
+| `middleware.yaml` | Traefik Middleware | `ingress-path-prefix` 非空 | StripPrefix，把 `/svc-a/xxx` 剥成 `/xxx` 再转给服务 |
+| `middleware-redirect.yaml` | Traefik Middleware | 同 `ingress-http.yaml` | redirectScheme，HTTP → HTTPS |
+
+### 前端模板（templates/k8s/frontend/）
+
+| 模板 | 资源类型 | 渲染条件 | 作用 |
+|------|---------|---------|------|
+| `deployment.yaml` | Deployment | 总是 | 静态站点容器（Nginx），只有一个 HTTP 端口 |
+| `service.yaml` | Service | 总是 | 单端口暴露 |
+| `hpa.yaml` | HorizontalPodAutoscaler | `ENABLE_HPA=true` | 仅 CPU 指标 |
+| `ingress.yaml` | Traefik IngressRoute | `INGRESS_HOST` 非空 | 主路由，按需带 TLS 与 StripPrefix |
+| `middleware.yaml` | Traefik Middleware | `ingress-path-prefix` 非空 | StripPrefix |
+
+后端比前端多出 `ingress-http.yaml` 与 `middleware-redirect.yaml`，因为后端对外常要同时
+保留 80（跳转）和 443（服务）；前端站点一般由上层网关统一接管跳转。
+
+### 占位符从哪来
+
+占位符分三类，排查「某个值怎么不对」时先认清它属于哪一类：
+
+| 类别 | 例子 | 来源 |
+|------|------|------|
+| **标量值** | `APP_NAME`、`NAMESPACE`、`IMAGE_NAME`、`REPLICAS`、`CPU_LIMIT`、`MEMORY_LIMIT`、`RUN_MODE` | 工作流 inputs → 环境 vars → 默认值，逐级回退 |
+| **结构块**（以 `_BLOCK` 结尾）| `DEPLOY_HTTP_PORT_BLOCK`、`SVC_RPC_PORT_BLOCK`、`LIVENESS_PROBE_BLOCK`、`TLS_BLOCK`、`MIDDLEWARES_BLOCK`、`EXTRA_ENV_BLOCK` | 工作流里按条件拼出的**多行 YAML 片段**；对应能力关闭时拼成空串，整段消失 |
+| **计算值** | `INGRESS_MATCH_RULE`、`INGRESS_STRIP_PREFIX`、`GOMEMLIMIT_ENV_BLOCK` | 由其他值推导，如 `INGRESS_MATCH_RULE` 由 host 与 path-prefix 拼成 Traefik 规则 |
+
+完整占位符清单：
+
+| 模板 | 占位符 |
+|------|--------|
+| backend/deployment.yaml | `KIND` `APP_NAME` `NAMESPACE` `IMAGE_NAME` `IMAGE_PULL_POLICY` `IMAGE_PULL_SECRETS` `REPLICAS` `REVISION_HISTORY_LIMIT` `RUN_MODE` `CPU_REQUEST` `CPU_LIMIT` `MEMORY_REQUEST` `MEMORY_LIMIT` `CONFIGMAP_NAME` `CONFIG_MOUNT_PATH` `TERMINATION_GRACE_PERIOD_SECONDS` `ANNOTATIONS_BLOCK` `DEPLOY_HTTP_PORT_BLOCK` `DEPLOY_RPC_PORT_BLOCK` `DEPLOY_WS_PORT_BLOCK` `DEPLOY_PPROF_PORT_BLOCK` `DEPLOY_NODE_GRPC_PORT_BLOCK` `LIVENESS_PROBE_BLOCK` `READINESS_PROBE_BLOCK` `STARTUP_PROBE_BLOCK` `EXTRA_ENV_BLOCK` `GOMEMLIMIT_ENV_BLOCK` |
+| backend/service.yaml | `SERVICE_KIND` `SERVICE_TYPE` `APP_NAME` `NAMESPACE` `SVC_HTTP_PORT_BLOCK` `SVC_RPC_PORT_BLOCK` `SVC_WS_PORT_BLOCK` `SVC_PPROF_PORT_BLOCK` `SVC_NODE_GRPC_PORT_BLOCK` |
+| backend/hpa.yaml | `APP_NAME` `NAMESPACE` `MIN_REPLICAS` `MAX_REPLICAS` `TARGET_CPU_UTILIZATION` `TARGET_MEMORY_UTILIZATION` |
+| backend/ingress.yaml | `APP_NAME` `NAMESPACE` `INGRESS_ENTRY_POINT` `INGRESS_MATCH_RULE` `INGRESS_PORT` `INGRESS_WS_ROUTE_BLOCK` `MIDDLEWARES_BLOCK` `TLS_BLOCK` |
+| backend/ingress-http.yaml | `APP_NAME` `NAMESPACE` `INGRESS_MATCH_RULE` `INGRESS_PORT` `INGRESS_WS_ROUTE_BLOCK` `INGRESS_REDIRECT_MIDDLEWARE` |
+| backend/middleware.yaml | `NAMESPACE` `INGRESS_STRIP_NAME` `INGRESS_STRIP_PREFIX` |
+| backend/middleware-redirect.yaml | `APP_NAME` `NAMESPACE` |
+| frontend/deployment.yaml | `APP_NAME` `NAMESPACE` `IMAGE_NAME` `IMAGE_PULL_POLICY` `IMAGE_PULL_SECRETS` `REPLICAS` `REVISION_HISTORY_LIMIT` `RUN_MODE` `HTTP_PORT` `CPU_REQUEST` `CPU_LIMIT` `MEMORY_REQUEST` `MEMORY_LIMIT` `CONFIGMAP_NAME` `CONFIG_MOUNT_PATH` `LIVENESS_DELAY` `LIVENESS_PERIOD` `READINESS_DELAY` `READINESS_PERIOD` |
+| frontend/service.yaml | `APP_NAME` `NAMESPACE` `HTTP_PORT` |
+| frontend/hpa.yaml | `APP_NAME` `NAMESPACE` `MIN_REPLICAS` `MAX_REPLICAS` `TARGET_CPU_UTILIZATION` |
+| frontend/ingress.yaml | `APP_NAME` `NAMESPACE` `HTTP_PORT` `INGRESS_ENTRY_POINT` `INGRESS_MATCH_RULE` `MIDDLEWARES_BLOCK` `TLS_BLOCK` |
+| frontend/middleware.yaml | `NAMESPACE` `INGRESS_STRIP_NAME` `INGRESS_STRIP_PREFIX` |
+
+### 渲染与部署时序
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant WF as backend-deploy-k8s.yml
+    participant DP as deploy-pipeline 仓库
+    participant ENV as 环境变量
+    participant ES as envsubst
+    participant KC as kubectl
+    participant K8S as K8s 集群
+
+    WF->>DP: checkout 到 _deploy-workflows/
+    WF->>ENV: 导出标量：APP_NAME / NAMESPACE / IMAGE_NAME / REPLICAS ...
+    WF->>ENV: 按条件拼结构块：探针、端口、TLS、中间件
+    Note over WF,ENV: 能力关闭时对应 _BLOCK 拼成空串<br/>渲染后整段消失，而不是留下空字段
+
+    WF->>ES: deployment.yaml
+    ES-->>WF: 写入 DEPLOY_DIR
+    WF->>ES: service.yaml
+    ES-->>WF: 写入 DEPLOY_DIR
+    alt ENABLE_HPA=true
+        WF->>ES: hpa.yaml
+    end
+    alt INGRESS_HOST 非空
+        alt ingress-path-prefix 非空
+            WF->>ES: middleware.yaml，StripPrefix
+        end
+        alt INGRESS_TLS 且 REDIRECT_HTTP_TO_HTTPS
+            WF->>ES: middleware-redirect.yaml + ingress-http.yaml
+        end
+        WF->>ES: ingress.yaml
+    end
+
+    WF->>WF: 上传渲染结果作为 artifact
+    WF->>KC: kubectl apply -f DEPLOY_DIR/
+    KC->>K8S: 创建或更新资源
+    KC->>K8S: rollout status 等待就绪
+    K8S-->>KC: 就绪或超时
+```
+
+### 怎么定制
+
+| 想做什么 | 做法 |
+|---------|------|
+| 只调数值（副本数、限额、探针延迟）| 配对应的 input 或环境 Variable，别动模板 |
+| 加一个固定的 annotation / label | 用 `ANNOTATIONS_BLOCK` 之类的块输入，仍然不用动模板 |
+| 换 Ingress 实现（Nginx Ingress / Gateway API）| fork 本仓库改 `templates/k8s/*/ingress*.yaml` 与 `middleware*.yaml`，业务侧把 `uses:` 指到你的 fork |
+| 加一种全新资源（如 ServiceMonitor）| 在 `templates/k8s/<side>/` 加模板，并在对应 deploy 工作流里补 envsubst 与 apply |
+
+调试建议：部署工作流会把渲染后的 yaml 作为 artifact 上传，出问题时先下载它看实际渲染结果 ——
+绝大多数「apply 报错」都是某个 `_BLOCK` 拼出来缩进不对，直接看成品比猜变量快。
+
+---
+
+## 🧩 Composite Actions
+
+`.github/actions/` 下四个复合 Action，可在自己的工作流里单独引用。
+
+### normalize-image-name
+
+把 Docker 镜像名规范化，并按需生成 tag 列表。
+
+**为什么需要它**：Docker 对镜像名有两条硬规则 —— repository 部分必须全小写，tag 里不能出现 `/`。
+而 GitHub 的组织名常带大写（`HitGameAI`），分支名常带斜杠（`feature/turnover`），直接拼进镜像名
+会在 push 阶段报 `invalid reference format`。这个 Action 把 repository 转小写、把 tag 里的 `/` 换成 `-`，
+同时**不碰 registry 端口号**（`registry:5000/app:v1` 里 `/` 之前的冒号不会被当成 tag 分隔符）。
+
+| 入参 | 必填 | 默认 | 说明 |
+|------|------|------|------|
+| `image-base` | 否 | `''` | 镜像基址，如 `ghcr.io/MyOrg/app` |
+| `image-name` | 否 | `''` | 完整镜像名，如 `ghcr.io/MyOrg/app:Feature/X` |
+| `generate-tags` | 否 | `false` | 是否额外输出 tag 列表（构建类工作流才需要）|
+
+| 出参 | 说明 |
+|------|------|
+| `image-base` | 规范化后的基址 |
+| `image-name` | 规范化后的完整镜像名 |
+| `tags` | 多行 tag 字符串：`image-name` 一行 + `image-base:<清洗后的分支名>` 一行，仅 `generate-tags=true` 时输出 |
+
+```yaml
+- id: img
+  uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
+  with:
+    image-base: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
+    image-name: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.ref_name }}
+    generate-tags: 'true'
+- run: echo "${{ steps.img.outputs.tags }}"
+```
+
+### print-runner-info
+
+打印 runner 的内核、架构、CPU 型号与核数、内存、磁盘。无入参无出参。
+
+排查这几类问题时很省事：构建突然变慢（换了规格更低的 runner）、交叉编译结果不对
+（架构与预期不符）、`go build` 被 OOM kill（内存不够）、磁盘写满导致 docker build 失败。
+
+```yaml
+- uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
+```
+
+### notify
+
+统一的通知 Action，支持飞书 / 企业微信 / Telegram，详见
+[通知与发布单](#-通知与发布单) 一节的「通用通知 Action」。
+
+### update-proto-mod
+
+下游仓库升级 proto 模块引用，详见
+[proto 模块引用升级](#proto-模块引用升级update-proto-mod) 一节。
+
+---
+
 ## 📜 公共脚本
 
 ### backend/build-linux.sh
@@ -1095,6 +1518,58 @@ bash scripts/frontend/build-frontend.sh \
   --package-registry "https://registry.npmmirror.com" \
   --output-dir "dist"
 ```
+
+### common.sh
+
+被其他脚本 `source` 的公共函数库，自己不单独执行。所有输出都 `tee` 进 `${LOG_FILE}`，
+所以构建日志既能在 Actions 里实时看到，也会落到文件里随 artifact 一起上传。
+
+```bash
+source "$(dirname "$0")/../common.sh"     # 相对路径按调用方位置调整
+```
+
+| 函数 | 用法 | 说明 |
+|------|------|------|
+| `log_info` | `log_info "正在构建"` | ℹ️ 普通信息 |
+| `log_success` | `log_success "构建完成"` | ✅ 成功 |
+| `log_warn` | `log_warn "跳过 UPX 压缩"` | ⚠️ 警告，不中断 |
+| `log_error` | `log_error "找不到 go"` | ❌ 错误，需调用方自己决定是否 exit |
+| `log_section` | `log_section "环境准备"` | 带分隔线的大标题，用于划分阶段 |
+| `log_step` | `log_step "下载依赖"` | ▶️ 阶段内的小步骤 |
+| `run_command` | `run_command "go build ./..." "编译"` | 执行命令并打印描述与结果，失败返回非零 |
+| `check_env` | `check_env VERSION GIT_COMMIT` | 批量校验环境变量非空，缺哪个报哪个 |
+| `ensure_directory` | `ensure_directory deployments` | 目录不存在则创建 |
+| `show_directory_tree` | `show_directory_tree deployments 2` | 打印目录结构，第二个参数是深度（默认 2）|
+
+写新脚本时优先用这些函数而不是裸 `echo`：日志格式统一，出问题时在几百行 Actions
+输出里能一眼找到阶段边界。
+
+### update-proto-mod.sh
+
+下游仓库升级 proto 模块引用的核心脚本，由
+[`update-proto-mod`](#proto-模块引用升级update-proto-mod) Action 调用，也可本地手动跑。
+
+```bash
+bash scripts/update-proto-mod.sh <目标分支> <模块名> <模块版本>
+# 例：bash scripts/update-proto-mod.sh master demo-share-proto master
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| 1. 目标分支 | ✅ | 升级后推回哪个分支 |
+| 2. 模块名 | ✅ | proto 仓库名，组织前缀由 `GITHUB_REPOSITORY` 推导 |
+| 3. 模块版本 | 否（默认 `master`）| 可填分支、tag 或 commit hash |
+
+| 环境变量 | 说明 |
+|---------|------|
+| `PROTO_READ_TOKEN` | 能读 proto 仓库的令牌（GitHub App token）|
+| `PUSH_TOKEN` | 能推当前仓库的令牌（一般用 `GITHUB_TOKEN`）|
+| `GITHUB_REPOSITORY` | `owner/repo`，Actions 自动注入；本地跑要手动导出 |
+
+执行流程：配置 `url.insteadOf` 让 go 带令牌拉私有库 → `go get <module>@<ref>` →
+`go mod tidy` → 有 diff 才提交推送（无变化直接退出，不会产生空提交）。
+
+> 本地手动跑之前先确认 `GOPRIVATE` 覆盖了该组织，否则 go 会走公共代理拿不到私有模块。
 
 ### notify.sh
 
