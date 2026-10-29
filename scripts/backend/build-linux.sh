@@ -16,6 +16,11 @@ UPX_LEVEL="${UPX_LEVEL:---best --lzma}"
 BUILD_DIR="${BUILD_DIR:-}"
 # 额外构建标签，附加在默认 netgo 之后（如 swagger 用于嵌入 swagger 文档）
 EXTRA_BUILD_TAGS="${EXTRA_BUILD_TAGS:-}"
+# 调用 go 的命令，默认就是 go 本身
+# 有些仓库必须通过包装器调 go（比如用 go.work 管私有公共库、或要强制锁定依赖口径），
+# 以前这类仓库只能整份复制一个构建脚本，连 ldflags、trimpath、UPX、buildinfo 都得照抄一遍
+# 给一个 --go-cmd，它们只需写十来行设置环境变量再委托回本脚本
+GO_CMD="${GO_CMD:-go}"
 
 # 参数解析
 while [[ $# -gt 0 ]]; do
@@ -68,9 +73,13 @@ while [[ $# -gt 0 ]]; do
             EXTRA_BUILD_TAGS="$2"
             shift 2
             ;;
+        --go-cmd)
+            GO_CMD="$2"
+            shift 2
+            ;;
         *)
             echo "未知参数: $1"
-            echo "用法: $0 [--version VERSION] [--build-time TIME] [--git-commit COMMIT] [--output-dir DIR] [--binary-name NAME] [--os OS] [--arch ARCH] [--batch] [--build-tags TAGS] [--upx-compress true|false] [--upx-level LEVEL] [--build-dir DIR]"
+            echo "用法: $0 [--version VERSION] [--build-time TIME] [--git-commit COMMIT] [--output-dir DIR] [--binary-name NAME] [--os OS] [--arch ARCH] [--batch] [--build-tags TAGS] [--upx-compress true|false] [--upx-level LEVEL] [--build-dir DIR] [--go-cmd CMD]"
             exit 1
             ;;
     esac
@@ -165,6 +174,46 @@ fi
 TRIM_PATH="-trimpath"  # 移除文件路径信息
 BUILDVCS="-buildvcs=false"  # CI 环境无需 VCS 信息，跳过探测提速
 
+# 写构建信息文件
+#
+# 为什么要有这个文件：排查线上问题时第一个问题总是「这个 Pod 跑的是哪次构建」
+# 很多服务的 main 包没有 version/buildTime/gitCommit 变量，-X 注入会被链接器静默忽略，
+# 光看二进制看不出来所以把这几项另存一份纯文本，跟二进制一起进产物、一起进镜像，
+# 进容器 cat 一下就知道
+#
+# 单平台构建写 buildinfo.txt；批量模式按平台分开写，避免互相覆盖
+write_buildinfo() {
+    local os=$1
+    local arch=$2
+    local binary_path=$3
+    local info_path="${OUTPUT_DIR}/buildinfo.txt"
+
+    if [[ "${BATCH_MODE}" == "true" ]]; then
+        info_path="${OUTPUT_DIR}/buildinfo-${os}-${arch}.txt"
+    fi
+
+    local size=""
+    if [[ -f "${binary_path}" ]]; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            size=$(ls -lh "${binary_path}" | awk '{print $5}')
+        else
+            size=$(du -h "${binary_path}" | cut -f1)
+        fi
+    fi
+
+    cat > "${info_path}" <<INFO
+binary=$(basename "${binary_path}")
+version=${VERSION}
+git_commit=${GIT_COMMIT}
+build_time=${BUILD_TIME}
+platform=${os}/${arch}
+build_tags=${BUILD_TAGS}
+go_cmd=${GO_CMD}
+size=${size}
+INFO
+    echo "📝 构建信息: ${info_path}"
+}
+
 # 构建函数
 build_target() {
     local os=$1
@@ -182,9 +231,11 @@ build_target() {
     echo "   - Build Time: ${BUILD_TIME}"
     echo "   - Git Commit: ${GIT_COMMIT}"
     echo "   - Platform: ${os}/${arch}"
+    echo "   - Go Command: ${GO_CMD}"
     
     BUILD_TARGET="${BUILD_DIR:-.}"
-    if GOOS=${os} GOARCH=${arch} CGO_ENABLED=0 go build \
+    # shellcheck disable=SC2086
+    if GOOS=${os} GOARCH=${arch} CGO_ENABLED=0 ${GO_CMD} build \
         ${TRIM_PATH} ${BUILDVCS} \
         -tags "${BUILD_TAGS}" \
         -ldflags "${LDFLAGS}" \
@@ -210,6 +261,8 @@ build_target() {
             fi
             echo "📦 压缩后大小: ${compressed_size}"
         fi
+
+        write_buildinfo "${os}" "${arch}" "${output}"
     else
         echo "❌ 构建失败: ${output}"
         return 1

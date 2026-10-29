@@ -235,9 +235,26 @@ jobs:
           echo "Build completed: ${{ inputs.binary-name }} (${{ env.BUILD_BINARY_OS }}/${{ env.BUILD_BINARY_ARCH }})"
           ls -lh "${{ inputs.binary-source-dir }}"
 
+      - name: 🧾 Resolve Artifact Paths
+        id: artifact-paths
+        # buildinfo.txt 的路径从 binary-output 的目录推出来，而不是直接用 binary-source-dir。
+        # 原因：upload-artifact v4 以「所有匹配文件的最近公共祖先」为产物根目录。
+        # 如果某个调用方的 binary-output 是嵌套路径（deployments/bin/app），而 buildinfo
+        # 用的是 binary-source-dir（deployments），公共祖先就会上移一层，二进制在产物里
+        # 变成 bin/app 而不是 app，下游 docker job 的 COPY ./app 就找不到文件了
+        # 两个文件取同一个目录，公共祖先与改动前完全一致，二进制位置不受影响
+        run: |
+          BINARY_DIR="$(dirname "${{ inputs.binary-output }}")"
+          echo "buildinfo=${BINARY_DIR}/buildinfo.txt" >> $GITHUB_OUTPUT
+
       - name: 📤 Upload Binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.binary-name }}-binary
-          path: ${{ inputs.binary-output }}
+          # buildinfo.txt 由 scripts/backend/build-linux.sh 生成；
+          # 调用方若用自己的构建脚本且没写这个文件，warn 跳过即可，不要让 job 变红
+          path: |
+            ${{ inputs.binary-output }}
+            ${{ steps.artifact-paths.outputs.buildinfo }}
+          if-no-files-found: warn
           retention-days: ${{ inputs.retention-days }}

@@ -89,6 +89,11 @@ on:
         required: false
         type: string
         default: 'ubuntu-latest'
+      cmd-args:
+        description: '容器启动参数，空格分隔，追加到 CMD 后面（如 "-f resources/config.dev.yaml"）。不支持含空格的单个参数'
+        required: false
+        type: string
+        default: ''
       extra-copy-dirs:
         description: '额外拷贝到 Docker context 的目录（逗号分隔，支持 src:dest 格式，如 "proto" 或 "proto:./proto,locales:./locales"）'
         required: false
@@ -190,6 +195,16 @@ jobs:
             COPY_LOCALES="COPY ./locales ./locales"
           fi
 
+          # 构建信息随镜像走：排查线上问题时「这个 Pod 跑的是哪次构建」要能当场回答。
+          # 文件由 build-binary 的产物带过来（scripts/backend/build-linux.sh 生成），
+          # 调用方用自己的构建脚本且没写这个文件时，这里自动跳过，不影响构建。
+          COPY_BUILDINFO=""
+          if [ -f "${BINARY_SOURCE_DIR}/buildinfo.txt" ]; then
+            COPY_BUILDINFO="COPY ./buildinfo.txt ./buildinfo.txt"
+            echo "📝 构建信息随镜像打包："
+            cat "${BINARY_SOURCE_DIR}/buildinfo.txt"
+          fi
+
           # 额外目录拷贝：将指定目录复制到 Docker context（支持 src:dest 格式）
           EXTRA_COPY=""
           EXTRA_DIRS_INPUT="${{ inputs.extra-copy-dirs }}"
@@ -221,6 +236,19 @@ jobs:
             done
           fi
 
+          # 启动参数：有些服务的配置路径是命令行 flag 而不是环境变量（比如 go-zero 的 -f），
+          # 容器里又拿不到 docker run 的参数，只能写进镜像的 CMD。
+          # 不为此改服务代码：加一个 flag 比在 main 里塞一个只为容器存在的环境变量兜底更干净。
+          # 按空格切分后逐个加引号，拼成合法的 JSON 数组元素。
+          CMD_ARGS_JSON=""
+          RAW_CMD_ARGS="${{ inputs.cmd-args }}"
+          if [ -n "${RAW_CMD_ARGS}" ]; then
+            for cmd_arg in ${RAW_CMD_ARGS}; do
+              CMD_ARGS_JSON="${CMD_ARGS_JSON}, \"${cmd_arg}\""
+            done
+            echo "🚀 容器启动参数: ${RAW_CMD_ARGS}"
+          fi
+
           # 生成单架构 Dockerfile
           # build-push-action 通过 platforms=linux/${BUILD_ARCH} 把镜像 manifest 标记为对应架构
           cat << EOF > ${BINARY_SOURCE_DIR}/Dockerfile
@@ -229,6 +257,7 @@ jobs:
           STOPSIGNAL SIGTERM
           WORKDIR ${DOCKER_RUN_WORKDIR}
           COPY ./${BUILD_APP_NAME} ./${BUILD_APP_NAME}
+          ${COPY_BUILDINFO}
           ${COPY_LOCALES}
           ${EXTRA_COPY}
           RUN chmod +x ./${BUILD_APP_NAME}
@@ -237,7 +266,7 @@ jobs:
           ${RPC_EXPOSE}
           ${WS_EXPOSE}
           ${PPROF_EXPOSE}
-          CMD ["./${BUILD_APP_NAME}"]
+          CMD ["./${BUILD_APP_NAME}"${CMD_ARGS_JSON}]
           EOF
 
           echo ""
