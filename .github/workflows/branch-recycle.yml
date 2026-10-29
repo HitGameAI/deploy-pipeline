@@ -1,0 +1,142 @@
+name: 🔄 Branch Recycle
+
+# ============================================
+# 分支回收工作流（周节奏 SOP 自动化：周三上线发布后 dev 回收重切）
+# 用途：
+#   1. 前置检查（可选）：各仓库今日存在 prod-YYYY.MM.DD* tag（发布已完成）
+#   2. dev 回收：确认 dev 无未发布内容 → 删 dev → 从 master 重切（git 树每周归零）
+#   3. feature 清理：删除已完全合入 master 的 feature/* 分支
+# 触发方式：
+#   schedule          - 周三 21:00（北京时间）自动干跑，推送预告卡片到群（不执行）
+#   workflow_dispatch - 人工确认执行（dry-run=false）或手动干跑；中心批量模式的入口
+#   workflow_call     - 被各仓库调用（单仓库自助模式，用调用方 GITHUB_TOKEN）
+# 安全设计：默认干跑；dev 有未发布内容（领先 master）自动拒绝；今日无 tag 自动跳过
+# 跨仓库批量操作依赖 BRANCH_OPS_TOKEN（PAT 或 GitHub App token，需覆盖目标仓库）
+# 仓库列表优先级：inputs.repos > vars.BRANCH_OPS_REPOS > 当前仓库
+# ============================================
+
+on:
+  schedule:
+    - cron: '0 13 * * 3'  # UTC 13:00 = 北京时间周三 21:00（发布窗口后）
+  workflow_call:
+    inputs:
+      repos:
+        description: '仓库列表（逗号分隔 owner/repo，留空=vars.BRANCH_OPS_REPOS 或当前仓库）'
+        required: false
+        type: string
+        default: ''
+      source-branch:
+        description: '源分支'
+        required: false
+        type: string
+        default: 'master'
+      target-branch:
+        description: '回收目标分支'
+        required: false
+        type: string
+        default: 'dev'
+      feature-prefix:
+        description: '要清理的 feature 分支前缀'
+        required: false
+        type: string
+        default: 'feature/'
+      clean-features:
+        description: '是否清理已合并 feature 分支'
+        required: false
+        type: boolean
+        default: true
+      require-today-tag:
+        description: '是否要求今日存在 prod-YYYY.MM.DD* tag 才回收（周节奏发布完成后开启）'
+        required: false
+        type: boolean
+        default: false
+      dry-run:
+        description: '干跑模式（true 只推送预告不执行）'
+        required: false
+        type: boolean
+        default: true
+      notification-provider:
+        description: '通知渠道: feishu | telegram | all | none'
+        required: false
+        type: string
+        default: 'feishu'
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: '仓库列表（逗号分隔 owner/repo，留空=vars.BRANCH_OPS_REPOS 或当前仓库）'
+        required: false
+        type: string
+        default: ''
+      source-branch:
+        description: '源分支'
+        required: false
+        type: string
+        default: 'master'
+      target-branch:
+        description: '回收目标分支'
+        required: false
+        type: string
+        default: 'dev'
+      feature-prefix:
+        description: '要清理的 feature 分支前缀'
+        required: false
+        type: string
+        default: 'feature/'
+      clean-features:
+        description: '是否清理已合并 feature 分支'
+        required: false
+        type: boolean
+        default: true
+      require-today-tag:
+        description: '是否要求今日存在 prod-YYYY.MM.DD* tag 才回收（周节奏发布完成后开启）'
+        required: false
+        type: boolean
+        default: true
+      dry-run:
+        description: '干跑模式（false=确认执行；schedule 自动触发恒为干跑预告）'
+        required: false
+        type: boolean
+        default: false
+      notification-provider:
+        description: '通知渠道: feishu | telegram | all | none'
+        required: false
+        type: string
+        default: 'feishu'
+
+jobs:
+  branch-recycle:
+    name: 🔄 Recycle dev
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Branch Recycle
+        id: ops
+        env:
+          # 中心批量模式（跨仓库）用 BRANCH_OPS_TOKEN；单仓库 call 模式回退 GITHUB_TOKEN
+          GH_TOKEN: ${{ secrets.BRANCH_OPS_TOKEN || secrets.GITHUB_TOKEN }}
+          BRANCH_OPS_REPOS: ${{ inputs.repos || vars.BRANCH_OPS_REPOS || '' }}
+          BRANCH_OPS_SOURCE: ${{ inputs.source-branch }}
+          BRANCH_OPS_TARGET: ${{ inputs.target-branch }}
+          BRANCH_OPS_FEATURE_PREFIX: ${{ inputs.feature-prefix }}
+          BRANCH_OPS_CLEAN_FEATURES: ${{ inputs.clean-features }}
+          BRANCH_OPS_REQUIRE_TAG: ${{ inputs.require-today-tag }}
+          # schedule 触发无 inputs（恒为干跑预告）；其余触发按 inputs
+          BRANCH_OPS_DRY_RUN: ${{ github.event_name == 'schedule' && 'true' || inputs.dry-run }}
+        run: bash scripts/branch-ops.sh recycle
+
+      - name: Notify Result
+        if: always()
+        uses: kamalyes/deploy-pipeline/.github/actions/notify@master
+        with:
+          provider: ${{ inputs.notification-provider || 'feishu' }}
+          status: ${{ steps.ops.outputs.status || 'failure' }}
+          title: ${{ github.event_name == 'schedule' && '🔄 dev 回收预告（干跑，请确认后手动执行）' || '🔄 dev 回收结果' }}
+          message: ${{ steps.ops.outputs.summary || '脚本未产出汇总，请查看日志' }}
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

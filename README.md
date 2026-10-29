@@ -39,7 +39,9 @@ deploy-pipeline/
 │   │   ├── frontend-deploy-k8s.yml     # K8s 部署（前端应用）
 │   │   ├── release-note.yml           # tag 发布单（自动生成 GitHub Release）
 │   │   ├── pr-opened-notify.yml       # PR 开启变更摘要通知
-│   │   └── pr-merged-notify.yml       # PR 合并通知
+│   │   ├── pr-merged-notify.yml       # PR 合并通知
+│   │   ├── branch-recycle.yml         # dev 回收重切 + 已合并 feature 清理（周三发布后）
+│   │   └── branch-cut.yml             # 批量切分支（新迭代从 master 切 feature/xx）
 │   └── actions/                 # 可复用 Composite Actions
 │       ├── notify/              # 通用通知（飞书/企业微信/Telegram，支持自定义标题正文）
 │       ├── update-proto-mod/    # 升级 go.mod 中 proto 模块引用并提 PR
@@ -80,8 +82,8 @@ deploy-pipeline/
 | **前端** | Build Docker | `frontend-build-docker.yml` | 构建并推送前端 Docker 镜像（含 Summary 报告） |
 | **前端** | Deploy K8s | `frontend-deploy-k8s.yml` | 部署前端应用到 Kubernetes |
 | **通知** | Release Note | `release-note.yml` | tag 发布模式构建成功后自动生成 GitHub Release 发布单 |
-| **通知** | PR Opened Notify | `pr-opened-notify.yml` | PR 开启时推送变更摘要到飞书/企微/TG |
-| **通知** | PR Merged Notify | `pr-merged-notify.yml` | PR 合并后推送通知到飞书/企微/TG |
+| **通知** | PR Opened Notify | `pr-opened-notify.yml` | PR 开启时推送变更摘要到飞书/TG |
+| **通知** | PR Merged Notify | `pr-merged-notify.yml` | PR 合并后推送通知到飞书/TG |
 
 > GitHub reusable workflow 的 `uses:` 目标必须直接位于 `.github/workflows/` 顶层，不能放在 `backend/`、`frontend/`、`shared/` 等二级目录。
 
@@ -886,6 +888,111 @@ cleanup:
     project-owner: 'your-org'
     keep-count: '5'
     tag-exclude-prefix: 'prod,master'
+```
+
+### 分支管理工作流
+
+周节奏 SOP 的分支工程化（详见复盘文档《CI-CD-Review》）：周三上线发布后 dev 回收重切（git 树每周归零）+ 新迭代从最新 master 切 feature。
+
+#### Branch Recycle（dev 回收重切 + 已合并 feature 清理）
+
+**动作序列**（每仓库）：
+
+1. 前置检查（可选开启）：今日存在 `prod-YYYY.MM.DD*` tag（确认发布已完成，未发布自动跳过）
+2. dev 状态检查：`compare master...dev` 为 `identical/behind`（无未发布内容）才回收；`ahead/diverged` 自动**拒绝**并列出领先提交数（其他项目未发布变更，人工决策）
+3. 删 dev → 从 master 重切（`dev` 不存在则直接新建，首次接入场景）
+4. feature 清理：删除已完全合入 master 的 `feature/*` 分支，未合并的保留并列出
+
+**安全设计**：
+
+| 机制 | 说明 |
+|---|---|
+| 干跑预告 | 周三 21:00（北京时间）schedule 自动**干跑**，推预告卡片到群；真执行必须人工 `workflow_dispatch` 以 `dry-run=false` 确认——删分支永不无人值守 |
+| 拒绝即停 | dev 领先 master（有未发布内容）自动拒绝该仓库，不误删其他项目变更 |
+| 发布完成检查 | `require-today-tag=true` 时，今日无 `prod-*` tag 的仓库跳过（晚发布自动顺延到下次） |
+| 幂等 | `dev` 缺失自动新建；重复触发安全 |
+
+**触发方式**：
+
+| 方式 | 场景 | dry-run |
+|---|---|---|
+| `schedule`（周三 21:00） | 自动干跑推预告卡片到群 | 恒为 true |
+| `workflow_dispatch` | 人工确认执行（`dry-run=false`）或手动干跑 | 按 input |
+| `workflow_call` | 单仓库自助模式（调用方 GITHUB_TOKEN 操作自己分支） | 按 input |
+
+**参数**：
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `repos` | string | 否 | `''` | 仓库列表（逗号分隔 owner/repo；留空回退 `vars.BRANCH_OPS_REPOS`，再回退当前仓库） |
+| `source-branch` | string | 否 | `master` | 源分支（重切基点） |
+| `target-branch` | string | 否 | `dev` | 回收目标分支 |
+| `feature-prefix` | string | 否 | `feature/` | 要清理的 feature 分支前缀 |
+| `clean-features` | boolean | 否 | `true` | 是否清理已合并 feature 分支 |
+| `require-today-tag` | boolean | 否 | call: `false` / dispatch: `true` | 是否要求今日存在 `prod-YYYY.MM.DD*` tag 才回收 |
+| `dry-run` | boolean | 否 | call: `true` / dispatch: `false` | 干跑模式（schedule 恒为干跑） |
+| `notification-provider` | string | 否 | `feishu` | 通知渠道：feishu / telegram / all / none |
+
+**配置要求**（中心批量模式，在 deploy-pipeline 仓库配置一次）：
+
+| 项 | 级别 | 说明 |
+|---|---|---|
+| `BRANCH_OPS_REPOS` | Variables | 仓库列表（逗号分隔），schedule/dispatch 留空时使用 |s
+| `BRANCH_OPS_TOKEN` | Secrets | 跨仓库操作 token（PAT 或 GitHub App token，需覆盖全部目标仓库） |
+| `FEISHU_WEBHOOK_URL` / `TELEGRAM_*` | Secrets | 预告/结果通知 |
+
+**调用示例**：
+
+```yaml
+# 单仓库自助模式（在业务仓库 pipeline.yml 中，用自己 GITHUB_TOKEN）
+branch-recycle:
+  uses: kamalyes/deploy-pipeline/.github/workflows/branch-recycle.yml@master
+  with:
+    clean-features: true
+    dry-run: false
+    notification-provider: 'feishu'
+  secrets: inherit
+```
+
+```yaml
+# 中心批量模式（在 deploy-pipeline 仓库手动 dispatch，或 schedule 自动预告）
+# inputs.repos: core-service,access-control-service,ops-gateway,...（留空用 vars.BRANCH_OPS_REPOS）
+# dry-run=false 执行；require-today-tag=true 检查发布完成
+```
+
+#### Branch Cut（批量切分支）
+
+新迭代启动（周三发布后定下版本内容）：从最新 master 给一批仓库统一切出 `feature/xx`。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `repos` | string | 否 | `''` | 仓库列表（逗号分隔；留空回退 `vars.BRANCH_OPS_REPOS`） |
+| `new-branch` | string | 是 | - | 新分支名（如 `feature/xxx`） |
+| `base-branch` | string | 否 | `master` | 基分支 |
+| `dry-run` | boolean | 否 | `false` | 干跑模式 |
+| `notification-provider` | string | 否 | `feishu` | 通知渠道 |
+
+幂等：目标分支已存在的仓库自动跳过。切完自动推结果卡片，替代群里人肉喊"大家切分支了"。
+
+```yaml
+# 在 deploy-pipeline 仓库手动 dispatch：new-branch=feature/xxx，repos 留空用 vars
+```
+
+#### branch-ops.sh（脚本直用）
+
+两个 workflow 共用 `scripts/branch-ops.sh`：
+
+```bash
+export GH_TOKEN="<PAT>"                      # 跨仓库用 PAT；单仓库用 GITHUB_TOKEN
+export BRANCH_OPS_REPOS="org/repo-a,org/repo-b"
+export BRANCH_OPS_DRY_RUN=true               # 干跑
+
+bash scripts/branch-ops.sh recycle            # 回收模式
+# 附加 env: BRANCH_OPS_SOURCE / BRANCH_OPS_TARGET / BRANCH_OPS_FEATURE_PREFIX /
+#          BRANCH_OPS_CLEAN_FEATURES / BRANCH_OPS_REQUIRE_TAG
+
+bash scripts/branch-ops.sh cut                # 切分支模式
+# 附加 env: BRANCH_OPS_NEW_BRANCH=feature/xxx / BRANCH_OPS_BASE=master
 ```
 
 ### 后端工作流

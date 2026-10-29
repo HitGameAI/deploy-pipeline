@@ -1,0 +1,98 @@
+name: 🌿 Branch Cut
+
+# ============================================
+# 批量切分支工作流（新迭代启动：从最新 master 切 feature/xx）
+# 用途：周三发布后定下版本内容，从最新 master 给一批仓库统一切出新 feature 分支
+#       （也可用于其他批量切分支场景，如从 master 重建演示分支）
+# 触发方式：workflow_dispatch（手动）/ workflow_call（被调用）
+# 幂等：目标分支已存在的仓库自动跳过，重复触发安全
+# 跨仓库批量操作依赖 BRANCH_OPS_TOKEN（PAT 或 GitHub App token，需覆盖目标仓库）
+# 仓库列表优先级：inputs.repos > vars.BRANCH_OPS_REPOS > 当前仓库
+# ============================================
+
+on:
+  workflow_call:
+    inputs:
+      repos:
+        description: '仓库列表（逗号分隔 owner/repo，留空=vars.BRANCH_OPS_REPOS 或当前仓库）'
+        required: false
+        type: string
+        default: ''
+      new-branch:
+        description: '新分支名（如 feature/xxx）'
+        required: true
+        type: string
+      base-branch:
+        description: '基分支'
+        required: false
+        type: string
+        default: 'master'
+      dry-run:
+        description: '干跑模式（true 只输出动作清单不执行）'
+        required: false
+        type: boolean
+        default: false
+      notification-provider:
+        description: '通知渠道: feishu | telegram | all | none'
+        required: false
+        type: string
+        default: 'feishu'
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: '仓库列表（逗号分隔 owner/repo，留空=vars.BRANCH_OPS_REPOS 或当前仓库）'
+        required: false
+        type: string
+        default: ''
+      new-branch:
+        description: '新分支名（如 feature/xxx）'
+        required: true
+        type: string
+      base-branch:
+        description: '基分支'
+        required: false
+        type: string
+        default: 'master'
+      dry-run:
+        description: '干跑模式（true 只输出动作清单不执行）'
+        required: false
+        type: boolean
+        default: false
+      notification-provider:
+        description: '通知渠道: feishu | telegram | all | none'
+        required: false
+        type: string
+        default: 'feishu'
+
+jobs:
+  branch-cut:
+    name: 🌿 Cut Branches
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Branch Cut
+        id: ops
+        env:
+          GH_TOKEN: ${{ secrets.BRANCH_OPS_TOKEN || secrets.GITHUB_TOKEN }}
+          BRANCH_OPS_REPOS: ${{ inputs.repos || vars.BRANCH_OPS_REPOS || '' }}
+          BRANCH_OPS_NEW_BRANCH: ${{ inputs.new-branch }}
+          BRANCH_OPS_BASE: ${{ inputs.base-branch }}
+          BRANCH_OPS_DRY_RUN: ${{ inputs.dry-run }}
+        run: bash scripts/branch-ops.sh cut
+
+      - name: Notify Result
+        if: always()
+        uses: kamalyes/deploy-pipeline/.github/actions/notify@master
+        with:
+          provider: ${{ inputs.notification-provider || 'feishu' }}
+          status: ${{ steps.ops.outputs.status || 'failure' }}
+          title: '🌿 批量切分支结果（${{ inputs.base-branch }} → ${{ inputs.new-branch }}）'
+          message: ${{ steps.ops.outputs.summary || '脚本未产出汇总，请查看日志' }}
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
