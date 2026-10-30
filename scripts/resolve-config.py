@@ -263,6 +263,11 @@ def check_tree(tree, schema_sections, origin, errors, single_section=None,
                 tail = "，是否想写 %s？" % hint[0] if hint else "，可用的节：%s" % " ".join(schema_sections)
                 errors.append("%s: 未知配置节 %r%s | unknown section" % (origin, name, tail))
                 continue
+            # 一节写了但下面是空的（键全注释掉了，或只写了 env: {}）：当空表，不报错
+            # [EN] A section present but empty, because every key under it is commented out or
+            # it was written as env: {}, counts as an empty mapping rather than an error
+            if body is None:
+                body = {}
             if not isinstance(body, dict):
                 errors.append("%s: %s 下面要写子对象，实际是 %s | section must be a mapping"
                               % (origin, name, type(body).__name__))
@@ -409,6 +414,29 @@ def parse_defaults(text):
     return out
 
 
+def yaml_scalar(value):
+    """把一个值写成示例里那一格的字面量：能原样读回同一个值就不加引号，否则交给 PyYAML 引。
+
+    以 { 开头的模板（{name}-config-{env}）不加引号会被解析成流式映射，整份示例就废了；
+    而端口、true 这些加了引号反而难读，所以用「读回来是不是同一个值」来判断。
+    [EN] Emit the literal for one example value: leave it bare when parsing it back yields the
+    same value, and let PyYAML quote it otherwise. A template starting with { would be read as a
+    flow mapping and break the whole document, while quoting ports and booleans only makes the
+    example harder to read, hence the round-trip test.
+    """
+    if value == "":
+        return "''"
+    try:
+        back = yaml.safe_load(value)
+        if scalar(back) == value and not isinstance(back, (dict, list)):
+            return value
+    except yaml.YAMLError:
+        pass
+    dumped = yaml.safe_dump({"v": value}, default_flow_style=False,
+                            allow_unicode=True, width=10 ** 6)
+    return dumped.split("v:", 1)[1].strip()
+
+
 def print_example(schema, wanted):
     """打印带注释的示例 YAML，直接贴进 GitHub 变量就能用。
 
@@ -445,9 +473,7 @@ def print_example(schema, wanted):
                 emit(value, depth + 1)
                 continue
             value = value[1]
-            shown = scalar(value.get("default", ""))
-            if shown == "" or " " in shown or shown.startswith("-"):
-                shown = "'%s'" % shown
+            shown = yaml_scalar(scalar(value.get("default", "")))
             note = value.get("desc", "")
             if value.get("type") == "enum":
                 note = (note + "；可选 " + " / ".join(str(v) for v in value["values"])).lstrip("；")
@@ -457,8 +483,53 @@ def print_example(schema, wanted):
         section = sections.get(name)
         if not section:
             continue
+        # 自由键值节的键名由使用者定，schema 里列不出来：给个空表加示范注释，
+        # 直接贴进变量也不会凭空多出环境变量
+        # [EN] A free-form section's keys are the user's own and cannot be enumerated here, so it
+        # gets an empty mapping plus a commented sample: pasting it verbatim adds nothing
+        if section.get("free_form"):
+            print("\n%s: {}  # %s" % (name, section.get("desc", "")))
+            print("  # 键名就是变量名，按需要往下加，例如：| keys are the names, for example:")
+            print("  #   LOG_LEVEL: info")
+            print("  #   GOMAXPROCS: \"4\"")
+            continue
         print("\n%s:  # %s" % (name, section.get("desc", "")))
         emit(nest(section.get("keys") or {}), 1)
+    return 0
+
+
+def print_secrets_example(schema, wanted):
+    """打印 secrets.PIPELINE_SECRETS 的骨架：占位值，照着替换就能用。
+
+    [EN] Print a skeleton for secrets.PIPELINE_SECRETS with placeholder values to replace.
+    """
+    sections = schema.get("secret_sections") or {}
+    names = wanted or list(sections)
+    print("# secrets.PIPELINE_SECRETS —— 一个 secret 装下所有敏感配置")
+    print("# 占位值替换成真的；多行值（kubeconfig、私钥）用 | 块标量")
+    print("# [EN] One secret for every sensitive setting. Replace the placeholders; multi-line")
+    print("#      values such as a kubeconfig or a private key use the | block scalar form.")
+    for name in names:
+        section = sections.get(name)
+        if not section:
+            continue
+        print("\n%s:  # %s" % (name, section.get("desc", "")))
+        if section.get("free_form"):
+            print("  # 键名就是容器里的环境变量名，部署时同步成集群里的 K8s Secret")
+            print("  # [EN] Keys are the container's environment variable names")
+            print("  MY_SERVICE_SECRET: <替换成真实值 | replace me>")
+            continue
+        for path, spec in (section.get("keys") or {}).items():
+            parts = path.split(".")
+            pad = "  " * len(parts)
+            note = spec.get("desc", "")
+            # 多行的那几项给块标量示例，省得使用者自己猜缩进
+            # [EN] The multi-line ones get a block-scalar example so nobody has to guess
+            if "多行" in note or "全文" in note:
+                print("%s%s: |%s" % (pad, parts[-1], "  # " + note if note else ""))
+                print("%s  <把整段内容贴在这里，保持这一层缩进 | paste the whole content here>" % pad)
+            else:
+                print("%s%s: <替换 | replace>%s" % (pad, parts[-1], "  # " + note if note else ""))
     return 0
 
 
@@ -472,7 +543,10 @@ def main(argv):
 
     if "--print-example" in argv:
         rest = argv[argv.index("--print-example") + 1:]
-        return print_example(schema, [a for a in rest if not a.startswith("-")])
+        wanted = [a for a in rest if not a.startswith("-")]
+        if "--secrets" in argv:
+            return print_secrets_example(schema, wanted)
+        return print_example(schema, wanted)
 
     # ---------- 本地校验模式 | Local check mode ----------
     if "--check" in argv:
@@ -602,6 +676,23 @@ def main(argv):
         rows.append((label, shown, source))
 
     for name in wanted:
+        # 自由键值节（如 env）：键名由使用者定，schema 里列不出来，所以整节按层合并后
+        # 导出成一个 JSON，交给下游脚本渲染，而不是逐项写成环境变量
+        # [EN] A free-form section such as env has user-defined keys that the schema cannot
+        # enumerate, so the whole section is merged layer by layer and exported as one JSON blob
+        # for a downstream script to render, rather than as one variable per key
+        if sections[name].get("free_form"):
+            merged = {}
+            for label, table in reversed(sources["yaml"]):
+                for (sec, key), value in table.items():
+                    if sec == name:
+                        merged[key] = value
+            if merged:
+                export(["PIPELINE_%s_JSON" % name.upper()],
+                       json.dumps(merged, ensure_ascii=False, separators=(",", ":")),
+                       "%s.* (%d 项)" % (name, len(merged)), "聚合 YAML")
+            continue
+
         for path, spec in (sections[name].get("keys") or {}).items():
             value, source = pick(name, path, spec, sources, repo_name)
             # 旧式 vars 和 input 的值也要过一遍校验：错配置不该等到 kubectl 才炸

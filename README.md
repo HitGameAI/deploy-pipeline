@@ -77,9 +77,11 @@ deploy-pipeline/
 │   │   ├── pr-opened-notify.yml       # PR 开启变更摘要通知
 │   │   ├── pr-merged-notify.yml       # PR 合并通知
 │   │   ├── branch-cut.yml             # 批量切分支（新迭代从 master 切 feature/xx）
-│   │   └── branch-recycle.yml         # dev 回收重切 + 已合并 feature 清理（周三发布后）
+│   │   ├── branch-recycle.yml         # dev 回收重切 + 已合并 feature 清理（周三发布后）
+│   │   └── generate-config.yml        # 手动触发：打印默认配置 / 校验贴进来的配置
 │   └── actions/                 # 可复用 Composite Actions
 │       ├── resolve-config/      # 聚合 YAML 配置的校验 / 合并 / 导出（所有配置的唯一入口）
+│       ├── resolve-service-vars/ # 一步算出服务流水线的全部变量（替掉调用方那 158 行 setup）
 │       ├── fetch-pipeline-assets/ # 把本仓自带的 scripts/templates 放到工作区
 │       ├── notify/              # 通用通知（飞书/企业微信/Telegram，支持自定义标题正文）
 │       ├── update-proto-mod/    # 升级 go.mod 中 proto 模块引用并提 PR
@@ -93,6 +95,7 @@ deploy-pipeline/
 │   ├── config/
 │   │   └── schema.yaml          # 配置表：所有配置项的唯一出处（键名/类型/默认值/旧变量名）
 │   ├── resolve-config.py        # 聚合配置解析器，也可本地校验配置
+│   ├── service-vars.sh          # 服务流水线变量计算（产物/镜像/部署决策/容器 env 列表）
 │   ├── sync-fork.sh             # 同步到另一个组织下的那一份（只换组织前缀）
 │   ├── branch-ops.sh            # 批量切分支 / dev 回收（gh api 实现，两个 workflow 共用）
 │   ├── common.sh                # 通用函数库
@@ -324,7 +327,8 @@ jobs:
 
 ### 全部配置项
 
-明文配置（`PIPELINE_CONFIG` / 分节变量），也可以 `python3 scripts/resolve-config.py --print-example` 直接打印：
+明文配置（`PIPELINE_CONFIG` / 分节变量），也可以 `python3 scripts/resolve-config.py --print-example` 直接打印，
+或手动触发 [⚙️ Generate Pipeline Config](#generate-pipeline-config) 让流水线打给你：
 
 #### `ports` — 容器端口；留空 / 0 / none 表示该端口不启用 | Container ports; empty, 0 or none disables one
 
@@ -411,6 +415,23 @@ jobs:
 | `cleanup.tag_include_prefix` | `TAG_INCLUDE_PREFIX` | `CLEANUP_TAG_INCLUDE_PREFIX` | csv | `''` |
 | `cleanup.tag_exclude_prefix` | `TAG_EXCLUDE_PREFIX` | `CLEANUP_TAG_EXCLUDE_PREFIX` | csv | `v,prod` |
 
+#### `service` — 服务身份与布局 | Service identity and layout
+
+| YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|
+| `service.binary_name` | `BINARY_NAME` | `BINARY_NAME` | string | `{repo}` |
+| `service.binary_source_dir` | `BINARY_SOURCE_DIR` | `BINARY_SOURCE_DIR` | string | `deployments` |
+| `service.binary_build_dir` | `BINARY_BUILD_DIR` | `BINARY_BUILD_DIR` | string | `''` |
+| `service.docker_namespace` | `DOCKER_NAMESPACE` | `DOCKER_NAMESPACE` | string | `''` |
+| `service.extra_copy_dirs` | `EXTRA_COPY_DIRS` | `EXTRA_COPY_DIRS` | csv | `''` |
+| `service.allowed_envs` | `ALLOWED_ENVS` | `DOCKER_K8S_ALLOWED_ENVS` / `ALLOWED_ENVS` | csv | `dev,staging` |
+| `service.deploy_branches` | `DEPLOY_BRANCHES` | `DEPLOY_BRANCHES` | csv | `dev,staging` |
+| `service.config_path` | `CONFIG_PATH_TEMPLATE` | `CONFIG_PATH_TEMPLATE` | string | `config/config.{env}.yaml` |
+| `service.configmap_name` | `CONFIGMAP_NAME_TEMPLATE` | `CONFIGMAP_NAME_TEMPLATE` | string | `{name}-config-{env}` |
+| `service.cmd_args` | `CMD_ARGS_TEMPLATE` | `CMD_ARGS_TEMPLATE` | string | `-f resources/{configfile}` |
+| `service.secret_name` | `K8S_SECRET_NAME` | `K8S_SECRET_NAME` | string | `{name}-secrets` |
+| `service.secret_scan_dirs` | `SECRET_SCAN_DIRS` | `SECRET_SCAN_DIRS` | csv | `internal` |
+
 #### `branch` — 批量切分支与 dev 回收 | Batch branch cut and dev recycle
 
 | YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
@@ -429,7 +450,17 @@ jobs:
 |---|---|---|---|---|
 | `notify.provider` | `NOTIFICATION_PROVIDER` | `NOTIFICATION_PROVIDER` | enum: none \| feishu \| wecom \| telegram \| all | `all` |
 
-聚合密钥（`PIPELINE_SECRETS`）：
+#### `env` — 容器里的非密钥环境变量，键名即变量名 | Plaintext container environment, keyed by name
+
+自由键值表：键名由你定（必须是大写环境变量名），值是明文。整节合并后交给 [service-vars.sh](#service-varssh) 渲染成 Deployment 的 env 条目。
+
+```yaml
+env:
+  LOG_LEVEL: info
+  GOMAXPROCS: "4"
+```
+
+聚合密钥（`PIPELINE_SECRETS`），骨架用 `--print-example --secrets` 生成：
 
 #### `kube` — 集群凭证 | Cluster credentials
 
@@ -470,7 +501,7 @@ jobs:
 
 #### `app` — 业务密钥，键名即容器里的环境变量名 | Service secrets, keyed by container env name
 
-自由键值表：键名就是业务容器里的环境变量名，值是密钥内容。由 `backend-deploy-k8s` 的「同步密钥到集群」那步写成集群里的 K8s Secret，名单仍取自 `extra-env-block` 里的 `secretKeyRef`。
+自由键值表：键名就是业务容器里的环境变量名，值是密钥内容。由 `backend-deploy-k8s` 的「同步密钥到集群」那步写成集群里的 K8s Secret，名单取自 `extra-env-block` 里的 `secretKeyRef`（也就是 service-vars.sh 自动抽出来的那份）。
 
 ### 旧式单个变量（仍然有效）
 
@@ -619,84 +650,174 @@ sequenceDiagram
 
 ### 后端 Go 服务示例
 
-在项目 `.github/workflows/pipeline.yml` 中引用：
+调用方的 `pipeline.yml` 只写两类东西：**触发条件**与**本仓特有的决策**。
+产物名、版本号、镜像名、要不要部署、ConfigMap、容器 env 列表这些，
+由 [resolve-service-vars](#resolve-service-vars) 一步算出来。
 
 ```yaml
-name: Backend CI/CD
+name: 🚀 CI/CD Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
+    tags: ['v*']          # 打 tag 走发布模式：只构建推送镜像，不部署
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, staging]
+        default: dev
+      code-quality:
+        type: boolean
+        default: false
+      build-docker:
+        type: boolean
+        default: true
+      deploy-k8s:
+        type: boolean
+        default: true
+      enable-hpa:
+        type: boolean
+        default: true
+
+permissions:
+  contents: write         # release-note 建 GitHub Release 要写
+  packages: write         # 推 GHCR 镜像要写
+  pull-requests: read     # release-note 收集 PR 明细要读
 
 jobs:
+  setup:
+    name: ⚙️ Setup
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
+    outputs:
+      binary-name: ${{ steps.vars.outputs.binary-name }}
+      binary-source-dir: ${{ steps.vars.outputs.binary-source-dir }}
+      binary-output: ${{ steps.vars.outputs.binary-output }}
+      version: ${{ steps.vars.outputs.version }}
+      build-time: ${{ steps.vars.outputs.build-time }}
+      git-commit: ${{ steps.vars.outputs.git-commit }}
+      image-base: ${{ steps.vars.outputs.image-base }}
+      image-name: ${{ steps.vars.outputs.image-name }}
+      should-build-docker: ${{ steps.vars.outputs.should-build-docker }}
+      should-deploy-k8s: ${{ steps.vars.outputs.should-deploy-k8s }}
+      code-quality: ${{ steps.vars.outputs.code-quality }}
+      deploy-environment: ${{ steps.vars.outputs.deploy-environment }}
+      notification-provider: ${{ steps.vars.outputs.notification-provider }}
+      k8s-config-yaml: ${{ steps.vars.outputs.k8s-config-yaml }}
+      k8s-configmap-name: ${{ steps.vars.outputs.k8s-configmap-name }}
+      k8s-enable-hpa: ${{ steps.vars.outputs.k8s-enable-hpa }}
+      cmd-args: ${{ steps.vars.outputs.cmd-args }}
+      extra-env-block: ${{ steps.vars.outputs.extra-env-block }}
+    steps:
+      # 必须先 checkout：下一步要读服务配置文件、扫源码抽密钥名
+      # [EN] Check out first: the next step reads the config file and scans the source
+      - uses: actions/checkout@v6
+
+      - name: ⚙️ Setup Variables
+        id: vars
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-service-vars@master
+        with:
+          environment: ${{ inputs.environment || 'dev' }}
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          build-docker: ${{ inputs.build-docker }}
+          deploy-k8s: ${{ inputs.deploy-k8s }}
+          code-quality: ${{ inputs.code-quality }}
+          notification-provider: ${{ inputs.notification-provider }}
+
   code-quality:
+    needs: setup
+    if: ${{ needs.setup.outputs.code-quality == 'true' }}
     uses: kamalyes/deploy-pipeline/.github/workflows/code-quality.yml@master
-    with:
-      go-version: ${{ vars.GO_VERSION || '1.25.1' }}
-      gotestsum-version: 'v1.13.0'
-      goprivate: ${{ vars.GOPRIVATE || '' }}
-      go-auth-method: ${{ vars.GO_AUTH_METHOD || 'app-token' }}
-    secrets:
-      APP_ID: ${{ secrets.APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-      GIT_SSH_PRIVATE_KEY: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
+    secrets: inherit
 
   build-binary:
+    needs: setup
     uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
     with:
-      go-version: ${{ vars.GO_VERSION || '1.25.1' }}
-      binary-name: 'your-service'
-      binary-source-dir: 'deployments'
-      binary-output: 'deployments/your-service'
-      version: '${{ github.sha }}'
-      build-time: '${{ format('{0}_{1}', github.event.head_commit.timestamp, github.run_id) }}'
-      git-commit: '${{ github.sha }}'
-      goprivate: ${{ vars.GOPRIVATE || '' }}
-      go-auth-method: ${{ vars.GO_AUTH_METHOD || 'app-token' }}
-    secrets:
-      APP_ID: ${{ secrets.APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-      GIT_SSH_PRIVATE_KEY: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
+      binary-name: ${{ needs.setup.outputs.binary-name }}
+      binary-source-dir: ${{ needs.setup.outputs.binary-source-dir }}
+      binary-output: ${{ needs.setup.outputs.binary-output }}
+      version: ${{ needs.setup.outputs.version }}
+      build-time: ${{ needs.setup.outputs.build-time }}
+      git-commit: ${{ needs.setup.outputs.git-commit }}
+      # 入口包不在仓库根时才需要传；其余构建参数走 builder 配置节
+      # [EN] Only needed when the main package is not at the repository root
+      binary-build-dir: ./cmd/server
+    secrets: inherit
 
   build-docker:
-    needs: [build-binary]
+    needs: [setup, build-binary]
+    if: ${{ needs.setup.outputs.should-build-docker == 'true' }}
     uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-docker.yml@master
     with:
-      binary-name: 'your-service'
-      version: '${{ github.sha }}'
-      http-port: '8080'
-      rpc-port: '9090'
-      ws-port: '9091'        # WebSocket 端口（可选）
-      pprof-port: '6060'
-      docker-registry: ${{ vars.IMAGE_REGISTRY || 'ghcr.io' }}
-      binary-source-dir: 'deployments'
-      image-base: '${{ vars.IMAGE_PREFIX }}/your-service'
-      image-name: '${{ vars.IMAGE_PREFIX }}/your-service:${{ github.sha }}'
-    secrets:
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      binary-name: ${{ needs.setup.outputs.binary-name }}
+      binary-source-dir: ${{ needs.setup.outputs.binary-source-dir }}
+      version: ${{ needs.setup.outputs.version }}
+      image-base: ${{ needs.setup.outputs.image-base }}
+      image-name: ${{ needs.setup.outputs.image-name }}
+      environment: ${{ needs.setup.outputs.deploy-environment }}
+      cmd-args: ${{ needs.setup.outputs.cmd-args }}
+    secrets: inherit
 
-  deploy-dev:
-    needs: [build-docker]
+  deploy-k8s:
+    needs: [setup, build-docker]
+    if: ${{ needs.setup.outputs.should-deploy-k8s == 'true' }}
     uses: kamalyes/deploy-pipeline/.github/workflows/backend-deploy-k8s.yml@master
     with:
-      environment: 'dev'
-      image-name: '${{ vars.IMAGE_PREFIX }}/your-service:${{ github.sha }}'
-      binary-source-dir: 'deployments'
-      binary-name: 'your-service'
-      http-port: '8080'
-      rpc-port: '9090'
-      ws-port: '9091'        # WebSocket 端口（可选）
-      pprof-port: '6060'
-      notification-provider: 'feishu'
-    environment: dev
-    secrets:
-      KUBECONFIG: ${{ secrets.KUBECONFIG }}
-      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-      WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      environment: ${{ needs.setup.outputs.deploy-environment }}
+      image-name: ${{ needs.setup.outputs.image-name }}
+      binary-name: ${{ needs.setup.outputs.binary-name }}
+      binary-source-dir: ${{ needs.setup.outputs.binary-source-dir }}
+      config-yaml: ${{ needs.setup.outputs.k8s-config-yaml }}
+      configmap-name: ${{ needs.setup.outputs.k8s-configmap-name }}
+      enable-hpa: ${{ needs.setup.outputs.k8s-enable-hpa }}
+      notification-provider: ${{ needs.setup.outputs.notification-provider }}
+      extra-env-block: ${{ needs.setup.outputs.extra-env-block }}
+    # 必须 inherit 而不是逐个列举：显式映射只把列出的那几个送进公共工作流，
+    # 业务密钥就看不见，集群 Secret 同步会整步跳过
+    # [EN] Inherit rather than listing: an explicit map forwards only the named secrets, so the
+    # business ones stay invisible and the in-cluster Secret sync skips entirely
+    secrets: inherit
 ```
+
+端口、资源限制、镜像仓库、产物布局这些**一行都不用写在这里**，全在
+`vars.PIPELINE_CONFIG` 里。要配哪些、默认值是什么，手动触发
+[⚙️ Generate Pipeline Config](#generate-pipeline-config) 就会整份打印出来。
+
+一个后端服务典型的配置：
+
+```yaml
+# vars.PIPELINE_CONFIG
+ports:
+  http: 8080
+  rpc: 9181
+service:
+  binary_build_dir: ./cmd/server
+  extra_copy_dirs: docs
+kube:
+  namespace: business
+  resources:
+    limits: { cpu: 1, memory: 1Gi }
+  ingress:
+    host: api.example.com
+    tls: true
+env:
+  LOG_LEVEL: info
+```
+
+```yaml
+# secrets.PIPELINE_SECRETS
+kube:
+  kubeconfig: |
+    apiVersion: v1
+    ...
+app:                      # 业务密钥，键名即容器里的环境变量名
+  DB_PASSWORD: xxx
+```
+
 
 ### 前端应用示例
 
@@ -1190,6 +1311,23 @@ cleanup:
     keep-count: '5'
     tag-exclude-prefix: 'prod,master'
 ```
+
+#### Generate Pipeline Config
+
+接入新服务时不用翻文档抄配置项：到 Actions 里手动触发它，带注释的默认配置会整份打到
+job summary 里（明文那份 + 密钥骨架），顺手上传成 artifact，直接贴进仓库变量即可。
+已经写好的配置也可以贴进来让它校验，省得推一次流水线才发现键名拼错。
+
+| 入参 | 必填 | 默认 | 说明 |
+|------|------|------|------|
+| `mode` | ❌ | `generate` | `generate` 打印默认配置 / `validate` 校验 `config` 里贴进来的 YAML |
+| `sections` | ❌ | `''` | 只要这几节（空格分隔），留空＝全部 |
+| `config` | ❌ | `''` | `validate` 模式下待校验的 YAML |
+
+`validate` 模式不用先说明「这是哪一节」：先按总表校，不匹配就逐节试一遍，
+都不匹配才报错，并给出具体路径与「是否想写」建议。
+
+generate 出来的东西自己会过一遍校验 —— 示例要是都通不过，说明配置表本身有问题。
 
 ### 分支管理工作流
 
@@ -1893,6 +2031,33 @@ sequenceDiagram
 密钥的处理：每个叶子值逐行 `::add-mask::` 打码（4 个字符以下不打，免得日志全是 `***`）；
 `app` 节不进 `GITHUB_ENV`，而是落到 `$RUNNER_TEMP` 下 0600 的文件，由部署那步读去同步成集群 Secret。
 
+### resolve-service-vars
+
+服务流水线的 setup 一步到位：算出产物与镜像身份、构建部署决策、ConfigMap 与启动参数、
+容器 env 列表。替掉的是调用方 `pipeline.yml` 里那段 158 行 shell（三个服务仓库逐字节
+相同，只差一个默认 Secret 名）。内部先跑 [resolve-config](#resolve-config) 解析
+`service` / `env` / `docker` / `kube` / `notify` 几节，再跑 `scripts/service-vars.sh`。
+
+**调用方必须先 `actions/checkout`**：这一步要读服务的配置文件、扫源码抽密钥名。
+
+| 入参 | 必填 | 默认 | 说明 |
+|------|------|------|------|
+| `environment` | ❌ | `dev` | 部署环境，对应 `service.config_path` 模板里的 `{env}` |
+| `vars-json` / `inputs-json` / `secrets-json` | ❌ | `{}` | 三份上下文，透传给 resolve-config |
+| `build-docker` / `deploy-k8s` | ❌ | `''` | 手动触发时的开关；push 事件忽略，按 `service.deploy_branches` 判断 |
+| `code-quality` | ❌ | `false` | 原样透传给调用方的 job 条件 |
+| `notification-provider` | ❌ | `''` | 留空则按 `notify.provider` 配置 |
+| `config` | ❌ | `''` | 直接传一份聚合 YAML（优先级最高） |
+
+出参 22 个：`binary-name` / `binary-source-dir` / `binary-output` / `binary-build-dir` /
+`version` / `build-time` / `git-commit` / `image-base` / `image-name` / `release-mode` /
+`deploy-environment` / `should-build-docker` / `should-deploy-k8s` / `code-quality` /
+`notification-provider` / `k8s-config-yaml` / `k8s-configmap-name` / `k8s-enable-hpa` /
+`k8s-secret-name` / `cmd-args` / `extra-copy-dirs` / `extra-env-block`。
+
+用法见[后端 Go 服务示例](#后端-go-服务示例)；各项默认值与模板占位符见
+[`service` 配置节](#全部配置项)。
+
 ### normalize-image-name
 
 把 Docker 镜像名规范化，并按需生成 tag 列表。
@@ -1971,6 +2136,22 @@ python3 scripts/resolve-config.py --print-example [节名...]
 配置项的唯一出处是 `scripts/config/schema.yaml`：加一个配置项只改那张表，
 解析、校验、默认值、README 里的清单都跟着走，不用再去各个 workflow 的 `env:` 块里加行。
 依赖 PyYAML（GitHub 托管的 ubuntu runner 自带；自建 runner 由 action 自动装）。
+
+### service-vars.sh
+
+[resolve-service-vars](#resolve-service-vars) 调的就是它，入参全走环境变量
+（大部分由 resolve-config 从聚合配置解析好写进 `GITHUB_ENV`），结果写 `$GITHUB_OUTPUT`。
+算四件事：
+
+1. **产物与镜像**：名字、版本（tag 推送取 tag 名，否则 `<分支>-<短 commit>`）、镜像名与基址
+2. **部署决策**：push / workflow_dispatch / tag 三种触发各有规则；环境不在
+   `service.allowed_envs` 白名单里就只跑检查，推 tag 则只构建不部署
+3. **配置与启动**：ConfigMap 名、配置文件路径（不存在直接失败，不静默跳过）、写进镜像 CMD 的启动参数
+4. **容器 env 列表**：明文变量来自 `env` 配置节走 `value:`；密钥名从 go-zero 的
+   `,env=XXX` struct tag 与服务配置里 `*Env:` 结尾的键自动抽出来，走
+   `valueFrom.secretKeyRef`，值只存在集群的 Secret 里。两边撞名时以密钥为准
+
+密钥清单是**自动抽的而不是手维护的**：加了新的密钥配置，下次部署自动带上，不会漏。
 
 ### sync-fork.sh
 

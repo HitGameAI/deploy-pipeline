@@ -1,0 +1,181 @@
+name: 'Resolve Service Vars'
+description: '一步算出服务流水线要的全部变量：产物与镜像身份、构建部署决策、ConfigMap 与启动参数、容器 env 列表（明文 + 自动抽出的密钥 secretKeyRef）'
+
+# 这个 action 替掉的是什么
+#
+# 原先每个服务仓库的 pipeline.yml 里都有一个 158 行的 setup 步骤，三个仓库逐字节相同、
+# 只差一个默认 Secret 名。那 158 行里一半是注释（讲清了为什么这么做，很值得留），
+# 另一半是 shell，复制三份之后谁都不敢改 —— 改一处要同步三处，漏一处就是行为分叉。
+#
+# 搬过来之后调用方只写真正动态的东西：触发条件、入口包、手动开关。
+# 其余由聚合配置的 service 节驱动（产物名、镜像命名空间、环境白名单、配置文件模板、
+# 密钥扫描目录……），默认值在 scripts/config/schema.yaml 里，一处改完所有服务生效。
+#
+# [EN] This action replaces the 158-line setup step that used to be copy-pasted into every
+# service repository, byte-identical across three of them except for one default secret name.
+# Half of those lines were comments worth keeping and the other half was shell nobody dared
+# touch, because a change had to be mirrored three times and a missed one meant divergent
+# behaviour. Callers now write only what is genuinely dynamic; everything else is driven by the
+# service section of the aggregate configuration, with defaults in scripts/config/schema.yaml.
+
+inputs:
+  environment:
+    description: '部署环境（对应 service.config_path 模板里的 {env}）'
+    required: false
+    default: 'dev'
+  vars-json:
+    description: 'toJSON(vars)'
+    required: false
+    default: '{}'
+  inputs-json:
+    description: 'toJSON(inputs)；手动触发的各项开关由此进入优先级链'
+    required: false
+    default: '{}'
+  secrets-json:
+    description: 'toJSON(secrets)'
+    required: false
+    default: '{}'
+  build-docker:
+    description: '手动触发时是否构建镜像（push 事件忽略此项，恒为构建）'
+    required: false
+    default: ''
+  deploy-k8s:
+    description: '手动触发时是否部署（push 事件按 service.deploy_branches 判断）'
+    required: false
+    default: ''
+  code-quality:
+    description: '是否跑代码质量检查，原样透传给调用方的 job 条件'
+    required: false
+    default: 'false'
+  notification-provider:
+    description: '通知渠道，留空则按 notify.provider 配置'
+    required: false
+    default: ''
+  config:
+    description: '直接传一份聚合 YAML（优先级最高），透传给 resolve-config'
+    required: false
+    default: ''
+
+outputs:
+  binary-name:
+    description: '产物与工作负载名'
+    value: ${{ steps.vars.outputs.binary-name }}
+  binary-source-dir:
+    description: '产物目录'
+    value: ${{ steps.vars.outputs.binary-source-dir }}
+  binary-output:
+    description: '产物完整路径'
+    value: ${{ steps.vars.outputs.binary-output }}
+  binary-build-dir:
+    description: 'main 包目录，留空表示仓库根'
+    value: ${{ steps.vars.outputs.binary-build-dir }}
+  version:
+    description: '版本号：tag 推送取 tag 名，否则 <分支>-<短 commit>'
+    value: ${{ steps.vars.outputs.version }}
+  build-time:
+    description: 'UTC 构建时间'
+    value: ${{ steps.vars.outputs.build-time }}
+  git-commit:
+    description: '短 commit'
+    value: ${{ steps.vars.outputs.git-commit }}
+  image-base:
+    description: '镜像基址（不含 tag）'
+    value: ${{ steps.vars.outputs.image-base }}
+  image-name:
+    description: '完整镜像名（含 tag）'
+    value: ${{ steps.vars.outputs.image-name }}
+  release-mode:
+    description: '是否 tag 推送触发的发布模式'
+    value: ${{ steps.vars.outputs.release-mode }}
+  deploy-environment:
+    description: '部署环境'
+    value: ${{ steps.vars.outputs.deploy-environment }}
+  should-build-docker:
+    description: '这次要不要构建镜像'
+    value: ${{ steps.vars.outputs.should-build-docker }}
+  should-deploy-k8s:
+    description: '这次要不要部署'
+    value: ${{ steps.vars.outputs.should-deploy-k8s }}
+  code-quality:
+    description: '是否跑质量检查'
+    value: ${{ steps.vars.outputs.code-quality }}
+  notification-provider:
+    description: '通知渠道'
+    value: ${{ steps.vars.outputs.notification-provider }}
+  k8s-config-yaml:
+    description: '服务配置文件路径，空表示该服务没有配置文件'
+    value: ${{ steps.vars.outputs.k8s-config-yaml }}
+  k8s-configmap-name:
+    description: 'ConfigMap 名'
+    value: ${{ steps.vars.outputs.k8s-configmap-name }}
+  k8s-enable-hpa:
+    description: '是否启用 HPA'
+    value: ${{ steps.vars.outputs.k8s-enable-hpa }}
+  k8s-secret-name:
+    description: '集群里业务 Secret 的名字'
+    value: ${{ steps.vars.outputs.k8s-secret-name }}
+  cmd-args:
+    description: '写进镜像 CMD 的启动参数'
+    value: ${{ steps.vars.outputs.cmd-args }}
+  extra-copy-dirs:
+    description: '要随镜像打进去的目录'
+    value: ${{ steps.vars.outputs.extra-copy-dirs }}
+  extra-env-block:
+    description: 'Deployment 的 env 列表片段：明文变量 + 密钥 secretKeyRef'
+    value: ${{ steps.vars.outputs.extra-env-block }}
+
+runs:
+  using: 'composite'
+  steps:
+    # 第一步解析聚合配置，把 service / env / docker / kube 几节写进 GITHUB_ENV；
+    # 第二步的脚本直接读这些环境变量。同一个 composite action 内，后面的 step
+    # 看得到前面 step 写进 GITHUB_ENV 的值。
+    # [EN] The first step resolves the aggregate configuration into GITHUB_ENV and the second
+    # step's script reads it from there; within one composite action a later step sees what an
+    # earlier one wrote to GITHUB_ENV.
+    - name: ⚙️ Resolve Config
+      shell: bash
+      env:
+        CONFIG_SECTIONS: service env docker kube notify
+        CONFIG_VARS_JSON: ${{ inputs.vars-json }}
+        CONFIG_INPUTS_JSON: ${{ inputs.inputs-json }}
+        CONFIG_SECRETS_JSON: ${{ inputs.secrets-json }}
+        CONFIG_INLINE: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        script="${GITHUB_ACTION_PATH}/../../../scripts/resolve-config.py"
+        if [ ! -f "${script}" ]; then
+          echo "::error::找不到 ${script}；请确认 action 与 scripts/ 在同一仓库同一 ref" >&2
+          exit 1
+        fi
+        if ! python3 -c 'import yaml' 2>/dev/null; then
+          python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyyaml \
+            || python3 -m pip install --quiet --disable-pip-version-check --user pyyaml \
+            || { echo "::error::装不上 PyYAML" >&2; exit 1; }
+        fi
+        python3 "${script}"
+
+    - name: ⚙️ Compute Service Vars
+      id: vars
+      shell: bash
+      env:
+        SERVICE_ENVIRONMENT: ${{ inputs.environment }}
+        SERVICE_BUILD_DOCKER: ${{ inputs.build-docker }}
+        SERVICE_DEPLOY_K8S: ${{ inputs.deploy-k8s }}
+        SERVICE_CODE_QUALITY: ${{ inputs.code-quality }}
+        SERVICE_NOTIFICATION_PROVIDER: ${{ inputs.notification-provider }}
+      run: |
+        set -euo pipefail
+        script="${GITHUB_ACTION_PATH}/../../../scripts/service-vars.sh"
+        if [ ! -f "${script}" ]; then
+          echo "::error::找不到 ${script}" >&2
+          exit 1
+        fi
+        # 这一步要读仓库里的配置文件、扫源码抽密钥名，所以调用方必须先 checkout
+        # [EN] This step reads the repository's config file and scans the source for secret
+        # names, so the caller must check the repository out first
+        if [ ! -d .git ]; then
+          echo "::error::当前目录不是仓库工作区；这一步要读配置文件与源码，请先 actions/checkout" >&2
+          exit 1
+        fi
+        bash "${script}"

@@ -1,0 +1,168 @@
+name: ⚙️ Generate Pipeline Config
+
+# ============================================
+# 生成 / 校验聚合配置 | Generate or validate the aggregate configuration
+#
+# 用途：接入一个新服务时，不用翻 README 抄配置项 —— 手动触发这个工作流，
+# 它把带注释的默认配置整份打出来（明文那份 + 密钥骨架），直接贴进仓库变量即可。
+# 已经写好的配置也可以贴进来让它校验，省得推一次流水线才发现键名拼错。
+#
+# 两种模式
+#   generate（默认）按配置表打印默认配置，写进 job summary 并上传成 artifact
+#   validate      校验 config 入参里贴进来的 YAML，错了就报出路径与建议并失败
+#
+# 触发方式：workflow_dispatch（手动）/ workflow_call（被其它仓库调用）
+#
+# [EN] Onboarding a service should not mean copying settings out of the README: trigger this
+# workflow and it prints the whole annotated default configuration, both the plaintext document
+# and the secrets skeleton, ready to paste into the repository variables. It also validates a
+# configuration pasted into its input, so a typo surfaces here instead of on the next pipeline
+# run.
+# ============================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '做什么：generate 打印默认配置 / validate 校验贴进来的配置'
+        required: false
+        type: choice
+        options:
+          - generate
+          - validate
+        default: generate
+      sections:
+        description: '只要这几节（空格分隔，留空＝全部）：ports docker kube builder cleanup service branch notify env'
+        required: false
+        type: string
+        default: ''
+      config:
+        description: 'validate 模式下待校验的 YAML（整份贴进来）'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      mode:
+        description: 'generate | validate'
+        required: false
+        type: string
+        default: generate
+      sections:
+        description: '只要这几节（空格分隔，留空＝全部）'
+        required: false
+        type: string
+        default: ''
+      config:
+        description: 'validate 模式下待校验的 YAML'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  config:
+    name: ⚙️ ${{ inputs.mode == 'validate' && 'Validate' || 'Generate' }} Config
+    runs-on: ubuntu-latest
+    steps:
+      # 不用 actions/checkout 取脚本：被别的仓库 workflow_call 时，checkout 出来的是
+      # 调用方仓库，里面没有 scripts/；理由见 .github/actions/fetch-pipeline-assets
+      # [EN] Not actions/checkout: under workflow_call it checks out the calling repository,
+      # which does not contain scripts/
+      - name: 📥 Fetch Pipeline Assets (scripts)
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        with:
+          assets: scripts
+
+      - name: 📦 Ensure PyYAML
+        run: |
+          python3 -c 'import yaml' 2>/dev/null && exit 0
+          python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyyaml \
+            || python3 -m pip install --quiet --disable-pip-version-check --user pyyaml
+
+      - name: ⚙️ Generate Default Config
+        if: ${{ inputs.mode != 'validate' }}
+        env:
+          SECTIONS: ${{ inputs.sections }}
+        run: |
+          set -euo pipefail
+          cd _deploy-workflows
+          mkdir -p out
+
+          python3 scripts/resolve-config.py --print-example ${SECTIONS} > out/pipeline-config.yaml
+          python3 scripts/resolve-config.py --print-example --secrets > out/pipeline-secrets.yaml
+
+          # 自己生成的东西自己过一遍校验：示例要是都通不过，说明配置表有问题
+          # [EN] Validate what was just generated: if the example itself fails, the table is wrong
+          python3 scripts/resolve-config.py --check out/pipeline-config.yaml >/dev/null
+          echo "✅ 生成的默认配置通过自校验"
+
+          {
+            echo "## ⚙️ 默认流水线配置"
+            echo ""
+            echo "下面两段分别贴进仓库的 **Variables → \`PIPELINE_CONFIG\`** 与"
+            echo "**Secrets → \`PIPELINE_SECRETS\`**；按环境覆盖的话用分节变量"
+            echo "（\`KUBE_CONFIG\` / \`DOCKER_CONFIG\` / \`BUILDER_CONFIG\` …，内容不带节名）。"
+            echo ""
+            echo "全部留默认值也能跑：解析器会按配置表兜底，所以只保留你真要改的那几项就行。"
+            echo ""
+            echo "### vars.PIPELINE_CONFIG"
+            echo ""
+            echo '```yaml'
+            cat out/pipeline-config.yaml
+            echo '```'
+            echo ""
+            echo "### secrets.PIPELINE_SECRETS"
+            echo ""
+            echo '```yaml'
+            cat out/pipeline-secrets.yaml
+            echo '```'
+            echo ""
+            echo "### 本地校验"
+            echo ""
+            echo '```bash'
+            echo "python3 scripts/resolve-config.py --check my-config.yaml"
+            echo "python3 scripts/resolve-config.py --check my-secrets.yaml --secrets"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 Upload Config
+        if: ${{ inputs.mode != 'validate' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-config
+          path: _deploy-workflows/out/
+          retention-days: 7
+
+      - name: 🔍 Validate Config
+        if: ${{ inputs.mode == 'validate' }}
+        env:
+          CONFIG_YAML: ${{ inputs.config }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONFIG_YAML}" ]; then
+            echo "::error::validate 模式要把 YAML 贴进 config 入参里 | config input is empty"
+            exit 1
+          fi
+          cd _deploy-workflows
+          printf '%s\n' "${CONFIG_YAML}" > to-check.yaml
+
+          # 贴进来的可能是总表、也可能是某一节的内容：先按总表校，不行再逐节试一遍，
+          # 都不行才报错 —— 比让使用者先回答「这是哪一节」省事
+          # [EN] The pasted document may be the whole table or one section's body: try the whole
+          # table first, then each section, and only fail if none fits
+          if python3 scripts/resolve-config.py --check to-check.yaml; then
+            echo "✅ 按总表校验通过" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          for s in ports docker kube builder cleanup service branch notify; do
+            if python3 scripts/resolve-config.py --check to-check.yaml --section "$s" >/dev/null 2>&1; then
+              echo "✅ 按 \`$s\` 节校验通过（贴的是分节变量的内容）" >> "$GITHUB_STEP_SUMMARY"
+              python3 scripts/resolve-config.py --check to-check.yaml --section "$s"
+              exit 0
+            fi
+          done
+          echo "::error::这份 YAML 既不是合法的总表，也不匹配任何单独一节；上面的报错里有具体路径与建议"
+          exit 1

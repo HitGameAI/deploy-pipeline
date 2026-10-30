@@ -503,6 +503,105 @@ sections:
         default: 'v,prod'
         desc: '命中这些前缀的 tag 永不清理'
 
+  # -------------------- 服务自身的身份与布局 | Service identity and layout --------------------
+  # 这一节是调用方 pipeline.yml 里那套 setup 逻辑的参数：产物叫什么、镜像推哪、
+  # 哪些环境允许部署、配置文件在哪、密钥从哪抽。原先这些值在每个服务仓库里
+  # 复制一份（三个仓库各 158 行，逐字节相同，只差一个默认 Secret 名），
+  # 现在由 resolve-service-vars 统一算，调用方只写真正动态的那几项。
+  #
+  # 模板占位符：{name} 服务名、{env} 部署环境、{configfile} 配置文件名、{repo} 仓库名
+  # [EN] This section parameterizes the setup logic that used to be copy-pasted into every
+  # service repository (three repositories, 158 byte-identical lines each, differing only in a
+  # default secret name). resolve-service-vars now computes it, so a caller writes only the
+  # genuinely dynamic values. Template placeholders: {name}, {env}, {configfile}, {repo}.
+  service:
+    desc: '服务身份与布局 | Service identity and layout'
+    keys:
+      binary_name:
+        env: BINARY_NAME
+        input: binary-name
+        var: BINARY_NAME
+        type: string
+        default: '{repo}'
+        desc: '产物与工作负载的名字，默认取仓库名'
+      binary_source_dir:
+        env: BINARY_SOURCE_DIR
+        input: binary-source-dir
+        var: BINARY_SOURCE_DIR
+        type: string
+        default: 'deployments'
+        desc: '产物目录，也是渲染出的 manifest 落盘的地方'
+      binary_build_dir:
+        env: BINARY_BUILD_DIR
+        input: binary-build-dir
+        var: BINARY_BUILD_DIR
+        type: string
+        default: ''
+        desc: 'main 包所在目录，如 ./cmd/server；留空表示仓库根'
+      docker_namespace:
+        env: DOCKER_NAMESPACE
+        input: docker-namespace
+        var: DOCKER_NAMESPACE
+        type: string
+        default: ''
+        desc: '镜像命名空间，留空取仓库所属组织'
+      extra_copy_dirs:
+        env: EXTRA_COPY_DIRS
+        input: extra-copy-dirs
+        var: EXTRA_COPY_DIRS
+        type: csv
+        default: ''
+        desc: '要随镜像一起打进去的目录，如 docs'
+      allowed_envs:
+        env: ALLOWED_ENVS
+        input: allowed-envs
+        var: [DOCKER_K8S_ALLOWED_ENVS, ALLOWED_ENVS]
+        type: csv
+        default: 'dev,staging'
+        desc: '允许构建镜像与部署的环境白名单；不在名单里的环境只跑检查'
+      deploy_branches:
+        env: DEPLOY_BRANCHES
+        input: deploy-branches
+        var: DEPLOY_BRANCHES
+        type: csv
+        default: 'dev,staging'
+        desc: 'push 事件下哪些分支会触发部署（其余分支只构建）'
+      config_path:
+        env: CONFIG_PATH_TEMPLATE
+        input: config-path
+        var: CONFIG_PATH_TEMPLATE
+        type: string
+        default: 'config/config.{env}.yaml'
+        desc: '服务配置文件路径模板；文件不存在直接失败，不静默跳过 ConfigMap'
+      configmap_name:
+        env: CONFIGMAP_NAME_TEMPLATE
+        input: configmap-name
+        var: CONFIGMAP_NAME_TEMPLATE
+        type: string
+        default: '{name}-config-{env}'
+        desc: 'ConfigMap 名字模板'
+      cmd_args:
+        env: CMD_ARGS_TEMPLATE
+        input: cmd-args
+        var: CMD_ARGS_TEMPLATE
+        type: string
+        default: '-f resources/{configfile}'
+        desc: '写进镜像 CMD 的启动参数模板；容器启动不带参数，配置路径只能这么传'
+      secret_name:
+        env: K8S_SECRET_NAME
+        input: secret-name
+        var: K8S_SECRET_NAME
+        type: string
+        default: '{name}-secrets'
+        desc: '集群里那个业务 Secret 的名字'
+      secret_scan_dirs:
+        env: SECRET_SCAN_DIRS
+        input: secret-scan-dirs
+        var: SECRET_SCAN_DIRS
+        type: csv
+        default: 'internal'
+        desc: '扫 go-zero `,env=XXX` struct tag 的目录'
+
   # -------------------- 批量分支操作 | Batch branch operations --------------------
   # 注意：dry_run 故意不在这里
   # 聚合 YAML 的优先级高于 input，把干跑开关放进配置就意味着「配置里写了 false」
@@ -575,6 +674,18 @@ sections:
         values: [none, feishu, wecom, telegram, all]
         default: 'all'
         desc: 'all 只发已配置好的渠道，一个都没配就不发也不失败'
+
+  # -------------------- 容器环境变量 | Container environment --------------------
+  # 自由键值表：键名就是容器里的环境变量名，值是明文。渲染成 Deployment 的 env 条目。
+  # 密钥不写在这里 —— 密钥名由 resolve-service-vars 从源码与服务配置里自动抽，
+  # 渲染成 secretKeyRef，值只存在集群的 Secret 里。两者最后合成同一份 env 列表。
+  # [EN] A free-form map whose keys are the container's environment variable names and whose
+  # values are plaintext, rendered as Deployment env entries. Secrets do not belong here: their
+  # names are derived from the source and the service config and rendered as secretKeyRef, so
+  # the values exist only in the in-cluster Secret. Both end up in one env list.
+  env:
+    desc: '容器里的非密钥环境变量，键名即变量名 | Plaintext container environment, keyed by name'
+    free_form: true
 
 # ==================== secrets 侧：敏感配置 | Sensitive settings ====================
 # 来源是 secrets.PIPELINE_SECRETS，与明文的 PIPELINE_CONFIG 分开两份，
