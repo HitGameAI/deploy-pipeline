@@ -241,10 +241,10 @@ on:
         type: string
         default: ''
       notification-provider:
-        description: 'Notification provider (none/feishu/wecom/telegram/all)'
+        description: 'Notification provider (none/feishu/wecom/telegram/all); 默认 all：只发已配置的渠道，一个都没配就不发且不失败'
         required: false
         type: string
-        default: 'none'
+        default: 'all'
       extra-env-block:
         description: 'Extra environment variables block (YAML snippet, auto-indented and injected into container env section)'
         required: false
@@ -252,9 +252,20 @@ on:
         default: ''
 
     secrets:
+      # 聚合密钥：一个 secret 装下 kubeconfig / 通知 webhook / 业务密钥，
+      # 格式见 scripts/config/schema.yaml 的 secret_sections
+      # [EN] One secret holding the kubeconfig, the notification webhooks and the service
+      # secrets; the shape is defined by secret_sections in scripts/config/schema.yaml
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML（kube.kubeconfig / notify.* / app.*），优先级高于下面的单个 secret'
+        required: false
+      # KUBECONFIG 不再 required：可以改从 PIPELINE_SECRETS 的 kube.kubeconfig 来，
+      # 两个都没配时由 resolve-config 之后的检查报错，而不是在这里卡住调用方
+      # [EN] No longer required, because it may come from kube.kubeconfig in PIPELINE_SECRETS;
+      # the check after resolve-config fails the run when neither is set
       KUBECONFIG:
-        description: 'Kubernetes kubeconfig 内容'
-        required: true
+        description: 'Kubernetes kubeconfig 内容（也可写进 PIPELINE_SECRETS 的 kube.kubeconfig）'
+        required: false
       FEISHU_WEBHOOK_URL:
         description: '飞书通知 Webhook URL'
         required: false
@@ -279,52 +290,27 @@ jobs:
     outputs:
       image-name: ${{ steps.image-name.outputs.image-name }}
     env:
-      KUBECONFIG: ${{ secrets.KUBECONFIG }}
-      # 优先级: input > vars > 硬编码默认值
-      NAMESPACE: ${{ inputs.namespace || vars.K8S_NAMESPACE || 'default' }}
-      KIND: ${{ inputs.kind || vars.KIND || 'Deployment' }}
-      SERVICE_KIND: ${{ inputs.service-kind || vars.SERVICE_KIND || 'Service' }}
-      SERVICE_TYPE: ${{ inputs.service-type || vars.SERVICE_TYPE || 'ClusterIP' }}
-      HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '' }}
-      RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
-      WS_PORT: ${{ inputs.ws-port || vars.WS_PORT || '' }}
-      PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
-      NODE_GRPC_PORT: ${{ inputs.node-grpc-port || vars.NODE_GRPC_PORT || '' }}
-      PROBE_PORT_NAME: ${{ inputs.probe-port || vars.PROBE_PORT_NAME || '' }}
-      METRICS_PORT: ${{ inputs.metrics-port || vars.METRICS_PORT || '' }}
-      METRICS_PATH: ${{ inputs.metrics-path || vars.METRICS_PATH || '/metrics' }}
-      DOCKER_RUN_WORKDIR: ${{ inputs.docker-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
-      IMAGE_PULL_SECRETS: ${{ inputs.image-pull-secrets || vars.K8S_IMAGE_PULL_SECRETS || 'ghcr.io' }}
-      READINESS_DELAY: ${{ inputs.readiness-delay-seconds || vars.K8S_READINESS_DELAY_SECONDS || '5' }}
-      READINESS_PERIOD: ${{ inputs.readiness-period-seconds || vars.K8S_READINESS_PERIOD_SECONDS || '10' }}
-      LIVENESS_DELAY: ${{ inputs.liveness-delay-seconds || vars.K8S_LIVENESS_DELAY_SECONDS || '15' }}
-      LIVENESS_PERIOD: ${{ inputs.liveness-period-seconds || vars.K8S_LIVENESS_PERIOD_SECONDS || '20' }}
-      STARTUP_PERIOD: ${{ inputs.startup-period-seconds || vars.K8S_STARTUP_PERIOD_SECONDS || '10' }}
-      STARTUP_FAILURE_THRESHOLD: ${{ inputs.startup-failure-threshold || vars.K8S_STARTUP_FAILURE_THRESHOLD || '30' }}
-      CPU_REQUEST: ${{ inputs.cpu-request || vars.K8S_CPU_REQUEST || '100m' }}
-      MEMORY_REQUEST: ${{ inputs.memory-request || vars.K8S_MEMORY_REQUEST || '128Mi' }}
-      CPU_LIMIT: ${{ inputs.cpu-limit || vars.K8S_CPU_LIMIT || '300m' }}
-      MEMORY_LIMIT: ${{ inputs.memory-limit || vars.K8S_MEMORY_LIMIT || '256Mi' }}
-      TERMINATION_GRACE_PERIOD_SECONDS: ${{ inputs.termination-grace-period-seconds || vars.K8S_TERMINATION_GRACE_PERIOD_SECONDS || '30' }}
-      MIN_REPLICAS: ${{ inputs.min-replicas || vars.K8S_MIN_REPLICAS || '2' }}
-      MAX_REPLICAS: ${{ inputs.max-replicas || vars.K8S_MAX_REPLICAS || '10' }}
-      DEPLOYMENT_REPLICAS: ${{ inputs.deployment-replicas || vars.K8S_DEPLOYMENT_REPLICAS || '2' }}
-      TARGET_CPU_UTILIZATION: ${{ inputs.target-cpu-utilization || vars.K8S_TARGET_CPU_UTILIZATION || '80' }}
-      TARGET_MEMORY_UTILIZATION: ${{ inputs.target-memory-utilization || vars.K8S_TARGET_MEMORY_UTILIZATION || '80' }}
-      SCALE_UP_PERCENT: ${{ inputs.scale-up-percent || vars.K8S_SCALE_UP_PERCENT || '100' }}
-      SCALE_DOWN_PERCENT: ${{ inputs.scale-down-percent || vars.K8S_SCALE_DOWN_PERCENT || '50' }}
-      SCALE_DOWN_STABILIZATION_SECONDS: ${{ inputs.scale-down-stabilization-seconds || vars.K8S_SCALE_DOWN_STABILIZATION_SECONDS || '300' }}
-      ENABLE_HPA: ${{ inputs.enable-hpa || vars.K8S_ENABLE_HPA || 'true' }}
-      GOMEMLIMIT_PERCENT: ${{ inputs.gomemlimit-percent || vars.K8S_GOMEMLIMIT_PERCENT || '' }}
-      INGRESS_ENTRY_POINT: ${{ inputs.ingress-entry-point || vars.INGRESS_ENTRY_POINT || 'web' }}
-      INGRESS_HOST: ${{ inputs.ingress-host || vars.INGRESS_HOST || '' }}
-      INGRESS_TLS: ${{ inputs.ingress-tls || vars.INGRESS_TLS || 'false' }}
-      INGRESS_CERT_RESOLVER: ${{ inputs.ingress-cert-resolver || vars.INGRESS_CERT_RESOLVER || 'letsencrypt' }}
-      INGRESS_TLS_ENTRY_POINT: ${{ inputs.ingress-tls-entry-point || vars.INGRESS_TLS_ENTRY_POINT || 'websecure' }}
-      INGRESS_REDIRECT_HTTP_TO_HTTPS: ${{ inputs.ingress-redirect-http-to-https || vars.INGRESS_REDIRECT_HTTP_TO_HTTPS || 'true' }}
+      # 配置项不再在这里逐行拼 inputs/vars/默认值：改由下面第一步的 resolve-config
+      # 统一校验合并后写进 GITHUB_ENV。留在这一层会盖住解析结果，所以必须删干净。
+      # [EN] The per-key inputs/vars/default chains are gone: the resolve-config step below
+      # validates and merges everything into GITHUB_ENV. A copy left at this level would shadow
+      # the resolved values, so none may remain.
       EXTRA_ENV_BLOCK_INPUT: ${{ inputs.extra-env-block }}
-
     steps:
+      # 所有配置先过这一步：校验 YAML、合并优先级、写进 GITHUB_ENV，
+      # 后面的 step 一律用 ${{ env.XXX }} 取值，不再各自拼 inputs/vars
+      # [EN] Every setting goes through this step first: the YAML is validated, the layers are
+      # merged and the result is exported through GITHUB_ENV for the steps that follow
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: ports docker kube
+          secret-sections: kube app
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          summary: 'true'
+
       - name: Normalize Docker Image Name
         id: image-name
         uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
@@ -334,16 +320,17 @@ jobs:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
 
-      - name: Debug KUBECONFIG
+      # 这里读的是 resolve-config 解析后的值：secrets.PIPELINE_SECRETS 的
+      # kube.kubeconfig 优先，没配才回退到单个的 secrets.KUBECONFIG
+      # [EN] This reads the resolved value: kube.kubeconfig from PIPELINE_SECRETS wins and the
+      # standalone KUBECONFIG secret is the fallback
+      - name: 🔑 Check KUBECONFIG
         run: |
-          if [ -z "$KUBECONFIG" ]; then
-            echo "ERROR: KUBECONFIG is empty! Check your environment secrets."
+          if [ -z "${KUBECONFIG:-}" ]; then
+            echo "::error::KUBECONFIG 为空。二选一：在 PIPELINE_SECRETS 里写 kube.kubeconfig，或配置环境级 secrets.KUBECONFIG | KUBECONFIG is empty"
             exit 1
-          else
-            echo "KUBECONFIG is set (length: ${#KUBECONFIG})"
           fi
-        env:
-          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+          echo "✅ KUBECONFIG 已就位（长度 ${#KUBECONFIG}）"
 
       - name: ⚙️ Setup Kubernetes Context
         uses: Azure/k8s-set-context@v4
@@ -351,12 +338,17 @@ jobs:
           method: kubeconfig
           kubeconfig: ${{ env.KUBECONFIG }}
 
-      - name: 📥 Checkout Deploy Workflows (for templates)
-        uses: actions/checkout@v6
+      # 不用 actions/checkout 取本仓库：复用工作流里 GITHUB_TOKEN 的作用域是调用方仓库，
+      # 对本私有仓库没有读权限，GitHub 返回 404 而不是 403，报错是
+      # "remote: Repository not found."，看着像仓库不存在其实是没权限
+      # 详见 .github/actions/fetch-pipeline-assets/action.yml 的说明
+      # [EN] Not actions/checkout: inside a reusable workflow GITHUB_TOKEN is scoped to the
+      # calling repository and cannot read this private one, and GitHub answers 404 rather than
+      # 403, so the error reads as a missing repository when it is a permission
+      - name: 📥 Fetch Pipeline Assets (templates)
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
         with:
-          repository: kamalyes/deploy-pipeline
-          ref: master
-          path: _deploy-workflows
+          assets: templates
 
       - name: 📝 Generate K8s Manifests
         id: manifests
@@ -601,7 +593,7 @@ jobs:
           export INGRESS_CERT_RESOLVER="${{ env.INGRESS_CERT_RESOLVER }}"
           export INGRESS_TLS_ENTRY_POINT="${{ env.INGRESS_TLS_ENTRY_POINT }}"
           export INGRESS_REDIRECT_HTTP_TO_HTTPS="${{ env.INGRESS_REDIRECT_HTTP_TO_HTTPS }}"
-          export INGRESS_HTTP_ENTRY_POINT="${{ inputs.ingress-entry-point || vars.INGRESS_ENTRY_POINT || 'web' }}"
+          export INGRESS_HTTP_ENTRY_POINT="${{ env.INGRESS_ENTRY_POINT }}"
 
           if [ -n "${{ env.INGRESS_HOST }}" ]; then
             if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
@@ -685,6 +677,132 @@ jobs:
             fi
           done
 
+      # 把 GitHub Secrets 同步成集群里的 K8s Secret，再由 Deployment 的 secretKeyRef 引用
+      # 密钥来源两处：secrets.PIPELINE_SECRETS 的 app 节（优先）与同名的单个 GitHub Secret
+      # 名单不另外维护：直接从 extra-env-block 里解析，和 secretKeyRef 用的是同一份，
+      # 所以调用方不必多传参数，新增密钥配置下次部署自动带上
+      # 值不进命令行参数（runner 上 ps 可见），只经 stdin 交给 kubectl
+      # 一个都没在 GitHub Secrets 里找到时整步跳过，不碰集群 —— 避免把手工建好的
+      # Secret 清空（apply 是声明式的，data 里没列到的键会被移除）
+      #
+      # [EN] Sync GitHub Secrets into the cluster Secret that the Deployment's secretKeyRef
+      # points at. The key list is parsed out of extra-env-block, the same list that produced
+      # those secretKeyRef entries, so callers pass nothing extra and a newly added secret is
+      # picked up on the next deploy. Values reach kubectl through stdin only, never as command
+      # line arguments, which are visible to ps on the runner. If none of the keys are present
+      # in GitHub Secrets the step is skipped without touching the cluster, so a hand-created
+      # Secret is not emptied by a declarative apply.
+      - name: 🔐 Sync Secrets to Cluster
+        if: ${{ inputs.extra-env-block != '' }}
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          EXTRA_ENV_BLOCK: ${{ inputs.extra-env-block }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+          # resolve-config 从 PIPELINE_SECRETS 的 app 节解析出的业务密钥，落在 0600 的文件里；
+          # 没配 app 节时这个变量为空，整段逻辑退回只认单个 GitHub Secret
+          # [EN] The service secrets resolved from the app section, in a 0600 file; empty when
+          # the section is absent, in which case only the standalone secrets are considered
+          APP_SECRETS_FILE: ${{ env.PIPELINE_APP_SECRETS_FILE }}
+        run: |
+          umask 077
+          # 必须用 || status=$? 承接退出码：GitHub 的 run: 是 bash -e，python 非零退出会
+          # 立刻中断整步，后面的 status 判断根本执行不到（exit 3 会变成 job 失败）。
+          # [EN] The exit code must be captured with || status=$?: run: uses bash -e, so a non-zero
+          # python exit aborts the step before the status checks below ever run, turning the
+          # intended skip (3) into a failed job.
+          status=0
+          python3 -I - > "${RUNNER_TEMP}/secret.yaml" <<'SYNC_PY' || status=$?
+          import base64, hashlib, json, os, re, sys
+
+          block = os.environ.get("EXTRA_ENV_BLOCK", "")
+          # secretKeyRef 紧随其后的 name: 是 Secret 名；key: 汇总出键名
+          secret_name = ""
+          lines = block.split("\n")
+          for i, line in enumerate(lines):
+              if line.strip() == "secretKeyRef:" and i + 1 < len(lines):
+                  m = re.match(r"\s*name:\s*(\S+)", lines[i + 1])
+                  if m:
+                      secret_name = m.group(1)
+                      break
+          keys = []
+          for line in lines:
+              m = re.match(r"\s*key:\s*([A-Z_][A-Z0-9_]*)\s*$", line)
+              if m and m.group(1) not in keys:
+                  keys.append(m.group(1))
+
+          if not secret_name or not keys:
+              print("::warning::extra-env-block 里没解析出 Secret 名或键名，跳过同步", file=sys.stderr)
+              sys.exit(3)
+
+          try:
+              available = json.loads(os.environ.get("ALL_SECRETS") or "{}")
+          except json.JSONDecodeError:
+              print("::error::无法解析 secrets 上下文", file=sys.stderr)
+              sys.exit(1)
+
+          # PIPELINE_SECRETS 的 app 节覆盖同名的单个 Secret：聚合配置优先级最高，
+          # 这里和 resolve-config 对 vars 的处理保持一致
+          # [EN] The app section overrides a standalone secret of the same name, keeping the
+          # precedence identical to how resolve-config treats the plaintext variables
+          app_file = os.environ.get("APP_SECRETS_FILE") or ""
+          if app_file and os.path.isfile(app_file):
+              with open(app_file, encoding="utf-8") as handle:
+                  available.update(json.load(handle))
+
+          # 只取名单里的键：toJSON(secrets) 含 KUBECONFIG / DOCKER_PASSWORD 等 CI 凭据，
+          # 不过滤会把它们一起推进业务 Secret
+          data, missing = {}, []
+          for k in keys:
+              v = available.get(k)
+              if v:
+                  data[k] = base64.b64encode(v.encode()).decode()
+              else:
+                  missing.append(k)
+
+          # 不打印值：来自 secrets 上下文的值会被 GitHub 打码成 ***，绕过打码等于把密钥
+          # 写进对所有有读权限的人可见、且会留存的日志里。改为打印长度与 sha256 前 8 位：
+          # 足够核对「是不是那个值」「两个服务是否一致」，又不泄漏内容。
+          # 本地算同样的指纹对照：printf %s '<值>' | shasum -a 256 | cut -c1-8
+          # [EN] Values are never printed: anything from the secrets context is masked to ***, and
+          # defeating the mask would write the secret into logs that are retained and readable by
+          # everyone with repository read access. Length plus the first 8 hex of sha256 is enough
+          # to confirm which value landed and whether two services agree, without exposing it.
+          def fingerprint(value):
+              return hashlib.sha256(value.encode()).hexdigest()[:8]
+
+          print("::group::密钥同步清单", file=sys.stderr)
+          print("Secret: %s/%s" % (os.environ.get("NAMESPACE", "default"), secret_name), file=sys.stderr)
+          for k in sorted(data):
+              print("  %-56s len=%-4d sha256=%s" % (k, len(available[k]), fingerprint(available[k])), file=sys.stderr)
+          if missing:
+              print("GitHub Secrets 里缺 %d 个：%s" % (len(missing), " ".join(missing)), file=sys.stderr)
+          print("::endgroup::", file=sys.stderr)
+
+          if not data:
+              print("::warning::名单里没有任何键在 GitHub Secrets 中，跳过同步，集群现状不变", file=sys.stderr)
+              sys.exit(3)
+          if missing:
+              print("::warning::缺失的键不会写入；集群里已有的同名键会被这次 apply 移除，服务将按缺密钥启动", file=sys.stderr)
+
+          manifest = {
+              "apiVersion": "v1",
+              "kind": "Secret",
+              "metadata": {"name": secret_name, "namespace": os.environ.get("NAMESPACE", "default")},
+              "type": "Opaque",
+              "data": data,
+          }
+          print(json.dumps(manifest))
+          SYNC_PY
+          if [ "${status}" = "3" ]; then
+            rm -f "${RUNNER_TEMP}/secret.yaml"
+            exit 0
+          fi
+          [ "${status}" = "0" ] || exit "${status}"
+          kubectl apply --server-side --force-conflicts --validate=false \
+            -n "${NAMESPACE}" -f "${RUNNER_TEMP}/secret.yaml"
+          rm -f "${RUNNER_TEMP}/secret.yaml"
+
+
       - name: 🚀 Apply Kubernetes Resources
         id: apply
         run: |
@@ -729,10 +847,67 @@ jobs:
             kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ env.NAMESPACE }}
           fi
 
+      # 部署之后把集群里实际注入的密钥打印一遍，脱敏显示：首 4 尾 4 + 长度 + sha256 前 8 位。
+      # 为什么不打印完整值：GitHub 只会把与 secrets 完全相同的字符串打码成 ***，脱敏后的
+      # 片段不会被打码，会原样留在日志里，而日志对所有有仓库读权限的人可见且长期留存。
+      # 首尾各 4 位足够回答「是不是那个值」，sha256 前 8 位足够回答「两个服务是否一致」，
+      # 两者都不足以还原密钥。本地算同样的指纹对照：
+      #   printf %s '<值>' | shasum -a 256 | cut -c1-8
+      # 短于 12 位的值整体打掉：首尾各 4 位会暴露太大比例。
+      #
+      # [EN] After deploying, print what actually landed in the cluster, redacted: first and last
+      # four characters plus length and the first 8 hex of sha256. Full values are never printed:
+      # GitHub only masks strings identical to a secret, so a redacted fragment would stay in logs
+      # that are retained and readable by anyone with repository read access. The fragment answers
+      # "is this the right value" and the digest answers "do two services agree", while neither
+      # reconstructs the secret. Values shorter than 12 characters are hidden entirely, since four
+      # characters at each end would expose too large a share of them.
+      - name: 🔍 Verify Injected Secrets
+        if: ${{ inputs.extra-env-block != '' }}
+        continue-on-error: true
+        env:
+          EXTRA_ENV_BLOCK: ${{ inputs.extra-env-block }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+        run: |
+          synced_name="$(python3 -I -c '
+          import os, re, sys
+          lines = os.environ.get("EXTRA_ENV_BLOCK", "").split("\n")
+          for i, l in enumerate(lines):
+              if l.strip() == "secretKeyRef:" and i + 1 < len(lines):
+                  m = re.match(r"\s*name:\s*(\S+)", lines[i + 1])
+                  if m:
+                      print(m.group(1)); sys.exit(0)
+          ')"
+          if [ -z "${synced_name}" ]; then
+            echo "::warning::未能从 extra-env-block 解析出 Secret 名，跳过核对"
+            exit 0
+          fi
+          if ! kubectl -n "${NAMESPACE}" get secret "${synced_name}" >/dev/null 2>&1; then
+            echo "::warning::${NAMESPACE}/${synced_name} 不存在；Deployment 的 secretKeyRef 都是 optional: true，容器会在缺这些环境变量的情况下启动"
+            exit 0
+          fi
+          kubectl -n "${NAMESPACE}" get secret "${synced_name}" -o json | python3 -I -c '
+          import base64, hashlib, json, sys
+
+          def redact(raw):
+              if len(raw) <= 12:
+                  return "****(%d chars)" % len(raw)
+              return "%s****%s" % (raw[:4], raw[-4:])
+
+          data = json.load(sys.stdin).get("data") or {}
+          print("::group::集群中实际注入的密钥（脱敏）")
+          if not data:
+              print("  Secret 存在但 data 为空")
+          for k in sorted(data):
+              raw = base64.b64decode(data[k]).decode("utf-8", "replace")
+              print("  %-56s %-24s len=%-4d sha256=%s"
+                    % (k, redact(raw), len(raw), hashlib.sha256(raw.encode()).hexdigest()[:8]))
+          print("::endgroup::")
+          '
       - name: ⏳ Wait for Deployment
         id: wait
         run: |
-          MAX_WAIT="${{ vars.K8S_HEALTH_MAX_WAIT || '300' }}"
+          MAX_WAIT="${{ env.HEALTH_MAX_WAIT }}"
           ELAPSED=0
           INTERVAL=10
 
@@ -895,19 +1070,40 @@ jobs:
   notify:
     name: 🔔 Send Deployment Notification
     needs: [deploy]
-    if: always() && inputs.notification-provider != 'none'
+    # 调用方在 push 事件下没有 dispatch 输入，传进来是空字符串，空值按 all 处理
+    # [EN] On a push the caller has no dispatch inputs and passes an empty string; treat it as all
+    if: always() && (inputs.notification-provider || 'all') != 'none'
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout Deploy Workflows (for scripts)
-        uses: actions/checkout@v6
+      # 不用 actions/checkout 取本仓库：复用工作流里 GITHUB_TOKEN 的作用域是调用方仓库，
+      # 对本私有仓库没有读权限，GitHub 返回 404 而不是 403，报错是
+      # "remote: Repository not found."，看着像仓库不存在其实是没权限
+      # 详见 .github/actions/fetch-pipeline-assets/action.yml 的说明
+      # [EN] Not actions/checkout: inside a reusable workflow GITHUB_TOKEN is scoped to the
+      # calling repository and cannot read this private one, and GitHub answers 404 rather than
+      # 403, so the error reads as a missing repository when it is a permission
+      - name: 📥 Fetch Pipeline Assets (scripts)
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
         with:
-          repository: kamalyes/deploy-pipeline
-          ref: master
-          path: _deploy-workflows
+          assets: scripts
+
+      # 通知是独立 job，GITHUB_ENV 不跨 job，所以这里要再解析一次：
+      # 渠道凭证来自 PIPELINE_SECRETS 的 notify 节，命名空间与端口来自明文配置，
+      # 和 deploy job 读的是同一份 YAML，不会出现两边报的值不一致
+      # [EN] Notification is its own job and GITHUB_ENV does not cross jobs, so the
+      # configuration is resolved again here from the same YAML the deploy job used, which is
+      # what keeps the reported namespace and ports from drifting apart
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: ports kube notify
+          secret-sections: notify
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
 
       - name: 📤 Send Notification
         run: |
-          export NOTIFICATION_PROVIDER="${{ inputs.notification-provider }}"
           export NOTIFICATION_TYPE="deployment"
           export STATUS="${{ needs.deploy.result }}"
           export ENVIRONMENT="${{ inputs.environment }}"
@@ -917,19 +1113,9 @@ jobs:
           export GIT_BRANCH="${{ github.ref_name }}"
           export OPERATOR="${{ github.actor }}"
           export WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          export FEISHU_WEBHOOK_URL="${{ secrets.FEISHU_WEBHOOK_URL }}"
-          export WECOM_WEBHOOK_URL="${{ secrets.WECOM_WEBHOOK_URL }}"
-          export WECOM_WEBHOOK_KEY="${{ secrets.WECOM_WEBHOOK_KEY }}"
-          export TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
-          export TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
           export GITHUB_REPOSITORY="${{ github.repository }}"
           export GITHUB_ACTOR="${{ github.actor }}"
           export DEPLOYMENT_TARGET="Kubernetes"
-          export NAMESPACE="${{ inputs.namespace || vars.K8S_NAMESPACE || 'business' }}"
-          export HTTP_PORT="${{ inputs.http-port || vars.HTTP_PORT || '' }}"
-          export RPC_PORT="${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}"
-          export WS_PORT="${{ inputs.ws-port || vars.WS_PORT || '' }}"
-          export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas || vars.K8S_DEPLOYMENT_REPLICAS || '1' }}"
 
           if [ "$STATUS" = "failure" ]; then
             export ERROR_MESSAGE="Kubernetes deployment failed, check logs for details"

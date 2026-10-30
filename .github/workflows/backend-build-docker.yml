@@ -70,10 +70,10 @@ on:
         type: string
         default: ''
       timezone:
-        description: 'Container timezone'
+        description: '容器时区（留空则按 docker.timezone 配置，再为空用 Asia/Shanghai）| Container timezone'
         required: false
         type: string
-        default: 'Asia/Shanghai'
+        default: ''
       os:
         description: '目标 OS（为空时回退到 vars.BUILD_DOCKER_OS，再为空用 linux）。需与 build-binary 的 os 一致'
         required: false
@@ -100,6 +100,11 @@ on:
         type: string
         default: ''
     secrets:
+      # 聚合密钥：一个 secret 装下镜像仓库凭证，格式见 scripts/config/schema.yaml
+      # [EN] One secret holding the registry credentials; see scripts/config/schema.yaml
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML（docker.username / docker.password），优先级高于下面的单个 secret'
+        required: false
       DOCKER_USERNAME:
         description: 'Docker registry username'
         required: false
@@ -109,28 +114,40 @@ on:
 
 jobs:
   build-docker:
-    name: 🐳 Build Docker Image (${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }})
+    name: 🐳 Build Docker Image
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
       packages: write
-    env:
-      # 优先级: input > vars > 硬编码默认值
-      DOCKER_REGISTRY: ${{ inputs.docker-registry || vars.DOCKER_REGISTRY || 'ghcr.io' }}
-      DOCKER_RUN_WORKDIR: ${{ inputs.docker-run-workdir || vars.DOCKER_RUN_WORKDIR || format('/usr/local/services/{0}', github.event.repository.name) }}
-      HTTP_PORT: ${{ inputs.http-port || vars.HTTP_PORT || '' }}
-      RPC_PORT: ${{ inputs.rpc-port || vars.RPC_PORT || '9181' }}
-      WS_PORT: ${{ inputs.ws-port || vars.WS_PORT || '18085' }}
-      PPROF_PORT: ${{ inputs.pprof-port || vars.PPROF_PORT || '6160' }}
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.actor }}
-      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
-      BUILD_BINARY_OS: ${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}
-      BUILD_BINARY_ARCH: ${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }}
-      # 优先级: input > vars.BUILD_DOCKER_BASE_IMAGE > 硬编码默认值
-      BASE_IMAGE: ${{ inputs.base-image || vars.BUILD_DOCKER_BASE_IMAGE || 'alpine:3.19.1' }}
+    outputs:
+      # 平台要跨 job 传给 release-note：job 级字段取不到 GITHUB_ENV，只能走 step 输出
+      # [EN] release-note needs the platform across jobs, and a job-level field cannot read
+      # GITHUB_ENV, so it comes from the resolve step's output
+      platform: ${{ fromJSON(steps.config.outputs.json).BUILD_DOCKER_OS }}/${{ fromJSON(steps.config.outputs.json).BUILD_DOCKER_ARCH }}
 
     steps:
+      # 所有配置先过这一步：校验 YAML、合并优先级、写进 GITHUB_ENV
+      # [EN] Every setting goes through this step first
+      - name: ⚙️ Resolve Pipeline Config
+        id: config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: ports docker
+          secret-sections: docker
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          # 这个 workflow 自己的兜底：WS 端口历史默认 18085，推镜像默认用本次运行的
+          # GITHUB_TOKEN 与触发者身份（没配 docker 凭证时照旧能推 GHCR）
+          # [EN] Per-workflow fallbacks: the WebSocket port historically defaults to 18085, and
+          # pushing falls back to this run's GITHUB_TOKEN and the actor, as before
+          defaults: |
+            WS_PORT=18085
+            TIMEZONE=Asia/Shanghai
+            DOCKER_USERNAME=${{ github.actor }}
+            DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }}
+
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
         with:
@@ -151,10 +168,9 @@ jobs:
           BUILD_APP_NAME="${{ inputs.binary-name }}"
           DOCKER_RUN_WORKDIR="${{ env.DOCKER_RUN_WORKDIR }}"
           BASE_IMAGE="${{ env.BASE_IMAGE }}"
-          TIMEZONE="${{ inputs.timezone }}"
-          # 优先级: inputs > vars.BUILD_DOCKER_OS/ARCH > 硬编码默认值
-          BUILD_OS="${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}"
-          BUILD_ARCH="${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }}"
+          TIMEZONE="${{ env.TIMEZONE }}"
+          BUILD_OS="${{ env.BUILD_DOCKER_OS }}"
+          BUILD_ARCH="${{ env.BUILD_DOCKER_ARCH }}"
 
           echo "=========================================="
           echo "Single-arch Docker build"
@@ -308,9 +324,8 @@ jobs:
           file: ${{ inputs.binary-source-dir }}/Dockerfile
           push: true
           # 关键：用 ${os}/${arch} 标记镜像 manifest 平台，K8s 调度到对应架构节点时才能正确拉取
-          # 优先级: inputs > vars.BUILD_DOCKER_OS/ARCH > 硬编码默认值
           # 二进制已由 build-binary workflow 用 Go 交叉编译为对应 os/arch，Dockerfile 仅 COPY，无需 QEMU
-          platforms: ${{ inputs.os || env.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || env.BUILD_DOCKER_ARCH || 'amd64' }}
+          platforms: ${{ env.BUILD_DOCKER_OS }}/${{ env.BUILD_DOCKER_ARCH }}
           tags: ${{ steps.image-names.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -341,7 +356,7 @@ jobs:
             echo "| 状态 | ${BUILD_RESULT} |"
             echo "| 镜像 | \`${{ steps.image-names.outputs.image-base }}\` |"
             echo "| Tags | ${TAGS} |"
-            echo "| 平台 | ${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }} |"
+            echo "| 平台 | ${{ env.BUILD_DOCKER_OS }}/${{ env.BUILD_DOCKER_ARCH }} |"
             echo "| 基础镜像 | ${{ env.BASE_IMAGE }} |"
             echo "| 二进制大小 | ${BIN_SIZE} |"
             echo "| Registry | ${{ env.DOCKER_REGISTRY }} |"
@@ -362,4 +377,4 @@ jobs:
     uses: kamalyes/deploy-pipeline/.github/workflows/release-note.yml@master
     with:
       image-name: ${{ inputs.image-name }}
-      platform: ${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }}
+      platform: ${{ needs.build-docker.outputs.platform }}

@@ -12,7 +12,7 @@ name: 🔄 Branch Recycle
 #   workflow_call     - 被各仓库调用（单仓库自助模式，用调用方 GITHUB_TOKEN）
 # 安全设计：默认干跑；dev 有未发布内容（领先 master）自动拒绝；今日无 tag 自动跳过
 # 跨仓库批量操作依赖 BRANCH_OPS_TOKEN（PAT 或 GitHub App token，需覆盖目标仓库）
-# 仓库列表优先级：inputs.repos > vars.BRANCH_OPS_REPOS > 当前仓库
+# 配置优先级：聚合 YAML 的 branch 节 > inputs > vars.BRANCH_OPS_* > 默认值（见 README 配置章节）
 # ============================================
 
 on:
@@ -21,7 +21,7 @@ on:
   workflow_call:
     inputs:
       repos:
-        description: '仓库列表（逗号分隔 owner/repo，留空=vars.BRANCH_OPS_REPOS 或当前仓库）'
+        description: '仓库列表（逗号分隔 owner/repo，留空=按 branch.repos 配置，再为空=当前仓库）'
         required: false
         type: string
         default: ''
@@ -63,7 +63,7 @@ on:
   workflow_dispatch:
     inputs:
       repos:
-        description: '仓库列表（逗号分隔 owner/repo，留空=vars.BRANCH_OPS_REPOS 或当前仓库）'
+        description: '仓库列表（逗号分隔 owner/repo，留空=按 branch.repos 配置，再为空=当前仓库）'
         required: false
         type: string
         default: ''
@@ -110,33 +110,49 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # 所有配置先过这一步：校验 YAML、合并优先级、写进 GITHUB_ENV
+      # 干跑开关不在配置表里，仍只认 input 与 schedule 的判断，见 schema.yaml 里 branch 节的说明
+      # [EN] Every setting goes through this step first. The dry-run switch is deliberately not
+      # part of the table and still comes from the inputs and the schedule check alone
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: branch notify
+          secret-sections: branch notify
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          defaults: |
+            NOTIFICATION_PROVIDER=feishu
+
+      # 不用 actions/checkout 取脚本：被 workflow_call 调用时 checkout 出来的是调用方仓库，
+      # 里面没有 scripts/branch-ops.sh（私有仓库也没凭据 checkout 本仓），
+      # 所以用 action 自带的仓库副本，理由见 .github/actions/fetch-pipeline-assets
+      # [EN] Not actions/checkout: under workflow_call it checks out the calling repository,
+      # which does not contain scripts/branch-ops.sh, and a private repository cannot be checked
+      # out from here anyway; the action ships its own copy instead
+      - name: 📥 Fetch Pipeline Assets (scripts)
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        with:
+          assets: scripts
 
       - name: Run Branch Recycle
         id: ops
         env:
-          # 中心批量模式（跨仓库）用 BRANCH_OPS_TOKEN；单仓库 call 模式回退 GITHUB_TOKEN
-          GH_TOKEN: ${{ secrets.BRANCH_OPS_TOKEN || secrets.GITHUB_TOKEN }}
-          BRANCH_OPS_REPOS: ${{ inputs.repos || vars.BRANCH_OPS_REPOS || '' }}
-          BRANCH_OPS_SOURCE: ${{ inputs.source-branch }}
-          BRANCH_OPS_TARGET: ${{ inputs.target-branch }}
-          BRANCH_OPS_FEATURE_PREFIX: ${{ inputs.feature-prefix }}
-          BRANCH_OPS_CLEAN_FEATURES: ${{ inputs.clean-features }}
-          BRANCH_OPS_REQUIRE_TAG: ${{ inputs.require-today-tag }}
+          # 中心批量模式（跨仓库）用 branch.token；单仓库 call 模式回退 GITHUB_TOKEN
+          # [EN] Batch mode needs branch.token; the single-repository call mode falls back to
+          # this run's GITHUB_TOKEN
+          GH_TOKEN: ${{ env.BRANCH_OPS_TOKEN || secrets.GITHUB_TOKEN }}
           # schedule 触发无 inputs（恒为干跑预告）；其余触发按 inputs
+          # [EN] A schedule run has no inputs and is always a dry-run preview
           BRANCH_OPS_DRY_RUN: ${{ github.event_name == 'schedule' && 'true' || inputs.dry-run }}
-        run: bash scripts/branch-ops.sh recycle
+        run: bash _deploy-workflows/scripts/branch-ops.sh recycle
 
       - name: Notify Result
         if: always()
         uses: kamalyes/deploy-pipeline/.github/actions/notify@master
         with:
-          provider: ${{ inputs.notification-provider || 'feishu' }}
+          provider: ${{ env.NOTIFICATION_PROVIDER }}
           status: ${{ steps.ops.outputs.status || 'failure' }}
           title: ${{ github.event_name == 'schedule' && '🔄 dev 回收预告（干跑，请确认后手动执行）' || '🔄 dev 回收结果' }}
           message: ${{ steps.ops.outputs.summary || '脚本未产出汇总，请查看日志' }}
-        env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

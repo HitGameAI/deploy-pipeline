@@ -7,10 +7,17 @@ on:
   workflow_call:
     inputs:
       provider:
-        description: '通知渠道：feishu | wecom | telegram | all（all 只发已配置的渠道）'
+        description: '通知渠道：feishu | wecom | telegram | all | none（默认 all：只发已配置的渠道）'
         required: false
         type: string
-        default: 'feishu'
+        default: 'all'
+
+    secrets:
+      # 聚合密钥：一个 secret 装下各渠道 webhook，格式见 scripts/config/schema.yaml
+      # [EN] One secret holding every channel's webhook; see scripts/config/schema.yaml
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML（notify.feishu_webhook_url / notify.wecom_* / notify.telegram_*）'
+        required: false
 
 permissions:
   contents: read
@@ -75,14 +82,20 @@ jobs:
             --repo "${{ github.repository }}" \
             --body "${{ steps.summary.outputs.body }}"
 
+      # webhook 凭证先过 resolve-config：secrets.PIPELINE_SECRETS 的 notify 节优先，
+      # 没配才回退到同名的单个 secret。解析结果经 GITHUB_ENV 给到下一步，
+      # 所以下一步的 if: 依旧按「这个渠道配了没」判断，行为不变
+      # [EN] The webhook credentials go through resolve-config first: the notify section wins and
+      # the standalone secrets are the fallback. The result reaches the next step through
+      # GITHUB_ENV, so its if: condition still skips silently when no channel is configured
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          secret-sections: notify
+          secrets-json: ${{ toJSON(secrets) }}
+
       # 所选渠道的 webhook 未配置（调用方仓库无此 secret）时静默跳过，不红 job
       - name: 📢 Notify
-        env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
-          WECOM_WEBHOOK_KEY: ${{ secrets.WECOM_WEBHOOK_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         if: ${{ env.FEISHU_WEBHOOK_URL != '' || env.WECOM_WEBHOOK_URL != '' || env.WECOM_WEBHOOK_KEY != '' || env.TELEGRAM_BOT_TOKEN != '' }}
         uses: kamalyes/deploy-pipeline/.github/actions/notify@master
         with:

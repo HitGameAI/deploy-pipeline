@@ -1,0 +1,74 @@
+name: 'Fetch Pipeline Assets'
+description: '把本仓库自带的 scripts/ 与 templates/ 复制到工作区，替代 checkout 本仓库（私有仓库下 checkout 会以 Repository not found 失败）'
+
+# 为什么需要这个 action
+#
+# 复用工作流要用到本仓库的 scripts/ 与 templates/，原先的做法是
+#   uses: actions/checkout@v6
+#   with: { repository: kamalyes/deploy-pipeline, ref: master }
+# 但复用工作流运行时，GITHUB_TOKEN 的作用域是「调用方仓库」，对本仓库没有读权限。
+# GitHub 对无权访问的私有仓库返回 404 而不是 403（避免泄漏仓库是否存在），
+# 所以报错是 "remote: Repository not found."，看起来像仓库不存在，实际是没权限。
+#
+# Settings → Actions → General → Access 只放开 uses: 对私有仓库 workflow/action 的
+# 引用权限，不会为 checkout 提供凭据，所以开了 Access 也修不掉那一步 —— 这与
+# 4eb2fa2 里修掉 git clone 时是同一个结论，只是那次只覆盖了 .github/actions/。
+#
+# 换成 action 之后不需要任何凭据：远程引用 action 时 runner 已经把整个仓库下载到
+# _actions 下，scripts/ 与 templates/ 本来就在手边，用 GITHUB_ACTION_PATH 相对定位即可。
+#
+# [EN] Reusable workflows need this repository's scripts and templates. Checking the repository
+# out does not work, because inside a reusable workflow GITHUB_TOKEN is scoped to the calling
+# repository and has no read access here; GitHub answers 404 rather than 403 for a private
+# repository you cannot see, so the failure reads "Repository not found" and looks like a missing
+# repository when it is really a permission. The Access setting only grants uses: references to
+# private workflows and actions and supplies no credentials to checkout, which is the same
+# conclusion reached in 4eb2fa2 when the bare git clone was removed, except that change only
+# covered .github/actions/. Referencing an action instead needs no credentials at all: the runner
+# has already downloaded the whole repository under _actions, so these directories are addressable
+# through GITHUB_ACTION_PATH.
+
+inputs:
+  path:
+    description: '目标目录（相对工作区），与原先 checkout 的 path 保持一致'
+    required: false
+    default: '_deploy-workflows'
+  assets:
+    description: '要复制的顶层目录，空格分隔只取用得到的那些，别无脑全拷'
+    required: false
+    default: 'scripts templates'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Copy Bundled Assets
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_ASSETS: ${{ inputs.assets }}
+      run: |
+        set -euo pipefail
+
+        # action 位于 .github/actions/<name>/，所以回三层到仓库根
+        # 与 .github/actions/notify 里 ${GITHUB_ACTION_PATH}/../../../scripts/notify.sh
+        # 的层数一致，改目录结构时两处要一起改。
+        # [EN] The action lives in .github/actions/<name>/, hence three levels up to the
+        # repository root, matching the depth used in the notify action
+        root="$(cd "${GITHUB_ACTION_PATH}/../../.." && pwd)"
+        dest="${GITHUB_WORKSPACE}/${INPUT_PATH}"
+
+        mkdir -p "${dest}"
+        for asset in ${INPUT_ASSETS}; do
+          if [ ! -d "${root}/${asset}" ]; then
+            echo "::error::找不到 ${root}/${asset}；请确认 action 与该目录在同一仓库同一 ref | ${asset} not found next to the action" >&2
+            exit 1
+          fi
+          # -R 后面不带斜杠：把目录本身拷过去，得到 ${dest}/${asset}，
+          # 与原先 checkout 出来的布局一致，下游的 _deploy-workflows/scripts/... 路径不用改
+          # [EN] Copy the directory itself so the layout matches what checkout produced and
+          # downstream paths need no change
+          cp -R "${root}/${asset}" "${dest}/"
+        done
+
+        echo "✅ 已就位: ${INPUT_PATH} ← ${INPUT_ASSETS}"
+        ls -la "${dest}"

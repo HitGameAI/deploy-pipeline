@@ -7,14 +7,14 @@ name: 🌿 Branch Cut
 # 触发方式：workflow_dispatch（手动）/ workflow_call（被调用）
 # 幂等：目标分支已存在的仓库自动跳过，重复触发安全
 # 跨仓库批量操作依赖 BRANCH_OPS_TOKEN（PAT 或 GitHub App token，需覆盖目标仓库）
-# 仓库列表优先级：inputs.repos > vars.BRANCH_OPS_REPOS > 当前仓库
+# 配置优先级：聚合 YAML 的 branch 节 > inputs > vars.BRANCH_OPS_* > 默认值（见 README 配置章节）
 # ============================================
 
 on:
   workflow_call:
     inputs:
       repos:
-        description: '仓库列表（逗号分隔 owner/repo，留空=vars.BRANCH_OPS_REPOS 或当前仓库）'
+        description: '仓库列表（逗号分隔 owner/repo，留空=按 branch.repos 配置，再为空=当前仓库）'
         required: false
         type: string
         default: ''
@@ -40,7 +40,7 @@ on:
   workflow_dispatch:
     inputs:
       repos:
-        description: '仓库列表（逗号分隔 owner/repo，留空=vars.BRANCH_OPS_REPOS 或当前仓库）'
+        description: '仓库列表（逗号分隔 owner/repo，留空=按 branch.repos 配置，再为空=当前仓库）'
         required: false
         type: string
         default: ''
@@ -71,28 +71,48 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # 所有配置先过这一步：校验 YAML、合并优先级、写进 GITHUB_ENV
+      # 干跑开关不在配置表里，仍只认 input 与 schedule 的判断，见 schema.yaml 里 branch 节的说明
+      # [EN] Every setting goes through this step first. The dry-run switch is deliberately not
+      # part of the table and still comes from the inputs and the schedule check alone
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: branch notify
+          secret-sections: branch notify
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          defaults: |
+            NOTIFICATION_PROVIDER=feishu
+
+      # 不用 actions/checkout 取脚本：被 workflow_call 调用时 checkout 出来的是调用方仓库，
+      # 里面没有 scripts/branch-ops.sh（私有仓库也没凭据 checkout 本仓），
+      # 所以用 action 自带的仓库副本，理由见 .github/actions/fetch-pipeline-assets
+      # [EN] Not actions/checkout: under workflow_call it checks out the calling repository,
+      # which does not contain scripts/branch-ops.sh, and a private repository cannot be checked
+      # out from here anyway; the action ships its own copy instead
+      - name: 📥 Fetch Pipeline Assets (scripts)
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        with:
+          assets: scripts
 
       - name: Run Branch Cut
         id: ops
         env:
-          GH_TOKEN: ${{ secrets.BRANCH_OPS_TOKEN || secrets.GITHUB_TOKEN }}
-          BRANCH_OPS_REPOS: ${{ inputs.repos || vars.BRANCH_OPS_REPOS || '' }}
+          # 跨仓库批量要 branch.token；没配就回退本次运行的 GITHUB_TOKEN（只够操作当前仓库）
+          # [EN] Batch operations need branch.token; without it this run's GITHUB_TOKEN is used,
+          # which only reaches the current repository
+          GH_TOKEN: ${{ env.BRANCH_OPS_TOKEN || secrets.GITHUB_TOKEN }}
           BRANCH_OPS_NEW_BRANCH: ${{ inputs.new-branch }}
-          BRANCH_OPS_BASE: ${{ inputs.base-branch }}
           BRANCH_OPS_DRY_RUN: ${{ inputs.dry-run }}
-        run: bash scripts/branch-ops.sh cut
+        run: bash _deploy-workflows/scripts/branch-ops.sh cut
 
       - name: Notify Result
         if: always()
         uses: kamalyes/deploy-pipeline/.github/actions/notify@master
         with:
-          provider: ${{ inputs.notification-provider || 'feishu' }}
+          provider: ${{ env.NOTIFICATION_PROVIDER }}
           status: ${{ steps.ops.outputs.status || 'failure' }}
-          title: '🌿 批量切分支结果（${{ inputs.base-branch }} → ${{ inputs.new-branch }}）'
+          title: '🌿 批量切分支结果（${{ env.BRANCH_OPS_BASE }} → ${{ inputs.new-branch }}）'
           message: ${{ steps.ops.outputs.summary || '脚本未产出汇总，请查看日志' }}
-        env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

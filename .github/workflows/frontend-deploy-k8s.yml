@@ -41,7 +41,7 @@ on:
         description: 'HTTP 端口'
         required: false
         type: string
-        default: '80'
+        default: ''
 
       ingress-path-prefix:
         description: 'Ingress 路径（可选，如 /api，与 Host 配合使用）'
@@ -101,7 +101,7 @@ on:
         description: '镜像拉取密钥名称'
         required: false
         type: string
-        default: 'ghcr.io'
+        default: ''
 
       # ============================================
       # 健康检查配置
@@ -110,25 +110,25 @@ on:
         description: '就绪探针初始延迟（秒）'
         required: false
         type: string
-        default: '5'
+        default: ''
 
       readiness-period-seconds:
         description: '就绪探针检查周期（秒）'
         required: false
         type: string
-        default: '10'
+        default: ''
 
       liveness-delay-seconds:
         description: '存活探针初始延迟（秒）'
         required: false
         type: string
-        default: '15'
+        default: ''
 
       liveness-period-seconds:
         description: '存活探针检查周期（秒）'
         required: false
         type: string
-        default: '20'
+        default: ''
 
       # ============================================
       # 资源配置
@@ -137,25 +137,25 @@ on:
         description: 'CPU 请求量'
         required: false
         type: string
-        default: '100m'
+        default: ''
 
       memory-request:
         description: '内存请求量'
         required: false
         type: string
-        default: '128Mi'
+        default: ''
 
       cpu-limit:
         description: 'CPU 限制'
         required: false
         type: string
-        default: '300m'
+        default: ''
 
       memory-limit:
         description: '内存限制'
         required: false
         type: string
-        default: '256Mi'
+        default: ''
 
       # ============================================
       # 副本和自动扩缩容配置
@@ -164,31 +164,31 @@ on:
         description: '最小副本数'
         required: false
         type: string
-        default: '1'
+        default: ''
 
       max-replicas:
         description: '最大副本数'
         required: false
         type: string
-        default: '5'
+        default: ''
 
       deployment-replicas:
         description: '初始副本数'
         required: false
         type: string
-        default: '1'
+        default: ''
 
       target-cpu-utilization:
         description: '目标 CPU 使用率（百分比）'
         required: false
         type: string
-        default: '70'
+        default: ''
 
       enable-hpa:
         description: '是否启用 HPA（自动扩缩容）'
         required: false
         type: string
-        default: 'true'
+        default: ''
 
       # ============================================
       # 通知配置
@@ -203,9 +203,18 @@ on:
       # ============================================
       # 敏感配置
       # ============================================
+      # 聚合密钥：一个 secret 装下 kubeconfig 与通知 webhook，
+      # 格式见 scripts/config/schema.yaml 的 secret_sections
+      # [EN] One secret holding the kubeconfig and the notification webhooks; the shape is
+      # defined by secret_sections in scripts/config/schema.yaml
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML（kube.kubeconfig / notify.*），优先级高于下面的单个 secret'
+        required: false
+      # 不再 required：可以改从 PIPELINE_SECRETS 的 kube.kubeconfig 来
+      # [EN] No longer required: it may come from kube.kubeconfig in PIPELINE_SECRETS
       KUBECONFIG:
-        description: 'Kubernetes kubeconfig 内容'
-        required: true
+        description: 'Kubernetes kubeconfig 内容（也可写进 PIPELINE_SECRETS 的 kube.kubeconfig）'
+        required: false
       FEISHU_WEBHOOK_URL:
         description: '飞书通知 Webhook URL'
         required: false
@@ -229,15 +238,30 @@ jobs:
     environment: ${{ inputs.environment }}
     outputs:
       image-name: ${{ steps.image-name.outputs.image-name }}
-    env:
-      KUBECONFIG: ${{ secrets.KUBECONFIG }}
-      # 优先级: input > vars > 硬编码默认值
-      INGRESS_ENTRY_POINT: ${{ inputs.ingress-entry-point || vars.INGRESS_ENTRY_POINT || 'web' }}
-      INGRESS_TLS: ${{ inputs.ingress-tls || vars.INGRESS_TLS || 'false' }}
-      INGRESS_CERT_RESOLVER: ${{ inputs.ingress-cert-resolver || vars.INGRESS_CERT_RESOLVER || 'letsencrypt' }}
-      INGRESS_TLS_ENTRY_POINT: ${{ inputs.ingress-tls-entry-point || vars.INGRESS_TLS_ENTRY_POINT || 'websecure' }}
-
     steps:
+      # 所有配置先过这一步：校验 YAML、合并优先级、写进 GITHUB_ENV，
+      # 后面的 step 一律用 ${{ env.XXX }} 取值
+      # [EN] Every setting goes through this step first: validated, merged and exported through
+      # GITHUB_ENV for the steps that follow
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: ports kube
+          secret-sections: kube
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          summary: 'true'
+          # 前端的兜底与后端不同：nginx 听 80，副本与扩容阈值都更保守
+          # [EN] The frontend fallbacks differ from the backend: nginx listens on 80 and both the
+          # replica counts and the scale threshold are more conservative
+          defaults: |
+            HTTP_PORT=80
+            DEPLOYMENT_REPLICAS=1
+            MIN_REPLICAS=1
+            MAX_REPLICAS=5
+            TARGET_CPU_UTILIZATION=70
+
       - name: Normalize Docker Image Name
         id: image-name
         uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
@@ -250,16 +274,15 @@ jobs:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
 
-      - name: Debug KUBECONFIG
+      # 读的是 resolve-config 解析后的值：PIPELINE_SECRETS 的 kube.kubeconfig 优先
+      # [EN] Reads the resolved value, where kube.kubeconfig from PIPELINE_SECRETS wins
+      - name: 🔑 Check KUBECONFIG
         run: |
-          if [ -z "$KUBECONFIG" ]; then
-            echo "ERROR: KUBECONFIG is empty! Check your workflow_call secrets configuration."
+          if [ -z "${KUBECONFIG:-}" ]; then
+            echo "::error::KUBECONFIG 为空。二选一：在 PIPELINE_SECRETS 里写 kube.kubeconfig，或配置环境级 secrets.KUBECONFIG | KUBECONFIG is empty"
             exit 1
-          else
-            echo "KUBECONFIG is set (length: ${#KUBECONFIG})"
           fi
-        env:
-          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+          echo "✅ KUBECONFIG 已就位（长度 ${#KUBECONFIG}）"
 
       # ============================================
       # 步骤2：配置 Kubernetes 上下文
@@ -289,7 +312,7 @@ jobs:
           echo "================================================"
           echo "正在生成 Kubernetes 资源清单"
           echo "应用名称: ${{ inputs.app-name }}"
-          echo "命名空间: ${{ inputs.namespace }}"
+          echo "命名空间: ${{ env.NAMESPACE }}"
           echo "镜像: ${{ steps.image-name.outputs.image-name }}"
           echo "================================================"
 
@@ -297,26 +320,26 @@ jobs:
           mkdir -p "${DEPLOY_DIR}"
 
           export APP_NAME="${{ inputs.app-name }}"
-          export NAMESPACE="${{ inputs.namespace }}"
+          export NAMESPACE="${{ env.NAMESPACE }}"
           export IMAGE_NAME="${{ steps.image-name.outputs.image-name }}"
-          export HTTP_PORT="${{ inputs.http-port }}"
-          export REPLICAS="${{ inputs.deployment-replicas }}"
+          export HTTP_PORT="${{ env.HTTP_PORT }}"
+          export REPLICAS="${{ env.DEPLOYMENT_REPLICAS }}"
           export REVISION_HISTORY_LIMIT="10"
           export IMAGE_PULL_POLICY="IfNotPresent"
-          export IMAGE_PULL_SECRETS="${{ inputs.image-pull-secrets }}"
-          export READINESS_DELAY="${{ inputs.readiness-delay-seconds }}"
-          export READINESS_PERIOD="${{ inputs.readiness-period-seconds }}"
-          export LIVENESS_DELAY="${{ inputs.liveness-delay-seconds }}"
-          export LIVENESS_PERIOD="${{ inputs.liveness-period-seconds }}"
-          export CPU_REQUEST="${{ inputs.cpu-request }}"
-          export MEMORY_REQUEST="${{ inputs.memory-request }}"
-          export CPU_LIMIT="${{ inputs.cpu-limit }}"
-          export MEMORY_LIMIT="${{ inputs.memory-limit }}"
-          export MIN_REPLICAS="${{ inputs.min-replicas }}"
-          export MAX_REPLICAS="${{ inputs.max-replicas }}"
-          export TARGET_CPU_UTILIZATION="${{ inputs.target-cpu-utilization }}"
-          export INGRESS_PATH="${{ inputs.ingress-path-prefix }}"
-          export INGRESS_HOST="${{ inputs.ingress-host }}"
+          export IMAGE_PULL_SECRETS="${{ env.IMAGE_PULL_SECRETS }}"
+          export READINESS_DELAY="${{ env.READINESS_DELAY }}"
+          export READINESS_PERIOD="${{ env.READINESS_PERIOD }}"
+          export LIVENESS_DELAY="${{ env.LIVENESS_DELAY }}"
+          export LIVENESS_PERIOD="${{ env.LIVENESS_PERIOD }}"
+          export CPU_REQUEST="${{ env.CPU_REQUEST }}"
+          export MEMORY_REQUEST="${{ env.MEMORY_REQUEST }}"
+          export CPU_LIMIT="${{ env.CPU_LIMIT }}"
+          export MEMORY_LIMIT="${{ env.MEMORY_LIMIT }}"
+          export MIN_REPLICAS="${{ env.MIN_REPLICAS }}"
+          export MAX_REPLICAS="${{ env.MAX_REPLICAS }}"
+          export TARGET_CPU_UTILIZATION="${{ env.TARGET_CPU_UTILIZATION }}"
+          export INGRESS_PATH="${{ env.INGRESS_PATH_PREFIX }}"
+          export INGRESS_HOST="${{ env.INGRESS_HOST }}"
           export INGRESS_ENTRY_POINT="${{ env.INGRESS_ENTRY_POINT }}"
           export INGRESS_TLS="${{ env.INGRESS_TLS }}"
           export INGRESS_CERT_RESOLVER="${{ env.INGRESS_CERT_RESOLVER }}"
@@ -333,7 +356,7 @@ jobs:
           kind: ConfigMap
           metadata:
             name: ${{ inputs.configmap-name }}
-            namespace: ${{ inputs.namespace }}
+            namespace: ${{ env.NAMESPACE }}
           data:
             ${CONFIG_BASENAME}: |
           CMEOF
@@ -366,12 +389,12 @@ jobs:
           envsubst < _deploy-workflows/templates/k8s/frontend/service.yaml > ${DEPLOY_DIR}/service.yaml
           echo "Service 已生成"
 
-          if [ "${{ inputs.enable-hpa }}" = "true" ]; then
+          if [ "${{ env.ENABLE_HPA }}" = "true" ]; then
             envsubst < _deploy-workflows/templates/k8s/frontend/hpa.yaml > ${DEPLOY_DIR}/hpa.yaml
             echo "HPA 已生成"
           fi
 
-          if [ -n "${{ inputs.ingress-host }}" ]; then
+          if [ -n "${{ env.INGRESS_HOST }}" ]; then
             if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
               export INGRESS_ENTRY_POINT="${{ env.INGRESS_TLS_ENTRY_POINT }}"
               export TLS_BLOCK=$'tls:\n    certResolver: '"${INGRESS_CERT_RESOLVER}"
@@ -379,9 +402,9 @@ jobs:
               export TLS_BLOCK=""
             fi
 
-            if [ -n "${{ inputs.ingress-path-prefix }}" ]; then
-              export INGRESS_MATCH_RULE="Host(\`${{ inputs.ingress-host }}\`) && PathPrefix(\`${{ inputs.ingress-path-prefix }}\`)"
-              export INGRESS_STRIP_PREFIX="${{ inputs.ingress-path-prefix }}"
+            if [ -n "${{ env.INGRESS_PATH_PREFIX }}" ]; then
+              export INGRESS_MATCH_RULE="Host(\`${{ env.INGRESS_HOST }}\`) && PathPrefix(\`${{ env.INGRESS_PATH_PREFIX }}\`)"
+              export INGRESS_STRIP_PREFIX="${{ env.INGRESS_PATH_PREFIX }}"
               export INGRESS_STRIP_NAME="${APP_NAME}"
               export MIDDLEWARES_BLOCK=$'middlewares:\n    - name: '"${APP_NAME}"$'\n      namespace: '"${{ env.NAMESPACE }}"
               envsubst < _deploy-workflows/templates/k8s/frontend/middleware.yaml > ${DEPLOY_DIR}/middleware.yaml
@@ -392,7 +415,7 @@ jobs:
                 echo "IngressRoute: Host + Path (with StripPrefix)"
               fi
             else
-              export INGRESS_MATCH_RULE="Host(\`${{ inputs.ingress-host }}\`)"
+              export INGRESS_MATCH_RULE="Host(\`${{ env.INGRESS_HOST }}\`)"
               export MIDDLEWARES_BLOCK=""
               envsubst < _deploy-workflows/templates/k8s/frontend/ingress.yaml > ${DEPLOY_DIR}/ingress.yaml
               if [ "${{ env.INGRESS_TLS }}" = "true" ]; then
@@ -433,36 +456,36 @@ jobs:
 
           # 所有 apply 统一带 --force-conflicts：解决 kubectl-edit/kubectl-patch 历史修改、HPA scale subresource 等
           # 其他 field manager 占用 .spec 字段（.spec.replicas / .spec.ports / .spec.routes / .spec.maxReplicas 等）导致的冲突
-          kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts --validate=false -f -
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts --validate=false -f -
 
           if [ -f "${DEPLOY_DIR}/configmap.yaml" ]; then
             echo "正在应用 ConfigMap..."
-            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/configmap.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/deployment.yaml" ]; then
             echo "正在应用 Deployment..."
-            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/deployment.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/deployment.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/service.yaml" ]; then
             echo "正在应用 Service..."
-            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/service.yaml -n ${{ env.NAMESPACE }}
           fi
 
-          if [ "${{ inputs.enable-hpa }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
+          if [ "${{ env.ENABLE_HPA }}" = "true" ] && [ -f "${DEPLOY_DIR}/hpa.yaml" ]; then
             echo "正在应用 HPA..."
-            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/hpa.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/ingress.yaml" ]; then
             echo "正在应用 IngressRoute..."
-            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/ingress.yaml -n ${{ env.NAMESPACE }}
           fi
 
           if [ -f "${DEPLOY_DIR}/middleware.yaml" ]; then
             echo "正在应用 Middleware..."
-            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/middleware.yaml -n ${{ inputs.namespace }}
+            kubectl apply --server-side --force-conflicts --validate=false -f ${DEPLOY_DIR}/middleware.yaml -n ${{ env.NAMESPACE }}
           fi
 
       # ============================================
@@ -471,20 +494,20 @@ jobs:
       - name: ⏳ Wait for Deployment
         id: wait
         run: |
-          MAX_WAIT="${{ vars.K8S_HEALTH_MAX_WAIT || '300' }}"
+          MAX_WAIT="${{ env.HEALTH_MAX_WAIT }}"
           ELAPSED=0
           INTERVAL=10
 
           # 获取当前 Deployment 的 pod-template-hash，只关注新 ReplicaSet 的 Pod
-          NEW_RS_HASH=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+          NEW_RS_HASH=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ env.NAMESPACE }} \
             -o jsonpath='{.status.latestRevision}' 2>/dev/null || echo "")
 
           while [ $ELAPSED -lt $MAX_WAIT ]; do
-            REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+            REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ env.NAMESPACE }} \
               -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
-            READY_REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+            READY_REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ env.NAMESPACE }} \
               -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-            UPDATED_REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+            UPDATED_REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ env.NAMESPACE }} \
               -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || echo "0")
 
             echo "进度: Ready=${READY_REPLICAS}/${REPLICAS}, Updated=${UPDATED_REPLICAS}/${REPLICAS}"
@@ -496,13 +519,13 @@ jobs:
 
             # 只检查新 ReplicaSet 的 Pod，忽略正在终止的旧 Pod
             if [ -n "$NEW_RS_HASH" ]; then
-              PROBLEM_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH} \
+              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH} \
                 -o json | jq -r '.items[] | select(
                   (.status.containerStatuses[]?.restartCount // 0) > 3 or
                   (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
                 ) | .metadata.name' 2>/dev/null || echo "")
             else
-              PROBLEM_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }} \
+              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.app-name }} \
                 -o json | jq -r '.items[] | select(
                   (.status.containerStatuses[]?.restartCount // 0) > 3 or
                   (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
@@ -513,7 +536,7 @@ jobs:
               echo "警告: 新 ReplicaSet 中发现问题 Pod"
               for pod in $PROBLEM_PODS; do
                 echo "--- Pod: $pod ---"
-                kubectl logs $pod -n ${{ inputs.namespace }} --tail=30 2>&1 || true
+                kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=30 2>&1 || true
               done
             fi
 
@@ -525,8 +548,8 @@ jobs:
 
           if [ $ELAPSED -ge $MAX_WAIT ]; then
             echo "Deployment 超时（${MAX_WAIT}秒）！"
-            kubectl describe deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }}
-            kubectl get pods,rs -n ${{ inputs.namespace }} -l app=${{ inputs.app-name }} -o wide
+            kubectl describe deployment/${{ inputs.app-name }} -n ${{ env.NAMESPACE }}
+            kubectl get pods,rs -n ${{ env.NAMESPACE }} -l app=${{ inputs.app-name }} -o wide
             exit 1
           fi
 
@@ -534,7 +557,7 @@ jobs:
         id: verify
         run: |
           # 获取当前 Deployment 的 pod-template-hash，只验证新 Pod
-          NEW_RS_HASH=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} \
+          NEW_RS_HASH=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ env.NAMESPACE }} \
             -o jsonpath='{.status.latestRevision}' 2>/dev/null || echo "")
 
           if [ -n "$NEW_RS_HASH" ]; then
@@ -543,17 +566,17 @@ jobs:
             LABEL_SELECTOR="app=${{ inputs.app-name }}"
           fi
 
-          READY_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l "${LABEL_SELECTOR}" \
+          READY_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l "${LABEL_SELECTOR}" \
             -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | tr ' ' '\n' | grep -c "True" || echo "0")
 
-          TOTAL_PODS=$(kubectl get pods -n ${{ inputs.namespace }} -l "${LABEL_SELECTOR}" \
+          TOTAL_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l "${LABEL_SELECTOR}" \
             --no-headers 2>/dev/null | wc -l)
 
           echo "就绪 Pod 数: ${READY_PODS}/${TOTAL_PODS}（仅新 ReplicaSet）"
 
           if [ "$READY_PODS" -eq "0" ]; then
             echo "Deployment 验证失败：没有就绪的 Pod"
-            kubectl describe pods -n ${{ inputs.namespace }} -l "${LABEL_SELECTOR}"
+            kubectl describe pods -n ${{ env.NAMESPACE }} -l "${LABEL_SELECTOR}"
             exit 1
           fi
 
@@ -566,8 +589,8 @@ jobs:
           icon() { case "$1" in success) echo "✅";; skipped) echo "⏭️";; *) echo "❌";; esac; }
 
           # 集群最终状态（前置步骤失败时可能查询不到，做兜底）
-          REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
-          READY=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ inputs.namespace }} -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+          REPLICAS=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ env.NAMESPACE }} -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
+          READY=$(kubectl get deployment/${{ inputs.app-name }} -n ${{ env.NAMESPACE }} -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
           [ -z "$READY" ] && READY=0
           [ -z "$REPLICAS" ] && REPLICAS=0
           if [ "$READY" = "$REPLICAS" ] && [ "$REPLICAS" != "0" ]; then
@@ -578,16 +601,16 @@ jobs:
 
           # Ingress 汇总
           INGRESS="未配置"
-          if [ -n "${{ inputs.ingress-host }}" ]; then
+          if [ -n "${{ env.INGRESS_HOST }}" ]; then
             SCHEME="http"
             [ "${{ env.INGRESS_TLS }}" = "true" ] && SCHEME="https"
-            INGRESS="${SCHEME}://${{ inputs.ingress-host }}${{ inputs.ingress-path-prefix }}"
+            INGRESS="${SCHEME}://${{ env.INGRESS_HOST }}${{ env.INGRESS_PATH_PREFIX }}"
           fi
 
           # HPA 汇总
           HPA="未启用"
-          if [ "${{ inputs.enable-hpa }}" = "true" ]; then
-            HPA="${{ inputs.min-replicas }} ~ ${{ inputs.max-replicas }}（CPU ${{ inputs.target-cpu-utilization }}%）"
+          if [ "${{ env.ENABLE_HPA }}" = "true" ]; then
+            HPA="${{ env.MIN_REPLICAS }} ~ ${{ env.MAX_REPLICAS }}（CPU ${{ env.TARGET_CPU_UTILIZATION }}%）"
           fi
 
           WAIT_ELAPSED="${{ steps.wait.outputs.elapsed }}"
@@ -600,12 +623,12 @@ jobs:
             echo "|---|---|"
             echo "| 状态 | ${FINAL} |"
             echo "| 环境 | ${{ inputs.environment }} |"
-            echo "| 命名空间 | ${{ inputs.namespace }} |"
+            echo "| 命名空间 | ${{ env.NAMESPACE }} |"
             echo "| 镜像 | \`${{ steps.image-name.outputs.image-name }}\` |"
             echo "| 副本 | ${READY}/${REPLICAS} |"
             echo "| HPA | ${HPA} |"
-            echo "| 资源 | CPU ${{ inputs.cpu-request }} ~ ${{ inputs.cpu-limit }} · 内存 ${{ inputs.memory-request }} ~ ${{ inputs.memory-limit }} |"
-            echo "| 端口 | HTTP ${{ inputs.http-port }} |"
+            echo "| 资源 | CPU ${{ env.CPU_REQUEST }} ~ ${{ env.CPU_LIMIT }} · 内存 ${{ env.MEMORY_REQUEST }} ~ ${{ env.MEMORY_LIMIT }} |"
+            echo "| 端口 | HTTP ${{ env.HTTP_PORT }} |"
             echo "| Ingress | ${INGRESS} |"
             echo "| 操作人 | @${{ github.actor }} |"
             echo "| Commit | \`${{ github.sha }}\` |"
@@ -636,9 +659,24 @@ jobs:
           ref: master
           path: _deploy-workflows
 
+      # 通知是独立 job，GITHUB_ENV 不跨 job，所以这里要再解析一次，
+      # 和 deploy job 读的是同一份 YAML，报出来的命名空间与端口不会两边不一致
+      # [EN] Notification is its own job and GITHUB_ENV does not cross jobs, so the same YAML is
+      # resolved again here, which keeps the reported namespace and port from drifting
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: ports kube notify
+          secret-sections: notify
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          defaults: |
+            HTTP_PORT=80
+            DEPLOYMENT_REPLICAS=1
+
       - name: 📤 Send Notification
         run: |
-          export NOTIFICATION_PROVIDER="${{ inputs.notification-provider }}"
           export NOTIFICATION_TYPE="deployment"
           export STATUS="${{ needs.deploy.result }}"
           export ENVIRONMENT="${{ inputs.environment }}"
@@ -648,17 +686,12 @@ jobs:
           export GIT_BRANCH="${{ github.ref_name }}"
           export OPERATOR="${{ github.actor }}"
           export WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          export FEISHU_WEBHOOK_URL="${{ secrets.FEISHU_WEBHOOK_URL }}"
-          export WECOM_WEBHOOK_URL="${{ secrets.WECOM_WEBHOOK_URL }}"
-          export WECOM_WEBHOOK_KEY="${{ secrets.WECOM_WEBHOOK_KEY }}"
-          export TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
-          export TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
           export GITHUB_REPOSITORY="${{ github.repository }}"
           export GITHUB_ACTOR="${{ github.actor }}"
           export DEPLOYMENT_TARGET="Kubernetes"
-          export NAMESPACE="${{ inputs.namespace }}"
-          export HTTP_PORT="${{ inputs.http-port }}"
-          export DEPLOYMENT_REPLICAS="${{ inputs.deployment-replicas }}"
+          export NAMESPACE="${{ env.NAMESPACE }}"
+          export HTTP_PORT="${{ env.HTTP_PORT }}"
+          export DEPLOYMENT_REPLICAS="${{ env.DEPLOYMENT_REPLICAS }}"
 
           if [ "$STATUS" = "failure" ]; then
             export ERROR_MESSAGE="Kubernetes 部署失败，请查看日志了解详情"

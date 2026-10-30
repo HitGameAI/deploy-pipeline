@@ -44,7 +44,7 @@ on:
         description: 'HTTP 端口'
         required: false
         type: string
-        default: '80'
+        default: ''
 
       environment:
         description: '部署环境'
@@ -56,13 +56,13 @@ on:
         description: '基础 Docker 镜像（Nginx）'
         required: false
         type: string
-        default: 'nginx:1.25.3-alpine'
+        default: ''
 
       timezone:
         description: '容器时区'
         required: false
         type: string
-        default: 'Etc/UTC'
+        default: ''
 
       build-output-dir:
         description: '前端构建输出目录'
@@ -100,6 +100,11 @@ on:
         type: string
         default: 'ubuntu-latest'
     secrets:
+      # 聚合密钥：一个 secret 装下镜像仓库凭证，格式见 scripts/config/schema.yaml
+      # [EN] One secret holding the registry credentials; see scripts/config/schema.yaml
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML（docker.username / docker.password），优先级高于下面的单个 secret'
+        required: false
       DOCKER_USERNAME:
         description: 'Docker registry username'
         required: false
@@ -109,20 +114,43 @@ on:
 
 jobs:
   build-docker:
-    name: 🐳 Build Frontend Docker Image (${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }})
+    name: 🐳 Build Frontend Docker Image
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
-    env:
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || github.actor }}
-      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
-      BUILD_BINARY_OS: ${{ inputs.os || vars.BUILD_BINARY_OS || 'linux' }}
-      BUILD_BINARY_ARCH: ${{ inputs.arch || vars.BUILD_BINARY_ARCH || 'amd64' }}
-
     permissions:
       contents: read
       packages: write
 
+    outputs:
+      # 平台要跨 job 传给 release-note：job 级字段取不到 GITHUB_ENV，只能走 step 输出
+      # [EN] release-note needs the platform across jobs, and a job-level field cannot read
+      # GITHUB_ENV, so it comes from the resolve step's output
+      platform: ${{ fromJSON(steps.config.outputs.json).BUILD_DOCKER_OS }}/${{ fromJSON(steps.config.outputs.json).BUILD_DOCKER_ARCH }}
+
     steps:
+      # 所有配置先过这一步：校验 YAML、合并优先级、写进 GITHUB_ENV
+      # [EN] Every setting goes through this step first
+      - name: ⚙️ Resolve Pipeline Config
+        id: config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          # 要 ports 节：nginx 的 listen / EXPOSE 和 deploy 用的 Service 端口必须是同一个值，
+          # 两边都从 ports.http 取就不会一边改了另一边忘改
+          # [EN] The ports section is requested because nginx's listen and EXPOSE must agree with
+          # the Service port used at deploy time; both now read ports.http
+          sections: ports docker
+          secret-sections: docker
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          # 前端运行镜像是 nginx，不是后端那套 alpine
+          # [EN] The frontend runtime image is nginx rather than the backend's alpine
+          defaults: |
+            HTTP_PORT=80
+            BASE_IMAGE=nginx:1.25.3-alpine
+            DOCKER_USERNAME=${{ github.actor }}
+            DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }}
+
       # ============================================
       # 步骤1：检出代码仓库
       # ============================================
@@ -152,8 +180,8 @@ jobs:
           BUILD_OUTPUT_DIR="${{ inputs.build-output-dir }}"
           APP_NAME="${{ inputs.app-name }}"
           BASE_IMAGE="${{ inputs.base-image }}"
-          TIMEZONE="${{ inputs.timezone }}"
-          HTTP_PORT="${{ inputs.http-port }}"
+          TIMEZONE="${{ env.TIMEZONE }}"
+          HTTP_PORT="${{ env.HTTP_PORT }}"
           NGINX_CONFIG_PATH="${{ inputs.nginx-config-path }}"
 
           echo "================================================"
@@ -258,7 +286,7 @@ jobs:
           # 关键：用 ${os}/${arch} 标记镜像 manifest 平台，K8s 调度到对应架构节点时才能正确拉取
           # 优先级: inputs > vars.BUILD_DOCKER_OS/ARCH > 硬编码默认值
           # 前端是纯静态文件，nginx:alpine 基础镜像本身支持多架构，Dockerfile 无需 ARG TARGETARCH
-          platforms: ${{ inputs.os || env.BUILD_BINARY_OS || 'linux' }}/${{ inputs.arch || env.BUILD_BINARY_ARCH || 'amd64' }}
+          platforms: ${{ env.BUILD_DOCKER_OS }}/${{ env.BUILD_DOCKER_ARCH }}
           tags: ${{ steps.image-names.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -289,7 +317,7 @@ jobs:
             echo "| 状态 | ${BUILD_RESULT} |"
             echo "| 镜像 | \`${{ steps.image-names.outputs.image-base }}\` |"
             echo "| Tags | ${TAGS} |"
-            echo "| 平台 | ${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }} |"
+            echo "| 平台 | ${{ env.BUILD_DOCKER_OS }}/${{ env.BUILD_DOCKER_ARCH }} |"
             echo "| 基础镜像 | ${{ inputs.base-image }} |"
             echo "| 构建产物 | ${{ inputs.build-output-dir }}（${DIST_SIZE}） |"
             echo "| Registry | ${{ inputs.docker-registry }} |"
@@ -310,4 +338,4 @@ jobs:
     uses: kamalyes/deploy-pipeline/.github/workflows/release-note.yml@master
     with:
       image-name: ${{ inputs.image-name }}
-      platform: ${{ inputs.os || vars.BUILD_DOCKER_OS || 'linux' }}/${{ inputs.arch || vars.BUILD_DOCKER_ARCH || 'amd64' }}
+      platform: ${{ needs.build-docker.outputs.platform }}

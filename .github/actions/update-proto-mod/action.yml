@@ -22,8 +22,14 @@ runs:
         PROTO_READ_TOKEN: ${{ env.PROTO_READ_TOKEN }}
         PUSH_TOKEN: ${{ env.PUSH_TOKEN }}
       run: |
-        git clone --quiet --depth 1 https://github.com/kamalyes/deploy-pipeline.git "${RUNNER_TEMP}/deploy-pipeline"
-        bash "${RUNNER_TEMP}/deploy-pipeline/scripts/update-proto-mod.sh" \
+        # 同 notify：用 action 自带的仓库副本，不克隆（私有仓库靠 Access 放开引用权限）
+        # [EN] As in notify: use the copy shipped with the action, never clone.
+        script="${GITHUB_ACTION_PATH}/../../../scripts/update-proto-mod.sh"
+        if [ ! -f "${script}" ]; then
+          echo "::error::找不到 ${script}；请确认 action 与 scripts/update-proto-mod.sh 在同一仓库同一 ref" >&2
+          exit 1
+        fi
+        bash "${script}" \
           "${{ inputs.branch }}" \
           "${{ inputs.module }}" \
           "${{ inputs.module-ref }}"

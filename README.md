@@ -2,13 +2,49 @@
 
 可复用的 GitHub Actions 工作流集合，支持 **Go 后端服务** 和 **前端应用** 的完整 CI/CD 流程及 Kubernetes 部署
 
+> **同一份内容，两个组织** | One content, two organizations
+>
+> 同一套工作流在两个组织下各留一份：私有仓库默认不对其它仓库开放 `uses:` 引用
+> （放开办法是 Settings → Actions → General → 底部 Access → "Accessible from repositories
+> in the organization"，没放开时调用方会收到 `workflow was not found`），
+> 所以调用方指向能访问的那一份。
+>
+> 两份内容**完全相同**，唯一的差别是自引用里的组织前缀 ——
+> `uses:` 的路径、`repository:` 的值，都指向各自所在的组织。
+> 文档里的示例也只带这个前缀，不带任何项目内部信息：内容本身就是通用的，
+> 所以同步只是「换前缀」，**哪一份当源头都行**，不存在一份要脱敏、一份不用的问题。
+>
+> 同步用 [scripts/sync-fork.sh](scripts/sync-fork.sh)，两边组织名都从各自的 git remote
+> 推出来，脚本里不写死任何组织名，因此两份副本里是同一个脚本，反向同步只是把参数
+> 换成对面的路径：
+>
+> ```bash
+> # 第一次：把对面那份 clone 到本仓旁边
+> git clone <对面仓库的 git 地址> ../deploy-pipeline-fork
+>
+> bash scripts/sync-fork.sh ../deploy-pipeline-fork --check    # 先看会改哪些文件
+> bash scripts/sync-fork.sh ../deploy-pipeline-fork --force    # 整份覆盖，对面多出的文件一并删掉
+> bash scripts/sync-fork.sh ../deploy-pipeline-fork            # 只覆盖与新增，不删
+> ```
+>
+> 脚本只改工作区文件，不碰 git 历史：落盘后在对面仓库自己看 diff 再提交。
+> 换完前缀会校验对面不再残留来源组织名，残留就非零退出。
+>
+> [EN] The same workflows live under two organizations, because a private repository is not
+> referenceable by other repositories by default, so callers point at whichever copy they can
+> reach. The two copies are identical except for the organization prefix in their own
+> self-references, and the documentation carries no project-internal identifiers either, so
+> syncing is a prefix swap and either side can be the source. scripts/sync-fork.sh derives both
+> organization names from the respective git remotes, hardcodes none, and is therefore the same
+> script in both copies; it only touches working-tree files and never git history.
+
 ## 📑 目录
 
 | 章节 | 看这里解决什么问题 |
 |------|-------------------|
 | [项目架构](#️-项目架构) | 这个仓库里有什么、各目录的职责 |
 | [工作流列表](#-工作流列表) | 有哪些可复用工作流，分别干什么 |
-| [Secrets 和 Variables 配置](#-secrets-和-variables-配置) | 接入前要在仓库里配哪些变量与密钥 |
+| [配置：一份聚合 YAML](#-配置一份聚合-yaml) | 一个变量配完所有配置项，怎么写、怎么校验、有哪些键 |
 | [GitHub App 创建与配置](#-github-app-创建与配置) | 拉私有 Go 模块 / 跨仓库推送要的 APP_ID 怎么来 |
 | [快速接入](#-快速接入) | 复制一份能跑的 pipeline.yml |
 | [多架构构建](#️-多架构构建amd64--arm64) | 怎么出 arm64 镜像 |
@@ -16,7 +52,7 @@
 | [工作流详细说明](#-工作流详细说明) | 每个工作流的完整入参与 Secrets |
 | [K8s 部署架构](#-k8s-部署架构) | 部署出来的资源长什么样 |
 | [K8s 模板清单与占位符](#-k8s-模板清单与占位符) | 12 个 yaml 模板分别何时渲染、占位符从哪来 |
-| [Composite Actions](#-composite-actions) | 四个复合 Action 的入参与出参 |
+| [Composite Actions](#-composite-actions) | 各个复合 Action 的入参与出参 |
 | [公共脚本](#-公共脚本) | scripts/ 下每个脚本的用法 |
 | [工作流脚本引用机制](#-工作流脚本引用机制) | 工作流是怎么找到这些脚本的 |
 | [自测清单](#-自测清单) | 改完之后怎么验 |
@@ -40,9 +76,11 @@ deploy-pipeline/
 │   │   ├── release-note.yml           # tag 发布单（自动生成 GitHub Release）
 │   │   ├── pr-opened-notify.yml       # PR 开启变更摘要通知
 │   │   ├── pr-merged-notify.yml       # PR 合并通知
-│   │   ├── branch-recycle.yml         # dev 回收重切 + 已合并 feature 清理（周三发布后）
-│   │   └── branch-cut.yml             # 批量切分支（新迭代从 master 切 feature/xx）
+│   │   ├── branch-cut.yml             # 批量切分支（新迭代从 master 切 feature/xx）
+│   │   └── branch-recycle.yml         # dev 回收重切 + 已合并 feature 清理（周三发布后）
 │   └── actions/                 # 可复用 Composite Actions
+│       ├── resolve-config/      # 聚合 YAML 配置的校验 / 合并 / 导出（所有配置的唯一入口）
+│       ├── fetch-pipeline-assets/ # 把本仓自带的 scripts/templates 放到工作区
 │       ├── notify/              # 通用通知（飞书/企业微信/Telegram，支持自定义标题正文）
 │       ├── update-proto-mod/    # 升级 go.mod 中 proto 模块引用并提 PR
 │       ├── print-runner-info/   # 打印 Runner 环境信息
@@ -52,6 +90,11 @@ deploy-pipeline/
 │   │   └── build-linux.sh       # Go 构建脚本
 │   ├── frontend/                # 前端脚本
 │   │   └── build-frontend.sh    # 前端构建脚本
+│   ├── config/
+│   │   └── schema.yaml          # 配置表：所有配置项的唯一出处（键名/类型/默认值/旧变量名）
+│   ├── resolve-config.py        # 聚合配置解析器，也可本地校验配置
+│   ├── sync-fork.sh             # 同步到另一个组织下的那一份（只换组织前缀）
+│   ├── branch-ops.sh            # 批量切分支 / dev 回收（gh api 实现，两个 workflow 共用）
 │   ├── common.sh                # 通用函数库
 │   └── notify.sh                # 飞书/企业微信/Telegram 通知
 ├── templates/                   # K8s 资源模板
@@ -82,99 +125,357 @@ deploy-pipeline/
 | **前端** | Build Docker | `frontend-build-docker.yml` | 构建并推送前端 Docker 镜像（含 Summary 报告） |
 | **前端** | Deploy K8s | `frontend-deploy-k8s.yml` | 部署前端应用到 Kubernetes |
 | **通知** | Release Note | `release-note.yml` | tag 发布模式构建成功后自动生成 GitHub Release 发布单 |
-| **通知** | PR Opened Notify | `pr-opened-notify.yml` | PR 开启时推送变更摘要到飞书/TG |
-| **通知** | PR Merged Notify | `pr-merged-notify.yml` | PR 合并后推送通知到飞书/TG |
+| **通知** | PR Opened Notify | `pr-opened-notify.yml` | PR 开启时推送变更摘要到飞书/企微/TG |
+| **通知** | PR Merged Notify | `pr-merged-notify.yml` | PR 合并后推送通知到飞书/企微/TG |
 
 > GitHub reusable workflow 的 `uses:` 目标必须直接位于 `.github/workflows/` 顶层，不能放在 `backend/`、`frontend/`、`shared/` 等二级目录。
 
 ---
 
-## 🔐 Secrets 和 Variables 配置
+## 🔐 配置：一份聚合 YAML
 
-### 配置优先级
+> 以前每个配置项都是一个 GitHub 变量：`K8S_CPU_LIMIT`、`K8S_MIN_REPLICAS`、`INGRESS_HOST`……
+> 配一个服务要在 Settings 里点几十次，还得记住每个名字。
+> 现在**一个变量装完整份配置**，子对象分节写，推送前能本地校验。
+> 旧的单个变量**继续有效**，作为聚合 YAML 之下的一层回退，不用一次性迁完。
+>
+> [EN] Every setting used to be one GitHub variable, which meant dozens of clicks per service
+> and a name to remember for each. One variable now holds the whole document as nested
+> sections, validated before it is pushed. The legacy per-key variables keep working as a
+> fallback layer, so nothing has to be migrated at once.
 
-GitHub Actions 支持**环境级别**和**仓库级别**两种配置方式，优先级为：
+### 配什么
+
+| 在哪配 | 名字 | 装什么 |
+|---|---|---|
+| Variables（仓库级，打底） | `PIPELINE_CONFIG` | 整份明文配置，顶层是 `ports` / `docker` / `kube` / `builder` / `cleanup` / `branch` / `notify` 七个节 |
+| Variables（环境级，覆盖） | `KUBE_CONFIG`、`DOCKER_CONFIG`、`BUILDER_CONFIG`、`PORTS_CONFIG`、`CLEANUP_CONFIG`、`BRANCH_CONFIG`、`NOTIFY_CONFIG` | 对应节的内容（**不带节名**），按节深度合并覆盖 `PIPELINE_CONFIG` |
+| Secrets | `PIPELINE_SECRETS` | kubeconfig、镜像仓库凭证、通知 webhook、GitHub App 私钥、跨仓库 token、业务密钥 |
+
+配置路径：
+
+```text
+仓库级：Settings → Secrets and variables → Actions → Repository variables / secrets
+环境级：Settings → Environments → [环境名] → Environment variables / secrets
+```
+
+### 优先级
+
+```text
+分节变量（KUBE_CONFIG 等） > 总表（PIPELINE_CONFIG） > workflow input > 旧式单个 vars > 默认值
+         ↑ 环境级覆盖仓库级            ↑ 新配置优先级最高
+```
+
+常用姿势：`PIPELINE_CONFIG` 写仓库级基线（端口、资源、Go 版本），各环境只用 `KUBE_CONFIG`
+覆盖差异的那几项（命名空间、副本数、域名）。
+
+> **input 层的语义**：沿用原先 `${{ inputs.x || vars.X || '默认' }}` 的判断，空字符串和 `false`
+> 都算「没传」。所以调用方不传就自动落到 vars 与默认值，和改造前一致。
+>
+> [EN] The input layer keeps the semantics of the original expression chain: an empty string and
+> false both mean "not provided", so a caller that passes nothing falls through to the variables
+> and the defaults exactly as before.
+
+### 示例
+
+`vars.PIPELINE_CONFIG`（仓库级基线）：
+
+```yaml
+ports:
+  http: 8080
+  rpc: 9181
+  ws: 18085
+  metrics: 9090
+docker:
+  registry: ghcr.io
+  base_image: alpine:3.20
+  arch: arm64
+  timezone: Asia/Shanghai
+kube:
+  namespace: business
+  workload_kind: Deployment
+  image_pull_secrets: ghcr-cred
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { cpu: 1, memory: 1Gi }
+  probes:
+    startup: { period: 5, failure_threshold: 60 }
+  hpa:
+    enable: true
+    min_replicas: 3
+    max_replicas: 30
+    target_cpu_utilization: 70
+  gomemlimit_percent: 90
+  ingress:
+    host: gw.example.com
+    tls: true
+    cert_resolver: letsencrypt
+builder:
+  go_version: "1.25.1"
+  goprivate: github.com/kamalyes
+  go_auth_method: app-token
+  arch: arm64
+  upx: { enable: true }
+cleanup:
+  keep_count: 20
+  tag_exclude_prefix: v, prod , release
+notify:
+  provider: feishu
+```
+
+`vars.KUBE_CONFIG`（prod 环境级，只覆盖这几项）：
+
+```yaml
+namespace: prod
+replicas: 4
+resources:
+  limits: { cpu: 2, memory: 2Gi }
+hpa:
+  min_replicas: 4
+  max_replicas: 50
+ingress:
+  host: api.example.com
+```
+
+`secrets.PIPELINE_SECRETS`（多行值用 `|` 块标量）：
+
+```yaml
+kube:
+  kubeconfig: |
+    apiVersion: v1
+    clusters:
+      - cluster:
+          server: https://10.0.0.1:6443
+        name: prod
+docker:
+  username: ci-bot
+  password: ghp_xxxxxxxxxxxx
+notify:
+  feishu_webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
+go:
+  app_id: "123456"
+  app_private_key: |
+    -----BEGIN RSA PRIVATE KEY-----
+    ...
+    -----END RSA PRIVATE KEY-----
+# 业务密钥：键名就是容器里的环境变量名，部署时同步成集群里的 K8s Secret
+app:
+  DB_PASSWORD: s3cr3t
+  JWT_SECRET: another-secret
+```
+
+### 校验：贴进去之前先在本地过一遍
 
 ```bash
-环境级别 (Environment) > 仓库级别 (Repository)
+# 校验一份总表（键名拼错、类型不对、把密钥写进明文都会报出来）
+python3 scripts/resolve-config.py --check my-config.yaml
+
+# 校验一份分节配置（内容不带节名时要指明是哪一节）
+python3 scripts/resolve-config.py --check kube.yaml --section kube
+
+# 校验聚合密钥
+python3 scripts/resolve-config.py --check my-secrets.yaml --secrets
+
+# 打印带注释的完整示例，直接改完贴进变量
+python3 scripts/resolve-config.py --print-example
+python3 scripts/resolve-config.py --print-example kube docker
 ```
 
-当工作流引用 `environment` 时，会优先读取该环境下的 secrets/variables；如果找不到，则回退到仓库级别的配置。
+报错长这样 —— 一次全报完，不是报一个停一个，未知键还给「是否想写」提示：
 
-### 🏷️ 所需 Secrets
-
-#### 仓库级别 Secrets（全局共享）
-
-| Secret | 说明 | 用途 | 必填 |
-|--------|------|------|------|
-| `DOCKER_USERNAME` | Docker/GitHub 用户名 | 镜像推送认证 | ✅ |
-| `DOCKER_PASSWORD` | Docker 密码或 GitHub Token | 镜像推送认证 | ✅ |
-| `APP_ID` | GitHub App ID | App Token 方式拉取私有 Go 模块 | ❌ |
-| `APP_PRIVATE_KEY` | GitHub App 私钥 | App Token 方式拉取私有 Go 模块 | ❌ |
-| `GIT_SSH_PRIVATE_KEY` | Git SSH 私钥 (Legacy) | SSH 方式拉取私有 Go 模块 | ❌ |
-
-> **认证方式选择**：推荐使用 `APP_ID` + `APP_PRIVATE_KEY`（GitHub App Token），它会自动生成临时 Token，安全性更高。`GIT_SSH_PRIVATE_KEY` 仍可使用但属于旧方式。
-
-#### 环境级别 Secrets（按环境配置）
-
-| Secret | 说明 | 用途 | 适用环境 |
-|--------|------|------|----------|
-| `KUBECONFIG` | Kubernetes 集群访问配置 | K8s 部署 | dev/test/prod |
-| `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook | 部署通知 | dev/test/prod |
-| `WECOM_WEBHOOK_URL` | 企业微信群机器人 Webhook（完整地址） | 部署通知 | dev/test/prod |
-| `WECOM_WEBHOOK_KEY` | 企业微信群机器人 key（与 URL 二选一） | 部署通知 | dev/test/prod |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 部署通知 | dev/test/prod |
-| `TELEGRAM_CHAT_ID` | Telegram 聊天群组 ID | 部署通知 | dev/test/prod |
-
-### 📦 所需 Variables (GitHub Variables)
-
-#### 仓库级别 Variables
-
-| Variable | 说明 | 默认值 | 必填 |
-|----------|------|--------|------|
-| `GO_VERSION` | 默认 Go 版本 | `1.25.1` | ❌ |
-| `GOPROXY` | Go 模块代理地址 | `https://goproxy.cn\|direct` | ❌ |
-| `GOPRIVATE` | Go 私有模块路径 | `''` | ❌ |
-| `GO_AUTH_METHOD` | Go 私有模块认证方式 | `none` | ❌ |
-| `NODE_VERSION` | 默认 Node.js 版本 | `20` | ❌ |
-| `PACKAGE_REGISTRY` | 默认包管理器仓库 | `https://registry.npmmirror.com` | ❌ |
-
-#### 环境级别 Variables
-
-| Variable | 说明 | 示例值 | 适用环境 |
-|----------|------|--------|----------|
-| `IMAGE_REGISTRY` | 镜像仓库地址 | `ghcr.io` | dev/test/prod |
-| `IMAGE_PREFIX` | 镜像前缀（组织名） | `ghcr.io/your-org` | dev/test/prod |
-| `KIND` | Kubernetes workload 类型 | `Deployment` / `StatefulSet` / `DaemonSet` | dev/test/prod |
-| `SERVICE_KIND` | Kubernetes Service 类型 | `Service` | dev/test/prod |
-| `SERVICE_TYPE` | Kubernetes Service 暴露类型 | `ClusterIP` / `NodePort` / `LoadBalancer` | dev/test/prod |
-| `WS_PORT` | WebSocket 端口（可选） | `9090` | dev/test/prod |
-| `DEPLOYMENT_REPLICAS` | 默认副本数 | `3` | dev/test/prod |
-| `HPA_ENABLED` | 是否启用 HPA | `true` | dev/test/prod |
-
-### 📝 配置示例
-
-#### 仓库级别配置路径
-
-```
-Settings > Secrets and variables > Actions > Repository secrets
-Settings > Secrets and variables > Actions > Repository variables
+```text
+❌ 配置校验失败，共 4 处 | 4 configuration problem(s)
+   bad.yaml: 未知配置节 'kubernetes'，是否想写 kube？ | unknown section
+   bad.yaml: kube 节里没有 'namspace' 这一项，是否想写 namespace？ | unknown key
+   bad.yaml 的 kube.service.type: 只能是 ClusterIP / NodePort / LoadBalancer 之一，实际 'ClusterIp'，是否想写 ClusterIP？
+   bad.yaml: kube.kubeconfig 是密钥，必须配在 secrets.PIPELINE_SECRETS 里，不能放进明文 vars | this key belongs in secrets
 ```
 
-#### 环境级别配置路径
+流水线里也是同一套校验：配错了在第一步就红，并且在 job summary 里给出「每一项最终值 + 它来自哪一层」的表，
+排查「为什么是这个值」只看这一张表。
 
+### 工作流里的样子
+
+所有配置先过 [`resolve-config`](#resolve-config) 这一个 action，之后各步骤只认 `env`：
+
+```yaml
+jobs:
+  deploy:
+    steps:
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: ports docker kube
+          secret-sections: kube notify app
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+
+      - run: echo "${{ env.NAMESPACE }} ${{ env.CPU_LIMIT }}"
 ```
-Settings > Environments > [环境名称] > Environment secrets
-Settings > Environments > [环境名称] > Environment variables
-```
 
-#### 环境配置示例
+调用方要注意两点：
 
-| 环境名称 | KUBECONFIG | FEISHU_WEBHOOK_URL | WECOM_WEBHOOK_URL | DEPLOYMENT_REPLICAS |
-|----------|------------|---------------------|-------------------|---------------------|
-| `dev` | dev-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `2` |
-| `test` | test-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `3` |
-| `prod` | prod-cluster-config | <https://open.feishu.cn/>... | <https://qyapi.weixin.qq.com/>... | `5` |
+- **`PIPELINE_SECRETS` 要能传到被调用的工作流**：用 `secrets: inherit`，或在 `secrets:` 里显式写
+  `PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}`。只显式传了几个 secret 又没带它的话，聚合密钥读不到。
+- **job 名与 job 级 `if:` 看不到解析结果**：这两处在任何 step 之前求值，拿不到 `GITHUB_ENV`。
+  所以 build 的 job 名不再内联平台（改成在步骤日志与报告里显示），`notify` job 的跳过条件仍按
+  `notification-provider` 这个 input 判断，而真正发哪些渠道由解析后的 `notify.provider` 决定。
+
+### 全部配置项
+
+明文配置（`PIPELINE_CONFIG` / 分节变量），也可以 `python3 scripts/resolve-config.py --print-example` 直接打印：
+
+#### `ports` — 容器端口；留空 / 0 / none 表示该端口不启用 | Container ports; empty, 0 or none disables one
+
+| YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|
+| `ports.http` | `HTTP_PORT` | `HTTP_PORT` | port | `''` |
+| `ports.rpc` | `RPC_PORT` | `RPC_PORT` | port | `9181` |
+| `ports.ws` | `WS_PORT` | `WS_PORT` | port | `''` |
+| `ports.pprof` | `PPROF_PORT` | `PPROF_PORT` | port | `6160` |
+| `ports.node_grpc` | `NODE_GRPC_PORT` | `NODE_GRPC_PORT` | port | `''` |
+| `ports.metrics` | `METRICS_PORT` | `METRICS_PORT` | port | `''` |
+| `ports.metrics_path` | `METRICS_PATH` | `METRICS_PATH` | string | `/metrics` |
+| `ports.probe_name` | `PROBE_PORT_NAME` | `PROBE_PORT_NAME` | string | `''` |
+
+#### `docker` — 镜像构建与推送 | Image build and push
+
+| YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|
+| `docker.registry` | `DOCKER_REGISTRY` | `DOCKER_REGISTRY` | string | `ghcr.io` |
+| `docker.run_workdir` | `DOCKER_RUN_WORKDIR` | `DOCKER_RUN_WORKDIR` | string | `/usr/local/services/{repo}` |
+| `docker.base_image` | `BASE_IMAGE` | `BUILD_DOCKER_BASE_IMAGE` / `BASE_IMAGE` | string | `alpine:3.19.1` |
+| `docker.os` | `BUILD_DOCKER_OS` / `BUILD_BINARY_OS` | `BUILD_DOCKER_OS` / `BUILD_BINARY_OS` | enum: linux | `linux` |
+| `docker.arch` | `BUILD_DOCKER_ARCH` / `BUILD_BINARY_ARCH` | `BUILD_DOCKER_ARCH` / `BUILD_BINARY_ARCH` | enum: amd64 \| arm64 | `amd64` |
+| `docker.timezone` | `TIMEZONE` | `TIMEZONE` | string | `Etc/UTC` |
+
+#### `kube` — K8s 工作负载、资源、探针、HPA、Ingress | Workload, resources, probes, HPA, Ingress
+
+| YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|
+| `kube.namespace` | `NAMESPACE` | `K8S_NAMESPACE` | string | `default` |
+| `kube.workload_kind` | `KIND` | `KIND` | enum: Deployment \| StatefulSet \| DaemonSet | `Deployment` |
+| `kube.image_pull_secrets` | `IMAGE_PULL_SECRETS` | `K8S_IMAGE_PULL_SECRETS` | string | `ghcr.io` |
+| `kube.replicas` | `DEPLOYMENT_REPLICAS` | `K8S_DEPLOYMENT_REPLICAS` | int (0–1000) | `2` |
+| `kube.termination_grace_period_seconds` | `TERMINATION_GRACE_PERIOD_SECONDS` | `K8S_TERMINATION_GRACE_PERIOD_SECONDS` | int (0–3600) | `30` |
+| `kube.gomemlimit_percent` | `GOMEMLIMIT_PERCENT` | `K8S_GOMEMLIMIT_PERCENT` | percent | `''` |
+| `kube.health_max_wait` | `HEALTH_MAX_WAIT` | `K8S_HEALTH_MAX_WAIT` | int (30–3600) | `300` |
+| `kube.service.kind` | `SERVICE_KIND` | `SERVICE_KIND` | enum: Service \| NodePort \| LoadBalancer | `Service` |
+| `kube.service.type` | `SERVICE_TYPE` | `SERVICE_TYPE` | enum: ClusterIP \| NodePort \| LoadBalancer | `ClusterIP` |
+| `kube.resources.requests.cpu` | `CPU_REQUEST` | `K8S_CPU_REQUEST` | quantity | `100m` |
+| `kube.resources.requests.memory` | `MEMORY_REQUEST` | `K8S_MEMORY_REQUEST` | quantity | `128Mi` |
+| `kube.resources.limits.cpu` | `CPU_LIMIT` | `K8S_CPU_LIMIT` | quantity | `300m` |
+| `kube.resources.limits.memory` | `MEMORY_LIMIT` | `K8S_MEMORY_LIMIT` | quantity | `256Mi` |
+| `kube.probes.readiness.delay` | `READINESS_DELAY` | `K8S_READINESS_DELAY_SECONDS` | int (0–600) | `5` |
+| `kube.probes.readiness.period` | `READINESS_PERIOD` | `K8S_READINESS_PERIOD_SECONDS` | int (1–600) | `10` |
+| `kube.probes.liveness.delay` | `LIVENESS_DELAY` | `K8S_LIVENESS_DELAY_SECONDS` | int (0–600) | `15` |
+| `kube.probes.liveness.period` | `LIVENESS_PERIOD` | `K8S_LIVENESS_PERIOD_SECONDS` | int (1–600) | `20` |
+| `kube.probes.startup.period` | `STARTUP_PERIOD` | `K8S_STARTUP_PERIOD_SECONDS` | int (1–600) | `10` |
+| `kube.probes.startup.failure_threshold` | `STARTUP_FAILURE_THRESHOLD` | `K8S_STARTUP_FAILURE_THRESHOLD` | int (1–1000) | `30` |
+| `kube.hpa.enable` | `ENABLE_HPA` | `K8S_ENABLE_HPA` | bool | `true` |
+| `kube.hpa.min_replicas` | `MIN_REPLICAS` | `K8S_MIN_REPLICAS` | int (1–1000) | `2` |
+| `kube.hpa.max_replicas` | `MAX_REPLICAS` | `K8S_MAX_REPLICAS` | int (1–1000) | `10` |
+| `kube.hpa.target_cpu_utilization` | `TARGET_CPU_UTILIZATION` | `K8S_TARGET_CPU_UTILIZATION` | percent | `80` |
+| `kube.hpa.target_memory_utilization` | `TARGET_MEMORY_UTILIZATION` | `K8S_TARGET_MEMORY_UTILIZATION` | percent | `80` |
+| `kube.hpa.scale_up_percent` | `SCALE_UP_PERCENT` | `K8S_SCALE_UP_PERCENT` | percent | `100` |
+| `kube.hpa.scale_down_percent` | `SCALE_DOWN_PERCENT` | `K8S_SCALE_DOWN_PERCENT` | percent | `50` |
+| `kube.hpa.scale_down_stabilization_seconds` | `SCALE_DOWN_STABILIZATION_SECONDS` | `K8S_SCALE_DOWN_STABILIZATION_SECONDS` | int (0–3600) | `300` |
+| `kube.ingress.entry_point` | `INGRESS_ENTRY_POINT` | `INGRESS_ENTRY_POINT` | string | `web` |
+| `kube.ingress.host` | `INGRESS_HOST` | `INGRESS_HOST` | string | `''` |
+| `kube.ingress.path_prefix` | `INGRESS_PATH_PREFIX` | `INGRESS_PATH_PREFIX` | string | `''` |
+| `kube.ingress.tls` | `INGRESS_TLS` | `INGRESS_TLS` | bool | `false` |
+| `kube.ingress.cert_resolver` | `INGRESS_CERT_RESOLVER` | `INGRESS_CERT_RESOLVER` | string | `letsencrypt` |
+| `kube.ingress.tls_entry_point` | `INGRESS_TLS_ENTRY_POINT` | `INGRESS_TLS_ENTRY_POINT` | string | `websecure` |
+| `kube.ingress.redirect_http_to_https` | `INGRESS_REDIRECT_HTTP_TO_HTTPS` | `INGRESS_REDIRECT_HTTP_TO_HTTPS` | bool | `true` |
+
+#### `builder` — Go 构建与代码质量检查 | Go build and code quality
+
+| YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|
+| `builder.go_version` | `GO_VERSION` | `GO_VERSION` | string | `1.25.1` |
+| `builder.gotestsum_version` | `GOTESTSUM_VERSION` | `GOTESTSUM_VERSION` | string | `v1.13.0` |
+| `builder.goproxy` | `GOPROXY` | `GOPROXY` | string | `https://goproxy.cn\|direct` |
+| `builder.goprivate` | `GOPRIVATE` | `GOPRIVATE` | string | `''` |
+| `builder.go_auth_method` | `GO_AUTH_METHOD` | `GO_AUTH_METHOD` | enum: app-token \| ssh \| none | `ssh` |
+| `builder.os` | `BUILD_BINARY_OS` | `BUILD_BINARY_OS` | enum: linux | `linux` |
+| `builder.arch` | `BUILD_BINARY_ARCH` | `BUILD_BINARY_ARCH` | enum: amd64 \| arm64 | `amd64` |
+| `builder.upx.enable` | `UPX_COMPRESS` | `UPX_COMPRESS` | bool | `false` |
+| `builder.upx.level` | `UPX_LEVEL` | `UPX_LEVEL` | string | `--best --lzma` |
+
+#### `cleanup` — artifacts / cache / 镜像清理 | Artifact, cache and image cleanup
+
+| YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|
+| `cleanup.keep_count` | `KEEP_COUNT` | `CLEANUP_KEEP_COUNT` | int (1–1000) | `10` |
+| `cleanup.tag_include_prefix` | `TAG_INCLUDE_PREFIX` | `CLEANUP_TAG_INCLUDE_PREFIX` | csv | `''` |
+| `cleanup.tag_exclude_prefix` | `TAG_EXCLUDE_PREFIX` | `CLEANUP_TAG_EXCLUDE_PREFIX` | csv | `v,prod` |
+
+#### `branch` — 批量切分支与 dev 回收 | Batch branch cut and dev recycle
+
+| YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|
+| `branch.repos` | `BRANCH_OPS_REPOS` | `BRANCH_OPS_REPOS` | csv | `''` |
+| `branch.base_branch` | `BRANCH_OPS_BASE` | `BRANCH_OPS_BASE` | string | `master` |
+| `branch.source_branch` | `BRANCH_OPS_SOURCE` | `BRANCH_OPS_SOURCE` | string | `master` |
+| `branch.target_branch` | `BRANCH_OPS_TARGET` | `BRANCH_OPS_TARGET` | string | `dev` |
+| `branch.feature_prefix` | `BRANCH_OPS_FEATURE_PREFIX` | `BRANCH_OPS_FEATURE_PREFIX` | string | `feature/` |
+| `branch.clean_features` | `BRANCH_OPS_CLEAN_FEATURES` | `BRANCH_OPS_CLEAN_FEATURES` | bool | `true` |
+| `branch.require_today_tag` | `BRANCH_OPS_REQUIRE_TAG` | `BRANCH_OPS_REQUIRE_TAG` | bool | `false` |
+
+#### `notify` — 通知渠道选择；webhook 凭证在 secrets 侧 | Channel choice; credentials live in secrets
+
+| YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|
+| `notify.provider` | `NOTIFICATION_PROVIDER` | `NOTIFICATION_PROVIDER` | enum: none \| feishu \| wecom \| telegram \| all | `all` |
+
+聚合密钥（`PIPELINE_SECRETS`）：
+
+#### `kube` — 集群凭证 | Cluster credentials
+
+| YAML 路径 | 导出的 env | 旧式单个 secret | 类型 | 默认值 |
+|---|---|---|---|---|
+| `kube.kubeconfig` | `KUBECONFIG` | `KUBECONFIG` | secret | `''` |
+
+#### `docker` — 镜像仓库凭证 | Registry credentials
+
+| YAML 路径 | 导出的 env | 旧式单个 secret | 类型 | 默认值 |
+|---|---|---|---|---|
+| `docker.username` | `DOCKER_USERNAME` | `DOCKER_USERNAME` | secret | `''` |
+| `docker.password` | `DOCKER_PASSWORD` | `DOCKER_PASSWORD` | secret | `''` |
+
+#### `notify` — 通知 webhook 凭证 | Notification webhook credentials
+
+| YAML 路径 | 导出的 env | 旧式单个 secret | 类型 | 默认值 |
+|---|---|---|---|---|
+| `notify.feishu_webhook_url` | `FEISHU_WEBHOOK_URL` | `FEISHU_WEBHOOK_URL` | secret | `''` |
+| `notify.wecom_webhook_url` | `WECOM_WEBHOOK_URL` | `WECOM_WEBHOOK_URL` | secret | `''` |
+| `notify.wecom_webhook_key` | `WECOM_WEBHOOK_KEY` | `WECOM_WEBHOOK_KEY` | secret | `''` |
+| `notify.telegram_bot_token` | `TELEGRAM_BOT_TOKEN` | `TELEGRAM_BOT_TOKEN` | secret | `''` |
+| `notify.telegram_chat_id` | `TELEGRAM_CHAT_ID` | `TELEGRAM_CHAT_ID` | secret | `''` |
+
+#### `go` — 私有模块拉取凭证 | Private module credentials
+
+| YAML 路径 | 导出的 env | 旧式单个 secret | 类型 | 默认值 |
+|---|---|---|---|---|
+| `go.app_id` | `APP_ID` | `APP_ID` | secret | `''` |
+| `go.app_private_key` | `APP_PRIVATE_KEY` | `APP_PRIVATE_KEY` | secret | `''` |
+| `go.git_ssh_private_key` | `GIT_SSH_PRIVATE_KEY` | `GIT_SSH_PRIVATE_KEY` | secret | `''` |
+
+#### `branch` — 跨仓库批量操作凭证 | Cross-repository batch credentials
+
+| YAML 路径 | 导出的 env | 旧式单个 secret | 类型 | 默认值 |
+|---|---|---|---|---|
+| `branch.token` | `BRANCH_OPS_TOKEN` | `BRANCH_OPS_TOKEN` | secret | `''` |
+
+#### `app` — 业务密钥，键名即容器里的环境变量名 | Service secrets, keyed by container env name
+
+自由键值表：键名就是业务容器里的环境变量名，值是密钥内容。由 `backend-deploy-k8s` 的「同步密钥到集群」那步写成集群里的 K8s Secret，名单仍取自 `extra-env-block` 里的 `secretKeyRef`。
+
+### 旧式单个变量（仍然有效）
+
+上面每张表的「旧式单个 vars / secret」列就是原先那套变量名，一个都没废弃，优先级在聚合 YAML 之下。
+已经配好的仓库不动也能跑；想迁移就把它们合成一份 `PIPELINE_CONFIG`，迁完再把旧变量删掉。
 
 ---
 
@@ -629,7 +930,7 @@ jobs:
 
 | 项 | 说明 |
 |---|---|
-| 触发 | `on.push.tags: ['v*', 'prod-*']`（参考 ops-gateway 的 `pipeline.yml` 发布模式决策块） |
+| 触发 | `on.push.tags: ['v*', 'prod-*']`（参考 example-service 的 `pipeline.yml` 发布模式决策块） |
 | 权限 | workflow 级声明 `permissions: contents: write`（创建 Release）+ `pull-requests: read`（收集 PR 明细） |
 | 镜像 tag | 发布模式下镜像 tag = git tag 名（如 `v0.0.1`），且默认被镜像清理豁免 |
 
@@ -892,7 +1193,7 @@ cleanup:
 
 ### 分支管理工作流
 
-周节奏 SOP 的分支工程化（详见复盘文档《CI-CD-Review》）：周三上线发布后 dev 回收重切（git 树每周归零）+ 新迭代从最新 master 切 feature。
+周节奏 SOP 的分支工程化：周三上线发布后 dev 回收重切（git 树每周归零）+ 新迭代从最新 master 切 feature。
 
 #### Branch Recycle（dev 回收重切 + 已合并 feature 清理）
 
@@ -924,7 +1225,7 @@ cleanup:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `repos` | string | 否 | `''` | 仓库列表（逗号分隔 owner/repo；留空回退 `vars.BRANCH_OPS_REPOS`，再回退当前仓库） |
+| `repos` | string | 否 | `''` | 仓库列表（逗号分隔 owner/repo；留空回退 `branch.repos` 配置，再回退当前仓库） |
 | `source-branch` | string | 否 | `master` | 源分支（重切基点） |
 | `target-branch` | string | 否 | `dev` | 回收目标分支 |
 | `feature-prefix` | string | 否 | `feature/` | 要清理的 feature 分支前缀 |
@@ -935,11 +1236,25 @@ cleanup:
 
 **配置要求**（中心批量模式，在 deploy-pipeline 仓库配置一次）：
 
-| 项 | 级别 | 说明 |
-|---|---|---|
-| `BRANCH_OPS_REPOS` | Variables | 仓库列表（逗号分隔），schedule/dispatch 留空时使用 |s
-| `BRANCH_OPS_TOKEN` | Secrets | 跨仓库操作 token（PAT 或 GitHub App token，需覆盖全部目标仓库） |
-| `FEISHU_WEBHOOK_URL` / `TELEGRAM_*` | Secrets | 预告/结果通知 |
+```yaml
+# vars.PIPELINE_CONFIG（或 vars.BRANCH_CONFIG）
+branch:
+  repos: service-a,service-b,service-c
+  source_branch: master
+  target_branch: dev
+  feature_prefix: feature/
+  clean_features: true
+
+# secrets.PIPELINE_SECRETS
+branch:
+  token: ghp_xxxx          # PAT 或 GitHub App token，需覆盖全部目标仓库
+notify:
+  feishu_webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
+```
+
+旧式单个变量 `vars.BRANCH_OPS_REPOS` / `secrets.BRANCH_OPS_TOKEN` 仍然有效，
+优先级在聚合 YAML 之下，详见[配置章节](#-配置一份聚合-yaml)。
+`branch.token` 留空时回退本次运行的 `GITHUB_TOKEN`，那只够操作当前仓库，跨仓库批量会 404。
 
 **调用示例**：
 
@@ -956,7 +1271,7 @@ branch-recycle:
 
 ```yaml
 # 中心批量模式（在 deploy-pipeline 仓库手动 dispatch，或 schedule 自动预告）
-# inputs.repos: core-service,access-control-service,ops-gateway,...（留空用 vars.BRANCH_OPS_REPOS）
+# inputs.repos: service-a,service-b,service-c,...（留空用 branch.repos）
 # dry-run=false 执行；require-today-tag=true 检查发布完成
 ```
 
@@ -966,7 +1281,7 @@ branch-recycle:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `repos` | string | 否 | `''` | 仓库列表（逗号分隔；留空回退 `vars.BRANCH_OPS_REPOS`） |
+| `repos` | string | 否 | `''` | 仓库列表（逗号分隔；留空回退 `branch.repos` 配置） |
 | `new-branch` | string | 是 | - | 新分支名（如 `feature/xxx`） |
 | `base-branch` | string | 否 | `master` | 基分支 |
 | `dry-run` | boolean | 否 | `false` | 干跑模式 |
@@ -975,12 +1290,12 @@ branch-recycle:
 幂等：目标分支已存在的仓库自动跳过。切完自动推结果卡片，替代群里人肉喊"大家切分支了"。
 
 ```yaml
-# 在 deploy-pipeline 仓库手动 dispatch：new-branch=feature/xxx，repos 留空用 vars
+# 在 deploy-pipeline 仓库手动 dispatch：new-branch=feature/xxx，repos 留空用 branch.repos
 ```
 
 #### branch-ops.sh（脚本直用）
 
-两个 workflow 共用 `scripts/branch-ops.sh`：
+两个 workflow 共用 `scripts/branch-ops.sh`（workflow 里经 fetch-pipeline-assets 取到 `_deploy-workflows/scripts/branch-ops.sh`，本地直接跑仓库里的那份）：
 
 ```bash
 export GH_TOKEN="<PAT>"                      # 跨仓库用 PAT；单仓库用 GITHUB_TOKEN
@@ -1538,14 +1853,52 @@ sequenceDiagram
 
 ## 🧩 Composite Actions
 
-`.github/actions/` 下四个复合 Action，可在自己的工作流里单独引用。
+`.github/actions/` 下的复合 Action，可在自己的工作流里单独引用。
+
+### resolve-config
+
+所有配置的唯一入口：把聚合 YAML 校验、合并、兜底、打码之后写进 `GITHUB_ENV`，
+之后同一个 job 里的步骤一律用 `${{ env.XXX }}` 取值。详见[配置章节](#-配置一份聚合-yaml)。
+
+| 入参 | 必填 | 说明 |
+|------|------|------|
+| `sections` | ❌ | 要解析哪些明文配置节，空格分隔：`ports` / `docker` / `kube` / `builder` / `cleanup` / `branch` / `notify` |
+| `secret-sections` | ❌ | 要解析哪些密钥节，空格分隔：`kube` / `docker` / `notify` / `go` / `branch` / `app` |
+| `vars-json` | ❌ | `${{ toJSON(vars) }}`；`PIPELINE_CONFIG`、分节 `<SECTION>_CONFIG`、旧式单个 vars 都从这里取 |
+| `inputs-json` | ❌ | `${{ toJSON(inputs) }}`；作为 YAML 之下的一层回退 |
+| `secrets-json` | ❌ | `${{ toJSON(secrets) }}`；`PIPELINE_SECRETS` 与旧式单个 secret 都从这里取 |
+| `config` | ❌ | 直接传一份 YAML，优先级最高（适合调用方自己从别处读出来再传） |
+| `config-file` | ❌ | 仓库内的配置文件路径，作为最低一层基线；需要先 checkout |
+| `defaults` | ❌ | 本 workflow 的默认值覆盖，每行一个 `ENV_NAME=value`；优先级在旧式 vars 之下 |
+| `summary` | ❌ | `true` 时把解析结果表写进 job summary |
+
+| 出参 | 说明 |
+|------|------|
+| `json` | 解析结果的 JSON（不含密钥）。job 级字段取不到 `GITHUB_ENV`，要跨 job 传值就用 `fromJSON(steps.<id>.outputs.json).XXX` |
+
+```yaml
+- name: ⚙️ Resolve Pipeline Config
+  id: config
+  uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+  with:
+    sections: ports docker kube
+    secret-sections: kube notify app
+    vars-json: ${{ toJSON(vars) }}
+    inputs-json: ${{ toJSON(inputs) }}
+    secrets-json: ${{ toJSON(secrets) }}
+    defaults: |
+      WS_PORT=18085
+```
+
+密钥的处理：每个叶子值逐行 `::add-mask::` 打码（4 个字符以下不打，免得日志全是 `***`）；
+`app` 节不进 `GITHUB_ENV`，而是落到 `$RUNNER_TEMP` 下 0600 的文件，由部署那步读去同步成集群 Secret。
 
 ### normalize-image-name
 
 把 Docker 镜像名规范化，并按需生成 tag 列表。
 
 **为什么需要它**：Docker 对镜像名有两条硬规则 —— repository 部分必须全小写，tag 里不能出现 `/`。
-而 GitHub 的组织名常带大写（`HitGameAI`），分支名常带斜杠（`feature/turnover`），直接拼进镜像名
+而 GitHub 的组织名常带大写（`MyOrgName`），分支名常带斜杠（`feature/turnover`），直接拼进镜像名
 会在 push 阶段报 `invalid reference format`。这个 Action 把 repository 转小写、把 tag 里的 `/` 换成 `-`，
 同时**不碰 registry 端口号**（`registry:5000/app:v1` 里 `/` 之前的冒号不会被当成 tag 分隔符）。
 
@@ -1595,6 +1948,51 @@ sequenceDiagram
 ---
 
 ## 📜 公共脚本
+
+### resolve-config.py
+
+聚合配置解析器，[resolve-config action](#resolve-config) 调的就是它。入参走环境变量，
+所以在 CI 里不用传参；本地则有三个子命令可以直接用：
+
+```bash
+# 校验一份总表配置（键名、类型、密钥误放明文都会报）
+python3 scripts/resolve-config.py --check my-config.yaml
+
+# 校验一份分节配置：内容不带节名，要指明是哪一节
+python3 scripts/resolve-config.py --check kube.yaml --section kube
+
+# 校验聚合密钥（按 secrets 侧的 schema 校验，值只打印长度与指纹）
+python3 scripts/resolve-config.py --check my-secrets.yaml --secrets
+
+# 打印带注释的完整示例，改完直接贴进 GitHub 变量
+python3 scripts/resolve-config.py --print-example [节名...]
+```
+
+配置项的唯一出处是 `scripts/config/schema.yaml`：加一个配置项只改那张表，
+解析、校验、默认值、README 里的清单都跟着走，不用再去各个 workflow 的 `env:` 块里加行。
+依赖 PyYAML（GitHub 托管的 ubuntu runner 自带；自建 runner 由 action 自动装）。
+
+### sync-fork.sh
+
+把本仓库整份同步到同一项目在另一个组织下的那一份，只换自引用的组织前缀。
+两边组织名都从各自的 `git remote get-url origin` 推出来，脚本里不写死组织名，
+所以两份副本里是同一个脚本，反向同步只是把参数换成对面的路径。
+
+```bash
+bash scripts/sync-fork.sh <对面仓库路径>            # 覆盖与新增
+bash scripts/sync-fork.sh <对面仓库路径> --check     # 只报告会改哪些文件
+bash scripts/sync-fork.sh <对面仓库路径> --force     # 整份覆盖，对面多出来的文件一并删掉
+```
+
+只改工作区文件、不碰 git 历史；跑完校验对面不再残留来源组织名，残留就非零退出
+（二进制文件和没列进扩展名白名单的文件不换前缀，报出来的就是这类）。
+背景与完整说明见[顶部「同一份内容，两个组织」](#deploy-pipeline)。
+
+### branch-ops.sh
+
+批量切分支与 dev 回收的实现，`branch-cut.yml` / `branch-recycle.yml` 共用。
+全部通过 `gh api` 操作远端，不需要本地 git 工作区，所以 workflow 里只取脚本不 checkout 代码。
+参数与安全设计见[分支管理工作流](#分支管理工作流)。
 
 ### backend/build-linux.sh
 
@@ -1723,6 +2121,30 @@ bash scripts/notify.sh
 ---
 
 ## ✅ 自测清单
+
+### 配置自测（改 schema 或改配置后先跑这几条）
+
+```bash
+# 1. 配置表自身能被解析，示例能通过自己的校验
+python3 scripts/resolve-config.py --print-example > /tmp/example.yaml
+python3 scripts/resolve-config.py --check /tmp/example.yaml
+
+# 2. 自己写的那份配置能过校验
+python3 scripts/resolve-config.py --check my-config.yaml
+
+# 3. 零配置也要能跑：所有默认值本身必须合法
+#    （CI 里这一步就是各 workflow 的第一步；本地可以这样手动模拟）
+CONFIG_SECTIONS="ports docker kube" GITHUB_ENV=/tmp/env GITHUB_OUTPUT=/tmp/out \
+  CONFIG_VARS_JSON='{}' CONFIG_INPUTS_JSON='{}' CONFIG_SECRETS_JSON='{}' \
+  python3 scripts/resolve-config.py && cat /tmp/env
+```
+
+| 步骤 | 检查项 | 状态 |
+|------|--------|------|
+| 1 | `--print-example` 的输出能通过 `--check` | ✅ |
+| 2 | 键名拼错 / 类型不对 / 密钥误放明文都能报出路径与建议 | ✅ |
+| 3 | 完全不配 vars 与 secrets 时，各 workflow 的第一步仍全绿（默认值兜底） | ✅ |
+| 4 | 每个 workflow 里用到的 `env.XXX` 都由它请求的节导出 | ✅ |
 
 ### 后端工作流测试
 

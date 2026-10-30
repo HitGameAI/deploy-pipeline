@@ -1,0 +1,115 @@
+name: 'Resolve Pipeline Config'
+description: '把 vars/secrets 里的聚合 YAML 配置校验、合并、写进 GITHUB_ENV，后续 step 用 env 上下文直接取'
+
+# 这个 action 是所有配置的唯一入口
+#
+# 原先每个 workflow 的 job 级 env: 里堆着几十行
+#   CPU_LIMIT: ${{ inputs.cpu-limit || vars.K8S_CPU_LIMIT || '300m' }}
+# 配置项一多就得在仓库变量里一个一个点、一个一个记名字。现在改成：
+#   vars.PIPELINE_CONFIG 一个变量写完整份 YAML，分节变量按环境覆盖，
+#   校验、合并、兜底、打码全在这一步做完，再经 GITHUB_ENV 交给后面的 step。
+#
+# 为什么能用 GITHUB_ENV 覆盖 job 级 env：runner 在 job 开始时就把 workflow/job 级 env
+# 并进同一张环境表，step 往 GITHUB_ENV 写的是同一张表，后写覆盖先写；只有 step 级 env
+# 是每步单独叠在最上面的。所以被这个 action 接管的键，必须从 job 级 env: 里删掉，
+# 不然那一层会一直盖住解析结果 —— 真正的隐患不是覆盖不生效，而是「两处各有一份」。
+#
+# [EN] This action is the single entry point for configuration. Each workflow used to carry
+# dozens of `KEY: ${{ inputs.x || vars.X || 'default' }}` lines in its job-level env block,
+# which meant clicking through one repository variable per setting. Now one variable holds the
+# whole YAML document, per-section variables override it per environment, and validation,
+# merging, defaulting and masking all happen here before the values reach later steps through
+# GITHUB_ENV. Keys this action owns must be removed from the job-level env block: the runner
+# folds workflow and job env into the same table that GITHUB_ENV writes to, so leaving a copy
+# behind means the same setting is defined in two places.
+
+inputs:
+  sections:
+    description: '要解析哪些明文配置节（空格分隔）：ports / docker / kube / builder / cleanup / notify'
+    required: false
+    default: ''
+  secret-sections:
+    description: '要解析哪些密钥节（空格分隔）：kube / docker / notify / go'
+    required: false
+    default: ''
+  vars-json:
+    description: 'toJSON(vars)；聚合配置 PIPELINE_CONFIG 与分节 <SECTION>_CONFIG 都从这里取，旧式单个 vars 也作为回退'
+    required: false
+    default: '{}'
+  inputs-json:
+    description: 'toJSON(inputs)；workflow input 作为 YAML 之下的一层回退'
+    required: false
+    default: '{}'
+  secrets-json:
+    description: 'toJSON(secrets)；PIPELINE_SECRETS 与旧式单个 secret 都从这里取'
+    required: false
+    default: '{}'
+  config:
+    description: '直接传一份 YAML（优先级最高，适合调用方自己从文件读出来再传）'
+    required: false
+    default: ''
+  config-file:
+    description: '仓库内的配置文件路径（如 .github/pipeline-config.yaml），作为最低一层 YAML 基线；需要先 checkout'
+    required: false
+    default: ''
+  defaults:
+    description: '本 workflow 的默认值覆盖，每行一个 ENV_NAME=value；优先级在旧式 vars 之下、schema 默认值之上'
+    required: false
+    default: ''
+  summary:
+    description: '是否把解析结果表写进 job summary'
+    required: false
+    default: 'false'
+
+outputs:
+  json:
+    description: '解析结果的 JSON（不含密钥），给 job outputs 用 fromJSON 取值'
+    value: ${{ steps.resolve.outputs.json }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve Config
+      id: resolve
+      shell: bash
+      env:
+        CONFIG_SECTIONS: ${{ inputs.sections }}
+        CONFIG_SECRET_SECTIONS: ${{ inputs.secret-sections }}
+        CONFIG_VARS_JSON: ${{ inputs.vars-json }}
+        CONFIG_INPUTS_JSON: ${{ inputs.inputs-json }}
+        CONFIG_SECRETS_JSON: ${{ inputs.secrets-json }}
+        CONFIG_INLINE: ${{ inputs.config }}
+        CONFIG_FILE: ${{ inputs.config-file }}
+        CONFIG_DEFAULTS: ${{ inputs.defaults }}
+        CONFIG_SUMMARY: ${{ inputs.summary }}
+      run: |
+        set -euo pipefail
+
+        # 用 action 自带的仓库副本定位脚本，不克隆、不 checkout —— 与 notify /
+        # fetch-pipeline-assets 同一套理由，见那两个 action 里的说明
+        # [EN] The sibling script is located through the action's own repository copy, for the
+        # reasons spelled out in the notify and fetch-pipeline-assets actions
+        script="${GITHUB_ACTION_PATH}/../../../scripts/resolve-config.py"
+        if [ ! -f "${script}" ]; then
+          echo "::error::找不到 ${script}；请确认 action 与 scripts/resolve-config.py 在同一仓库同一 ref" >&2
+          exit 1
+        fi
+
+        # PyYAML：GitHub 托管的 ubuntu runner 自带，自建 runner 不一定，所以留两层兜底。
+        # Ubuntu 24.04 起系统 python 是 externally-managed，普通 pip install 会被拒，
+        # 所以先试 --break-system-packages，再退到 --user
+        # [EN] PyYAML ships with the GitHub-hosted ubuntu images but not necessarily with a
+        # self-hosted runner. From Ubuntu 24.04 the system interpreter is externally managed and
+        # refuses a plain pip install, hence --break-system-packages first and --user after
+        if ! python3 -c 'import yaml' 2>/dev/null; then
+          echo "::group::📦 安装 PyYAML | Installing PyYAML"
+          python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyyaml \
+            || python3 -m pip install --quiet --disable-pip-version-check --user pyyaml \
+            || {
+              echo "::error::装不上 PyYAML，无法解析 YAML 配置 | cannot install PyYAML" >&2
+              exit 1
+            }
+          echo "::endgroup::"
+        fi
+
+        python3 "${script}"

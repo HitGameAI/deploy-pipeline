@@ -59,10 +59,10 @@ on:
         type: string
         default: ''
       keep-count:
-        description: 'Number of image versions to keep'
+        description: '每个前缀分组保留的镜像版本数（留空则按 cleanup.keep_count 配置，再为空用 5）| Image versions to keep'
         required: false
         type: string
-        default: '5'
+        default: ''
       tag-include-prefix:
         description: '仅清理 tag 命中前缀的镜像版本（逗号分隔，如 dev,uat,sit；按前缀分组各自保留 keep-count 个；留空回退 vars.CLEANUP_TAG_INCLUDE_PREFIX）'
         required: false
@@ -111,10 +111,10 @@ on:
         type: string
         default: ''
       keep-count:
-        description: 'Number of image versions to keep'
+        description: '每个前缀分组保留的镜像版本数（留空则按 cleanup.keep_count 配置，再为空用 5）| Image versions to keep'
         required: false
         type: string
-        default: '5'
+        default: ''
       tag-include-prefix:
         description: '仅清理 tag 命中前缀的镜像版本（逗号分隔，如 dev,uat,sit；按前缀分组各自保留 keep-count 个；留空回退 vars.CLEANUP_TAG_INCLUDE_PREFIX）'
         required: false
@@ -303,14 +303,25 @@ jobs:
       packages: write
       contents: read
     steps:
+      # 所有配置先过这一步：校验 YAML、合并优先级、写进 GITHUB_ENV
+      # [EN] Every setting goes through this step first
+      - name: ⚙️ Resolve Pipeline Config
+        id: config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: cleanup
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          # 这个 workflow 的历史默认是保留 5 个，schema 里写的是 10
+          # [EN] This workflow historically keeps 5 versions while the schema default is 10
+          defaults: |
+            KEEP_COUNT=5
+
       - name: 🐳 Cleanup Old Images from GHCR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROJECT_OWNER: ${{ inputs.project-owner }}
           IMAGE_NAME: ${{ inputs.image-name }}
-          KEEP_COUNT: ${{ inputs.keep-count }}
-          TAG_INCLUDE_PREFIX: ${{ inputs.tag-include-prefix || vars.CLEANUP_TAG_INCLUDE_PREFIX || '' }}
-          TAG_EXCLUDE_PREFIX: ${{ inputs.tag-exclude-prefix || vars.CLEANUP_TAG_EXCLUDE_PREFIX || 'v,prod' }}
         run: |
           set -uo pipefail
 

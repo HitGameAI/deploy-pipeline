@@ -1,0 +1,671 @@
+# ============================================================================
+# 流水线聚合配置表 | Pipeline aggregate configuration schema
+#
+# 这份表是所有配置项的唯一出处：scripts/resolve-config.py 读它来做
+# 「校验 → 合并 → 写 GITHUB_ENV」，README 里的清单也以它为准。
+# 新增一个配置项只改这里，不用再去各个 workflow 的 env: 块里加一行。
+#
+# 每个 key 的字段
+#   env      写进 GITHUB_ENV 的变量名；可以是列表，同一个值写多个名字（兼容旧名）
+#   input    对应的 workflow input 名；可以是列表，按顺序取第一个非空的
+#   var      对应的旧式单个 vars 名；可以是列表，按顺序取第一个非空的
+#   type     校验类型，见下方 type 说明
+#   default  兜底值；{repo} 会被替换成仓库名（owner/name 里的 name）
+#   values   type: enum 时的合法取值
+#   min/max  type: int 时的闭区间
+#   desc     说明，--print-example 生成示例时作为注释输出
+#
+# 优先级（高 → 低）| Precedence, highest first
+#   1. 分节 YAML：vars.DOCKER_CONFIG / KUBE_CONFIG / BUILDER_CONFIG / ...
+#   2. 总表 YAML：vars.PIPELINE_CONFIG 里对应的节
+#   3. workflow input
+#   4. 旧式单个 vars
+#   5. 这里的 default
+#
+# type 说明 | Types
+#   string    任意标量，原样转字符串
+#   int       整数，可配 min/max
+#   port      端口：1-65535，或 ''/0/none 表示「不启用这个端口」
+#   bool      true/false，另接受 yes/no/on/off/1/0，统一归一成 true/false
+#   quantity  K8s 资源量：100m / 1 / 256Mi / 1Gi
+#   percent   1-1000 的整数（HPA 的 scale 百分比允许超过 100）
+#   enum      必须命中 values 之一
+#   csv       逗号分隔列表，去空格后重新拼接
+#   secret    不校验内容、逐个 ::add-mask:: 打码的敏感值
+#   map       自由键值表（只用于 secrets.app），键必须是 A-Z0-9_ 形式
+#
+# [EN] This table is the single source of truth for every pipeline setting.
+# scripts/resolve-config.py reads it to validate the aggregate YAML, merge it over the
+# workflow inputs and the legacy per-key variables, and export the result through
+# GITHUB_ENV. Adding a setting means editing this file only, not every workflow's env block.
+# ============================================================================
+
+# ==================== vars 侧：明文配置 | Plaintext settings ====================
+sections:
+  # -------------------- 容器端口 | Container ports --------------------
+  # 端口被 build-docker（EXPOSE）和 deploy-k8s（containerPort / Service）共用，
+  # 所以单独成节，不挂在 docker 或 kube 下面，避免同一个值写两遍
+  # [EN] Ports are shared by the Docker build (EXPOSE) and the K8s deploy (containerPort and
+  # Service), hence their own section rather than a copy under both docker and kube
+  ports:
+    desc: '容器端口；留空 / 0 / none 表示该端口不启用 | Container ports; empty, 0 or none disables one'
+    keys:
+      http:
+        env: HTTP_PORT
+        input: http-port
+        var: HTTP_PORT
+        type: port
+        default: ''
+        desc: 'HTTP 端口，纯 WS/gRPC 服务可留空'
+      rpc:
+        env: RPC_PORT
+        input: rpc-port
+        var: RPC_PORT
+        type: port
+        default: '9181'
+        desc: 'gRPC 端口，gateway 类服务可留空'
+      ws:
+        env: WS_PORT
+        input: ws-port
+        var: WS_PORT
+        type: port
+        default: ''
+        desc: 'WebSocket 端口'
+      pprof:
+        env: PPROF_PORT
+        input: pprof-port
+        var: PPROF_PORT
+        type: port
+        default: '6160'
+        desc: 'pprof 端口'
+      node_grpc:
+        env: NODE_GRPC_PORT
+        input: node-grpc-port
+        var: NODE_GRPC_PORT
+        type: port
+        default: ''
+        desc: '节点间 gRPC 端口（集群内互联用）'
+      metrics:
+        env: METRICS_PORT
+        input: metrics-port
+        var: METRICS_PORT
+        type: port
+        default: ''
+        desc: 'Prometheus 抓取端口，留空则不生成抓取注解'
+      metrics_path:
+        env: METRICS_PATH
+        input: metrics-path
+        var: METRICS_PATH
+        type: string
+        default: '/metrics'
+        desc: 'Prometheus 抓取路径'
+      probe_name:
+        env: PROBE_PORT_NAME
+        input: probe-port
+        var: PROBE_PORT_NAME
+        type: string
+        default: ''
+        desc: '探针用的端口名（http / rpc / ws / pprof 之一），留空按端口自动挑'
+
+  # -------------------- 镜像构建 | Image build --------------------
+  docker:
+    desc: '镜像构建与推送 | Image build and push'
+    keys:
+      registry:
+        env: DOCKER_REGISTRY
+        input: docker-registry
+        var: DOCKER_REGISTRY
+        type: string
+        default: 'ghcr.io'
+        desc: '镜像仓库地址'
+      run_workdir:
+        env: DOCKER_RUN_WORKDIR
+        input: [docker-run-workdir, docker-workdir]
+        var: DOCKER_RUN_WORKDIR
+        type: string
+        default: '/usr/local/services/{repo}'
+        desc: '容器里的工作目录，ConfigMap 挂载路径以它为基准'
+      base_image:
+        env: BASE_IMAGE
+        input: base-image
+        var: [BUILD_DOCKER_BASE_IMAGE, BASE_IMAGE]
+        type: string
+        default: 'alpine:3.19.1'
+        desc: '运行阶段基础镜像；前端默认 nginx:1.25.3-alpine'
+      os:
+        # 历史上 build-docker 里既有 BUILD_DOCKER_OS 也有 BUILD_BINARY_OS，
+        # 两个名字都继续认、都继续写，避免改坏调用方已经配好的 vars
+        # [EN] Both BUILD_DOCKER_OS and BUILD_BINARY_OS existed here historically; both names
+        # are still read and still exported so configured callers keep working
+        env: [BUILD_DOCKER_OS, BUILD_BINARY_OS]
+        input: os
+        var: [BUILD_DOCKER_OS, BUILD_BINARY_OS]
+        type: enum
+        values: [linux]
+        default: 'linux'
+        desc: '目标 OS'
+      arch:
+        env: [BUILD_DOCKER_ARCH, BUILD_BINARY_ARCH]
+        input: arch
+        var: [BUILD_DOCKER_ARCH, BUILD_BINARY_ARCH]
+        type: enum
+        values: [amd64, arm64]
+        default: 'amd64'
+        desc: '目标架构，与 build-binary 的 arch 必须一致'
+      timezone:
+        env: TIMEZONE
+        input: timezone
+        var: TIMEZONE
+        type: string
+        default: 'Etc/UTC'
+        desc: '镜像时区'
+
+  # -------------------- K8s 部署 | K8s deployment --------------------
+  kube:
+    desc: 'K8s 工作负载、资源、探针、HPA、Ingress | Workload, resources, probes, HPA, Ingress'
+    keys:
+      namespace:
+        env: NAMESPACE
+        input: namespace
+        var: K8S_NAMESPACE
+        type: string
+        default: 'default'
+        desc: '命名空间'
+      workload_kind:
+        env: KIND
+        input: kind
+        var: KIND
+        type: enum
+        values: [Deployment, StatefulSet, DaemonSet]
+        default: 'Deployment'
+        desc: '工作负载类型'
+      image_pull_secrets:
+        env: IMAGE_PULL_SECRETS
+        input: image-pull-secrets
+        var: K8S_IMAGE_PULL_SECRETS
+        type: string
+        default: 'ghcr.io'
+        desc: '拉取镜像用的 imagePullSecrets 名字'
+      replicas:
+        env: DEPLOYMENT_REPLICAS
+        input: deployment-replicas
+        var: K8S_DEPLOYMENT_REPLICAS
+        type: int
+        min: 0
+        max: 1000
+        default: '2'
+        desc: '副本数（HPA 开启时只作为初始值）'
+      termination_grace_period_seconds:
+        env: TERMINATION_GRACE_PERIOD_SECONDS
+        input: termination-grace-period-seconds
+        var: K8S_TERMINATION_GRACE_PERIOD_SECONDS
+        type: int
+        min: 0
+        max: 3600
+        default: '30'
+        desc: '优雅退出宽限期，必须 ≥ 服务自身的最大退出耗时'
+      gomemlimit_percent:
+        env: GOMEMLIMIT_PERCENT
+        input: gomemlimit-percent
+        var: K8S_GOMEMLIMIT_PERCENT
+        type: percent
+        default: ''
+        desc: 'GOMEMLIMIT 取内存上限的百分比，如 90；留空不注入'
+      health_max_wait:
+        env: HEALTH_MAX_WAIT
+        input: health-max-wait
+        var: K8S_HEALTH_MAX_WAIT
+        type: int
+        min: 30
+        max: 3600
+        default: '300'
+        desc: '部署后等待健康的最长秒数'
+      service.kind:
+        env: SERVICE_KIND
+        input: service-kind
+        var: SERVICE_KIND
+        type: enum
+        values: [Service, NodePort, LoadBalancer]
+        default: 'Service'
+        desc: 'Service 资源类型'
+      service.type:
+        env: SERVICE_TYPE
+        input: service-type
+        var: SERVICE_TYPE
+        type: enum
+        values: [ClusterIP, NodePort, LoadBalancer]
+        default: 'ClusterIP'
+        desc: 'Service 的 spec.type'
+      resources.requests.cpu:
+        env: CPU_REQUEST
+        input: cpu-request
+        var: K8S_CPU_REQUEST
+        type: quantity
+        default: '100m'
+      resources.requests.memory:
+        env: MEMORY_REQUEST
+        input: memory-request
+        var: K8S_MEMORY_REQUEST
+        type: quantity
+        default: '128Mi'
+      resources.limits.cpu:
+        env: CPU_LIMIT
+        input: cpu-limit
+        var: K8S_CPU_LIMIT
+        type: quantity
+        default: '300m'
+      resources.limits.memory:
+        env: MEMORY_LIMIT
+        input: memory-limit
+        var: K8S_MEMORY_LIMIT
+        type: quantity
+        default: '256Mi'
+      probes.readiness.delay:
+        env: READINESS_DELAY
+        input: readiness-delay-seconds
+        var: K8S_READINESS_DELAY_SECONDS
+        type: int
+        min: 0
+        max: 600
+        default: '5'
+      probes.readiness.period:
+        env: READINESS_PERIOD
+        input: readiness-period-seconds
+        var: K8S_READINESS_PERIOD_SECONDS
+        type: int
+        min: 1
+        max: 600
+        default: '10'
+      probes.liveness.delay:
+        env: LIVENESS_DELAY
+        input: liveness-delay-seconds
+        var: K8S_LIVENESS_DELAY_SECONDS
+        type: int
+        min: 0
+        max: 600
+        default: '15'
+      probes.liveness.period:
+        env: LIVENESS_PERIOD
+        input: liveness-period-seconds
+        var: K8S_LIVENESS_PERIOD_SECONDS
+        type: int
+        min: 1
+        max: 600
+        default: '20'
+      probes.startup.period:
+        env: STARTUP_PERIOD
+        input: startup-period-seconds
+        var: K8S_STARTUP_PERIOD_SECONDS
+        type: int
+        min: 1
+        max: 600
+        default: '10'
+      probes.startup.failure_threshold:
+        env: STARTUP_FAILURE_THRESHOLD
+        input: startup-failure-threshold
+        var: K8S_STARTUP_FAILURE_THRESHOLD
+        type: int
+        min: 1
+        max: 1000
+        default: '30'
+        desc: '启动探针失败阈值；最长启动等待 = 阈值 × period'
+      hpa.enable:
+        env: ENABLE_HPA
+        input: enable-hpa
+        var: K8S_ENABLE_HPA
+        type: bool
+        default: 'true'
+      hpa.min_replicas:
+        env: MIN_REPLICAS
+        input: min-replicas
+        var: K8S_MIN_REPLICAS
+        type: int
+        min: 1
+        max: 1000
+        default: '2'
+      hpa.max_replicas:
+        env: MAX_REPLICAS
+        input: max-replicas
+        var: K8S_MAX_REPLICAS
+        type: int
+        min: 1
+        max: 1000
+        default: '10'
+      hpa.target_cpu_utilization:
+        env: TARGET_CPU_UTILIZATION
+        input: target-cpu-utilization
+        var: K8S_TARGET_CPU_UTILIZATION
+        type: percent
+        default: '80'
+      hpa.target_memory_utilization:
+        env: TARGET_MEMORY_UTILIZATION
+        input: target-memory-utilization
+        var: K8S_TARGET_MEMORY_UTILIZATION
+        type: percent
+        default: '80'
+      hpa.scale_up_percent:
+        env: SCALE_UP_PERCENT
+        input: scale-up-percent
+        var: K8S_SCALE_UP_PERCENT
+        type: percent
+        default: '100'
+      hpa.scale_down_percent:
+        env: SCALE_DOWN_PERCENT
+        input: scale-down-percent
+        var: K8S_SCALE_DOWN_PERCENT
+        type: percent
+        default: '50'
+      hpa.scale_down_stabilization_seconds:
+        env: SCALE_DOWN_STABILIZATION_SECONDS
+        input: scale-down-stabilization-seconds
+        var: K8S_SCALE_DOWN_STABILIZATION_SECONDS
+        type: int
+        min: 0
+        max: 3600
+        default: '300'
+      ingress.entry_point:
+        env: INGRESS_ENTRY_POINT
+        input: ingress-entry-point
+        var: INGRESS_ENTRY_POINT
+        type: string
+        default: 'web'
+        desc: 'Traefik 入口点名'
+      ingress.host:
+        env: INGRESS_HOST
+        input: ingress-host
+        var: INGRESS_HOST
+        type: string
+        default: ''
+        desc: '域名，一个服务一个；留空不生成 IngressRoute'
+      ingress.path_prefix:
+        env: INGRESS_PATH_PREFIX
+        input: ingress-path-prefix
+        var: INGRESS_PATH_PREFIX
+        type: string
+        default: ''
+        desc: '路径前缀，如 /api'
+      ingress.tls:
+        env: INGRESS_TLS
+        input: ingress-tls
+        var: INGRESS_TLS
+        type: bool
+        default: 'false'
+        desc: '是否启用 TLS，需要 Traefik 配好 ACME certResolver'
+      ingress.cert_resolver:
+        env: INGRESS_CERT_RESOLVER
+        input: ingress-cert-resolver
+        var: INGRESS_CERT_RESOLVER
+        type: string
+        default: 'letsencrypt'
+      ingress.tls_entry_point:
+        env: INGRESS_TLS_ENTRY_POINT
+        input: ingress-tls-entry-point
+        var: INGRESS_TLS_ENTRY_POINT
+        type: string
+        default: 'websecure'
+      ingress.redirect_http_to_https:
+        env: INGRESS_REDIRECT_HTTP_TO_HTTPS
+        input: ingress-redirect-http-to-https
+        var: INGRESS_REDIRECT_HTTP_TO_HTTPS
+        type: bool
+        default: 'true'
+
+  # -------------------- 构建 | Build --------------------
+  builder:
+    desc: 'Go 构建与代码质量检查 | Go build and code quality'
+    keys:
+      go_version:
+        env: GO_VERSION
+        input: go-version
+        var: GO_VERSION
+        type: string
+        default: '1.25.1'
+      gotestsum_version:
+        env: GOTESTSUM_VERSION
+        input: gotestsum-version
+        var: GOTESTSUM_VERSION
+        type: string
+        default: 'v1.13.0'
+      goproxy:
+        env: GOPROXY
+        input: goproxy
+        var: GOPROXY
+        type: string
+        default: 'https://goproxy.cn|direct'
+      goprivate:
+        env: GOPRIVATE
+        input: goprivate
+        var: GOPRIVATE
+        type: string
+        default: ''
+        desc: '私有模块前缀，如 github.com/kamalyes'
+      go_auth_method:
+        env: GO_AUTH_METHOD
+        input: go-auth-method
+        var: GO_AUTH_METHOD
+        type: enum
+        values: [app-token, ssh, none]
+        default: 'ssh'
+        desc: '私有模块认证方式；code-quality 默认 none'
+      os:
+        env: BUILD_BINARY_OS
+        input: os
+        var: BUILD_BINARY_OS
+        type: enum
+        values: [linux]
+        default: 'linux'
+      arch:
+        env: BUILD_BINARY_ARCH
+        input: arch
+        var: BUILD_BINARY_ARCH
+        type: enum
+        values: [amd64, arm64]
+        default: 'amd64'
+      upx.enable:
+        env: UPX_COMPRESS
+        input: upx-compress
+        var: UPX_COMPRESS
+        type: bool
+        default: 'false'
+        desc: '是否用 UPX 压缩二进制'
+      upx.level:
+        env: UPX_LEVEL
+        input: upx-level
+        var: UPX_LEVEL
+        type: string
+        default: '--best --lzma'
+
+  # -------------------- 清理 | Cleanup --------------------
+  cleanup:
+    desc: 'artifacts / cache / 镜像清理 | Artifact, cache and image cleanup'
+    keys:
+      keep_count:
+        env: KEEP_COUNT
+        input: keep-count
+        var: CLEANUP_KEEP_COUNT
+        type: int
+        min: 1
+        max: 1000
+        default: '10'
+        desc: '每个前缀分组保留的版本数'
+      tag_include_prefix:
+        env: TAG_INCLUDE_PREFIX
+        input: tag-include-prefix
+        var: CLEANUP_TAG_INCLUDE_PREFIX
+        type: csv
+        default: ''
+        desc: '只清理命中这些前缀的 tag，如 dev,uat,sit；留空表示所有前缀都可清'
+      tag_exclude_prefix:
+        env: TAG_EXCLUDE_PREFIX
+        input: tag-exclude-prefix
+        var: CLEANUP_TAG_EXCLUDE_PREFIX
+        type: csv
+        default: 'v,prod'
+        desc: '命中这些前缀的 tag 永不清理'
+
+  # -------------------- 批量分支操作 | Batch branch operations --------------------
+  # 注意：dry_run 故意不在这里
+  # 聚合 YAML 的优先级高于 input，把干跑开关放进配置就意味着「配置里写了 false」
+  # 能把定时任务的干跑预告变成真删分支。这个开关只认 input 与 schedule 的判断。
+  # [EN] dry_run is deliberately absent. The aggregate YAML outranks the inputs, so a false in
+  # configuration would turn the scheduled dry-run preview into a real branch deletion; that
+  # switch stays with the inputs and the schedule check alone.
+  branch:
+    desc: '批量切分支与 dev 回收 | Batch branch cut and dev recycle'
+    keys:
+      repos:
+        env: BRANCH_OPS_REPOS
+        input: repos
+        var: BRANCH_OPS_REPOS
+        type: csv
+        default: ''
+        desc: '要操作的仓库列表（owner/repo 逗号分隔）；留空=只操作当前仓库'
+      base_branch:
+        env: BRANCH_OPS_BASE
+        input: base-branch
+        var: BRANCH_OPS_BASE
+        type: string
+        default: 'master'
+        desc: '切分支的基分支'
+      source_branch:
+        env: BRANCH_OPS_SOURCE
+        input: source-branch
+        var: BRANCH_OPS_SOURCE
+        type: string
+        default: 'master'
+        desc: 'dev 回收时的源分支'
+      target_branch:
+        env: BRANCH_OPS_TARGET
+        input: target-branch
+        var: BRANCH_OPS_TARGET
+        type: string
+        default: 'dev'
+        desc: '被回收重切的分支'
+      feature_prefix:
+        env: BRANCH_OPS_FEATURE_PREFIX
+        input: feature-prefix
+        var: BRANCH_OPS_FEATURE_PREFIX
+        type: string
+        default: 'feature/'
+        desc: '清理已合并分支时认的前缀'
+      clean_features:
+        env: BRANCH_OPS_CLEAN_FEATURES
+        input: clean-features
+        var: BRANCH_OPS_CLEAN_FEATURES
+        type: bool
+        default: 'true'
+        desc: '是否清理已完全合入的 feature 分支'
+      require_today_tag:
+        env: BRANCH_OPS_REQUIRE_TAG
+        input: require-today-tag
+        var: BRANCH_OPS_REQUIRE_TAG
+        type: bool
+        default: 'false'
+        desc: '是否要求今日存在 prod-YYYY.MM.DD* tag 才回收'
+
+  # -------------------- 通知 | Notification --------------------
+  notify:
+    desc: '通知渠道选择；webhook 凭证在 secrets 侧 | Channel choice; credentials live in secrets'
+    keys:
+      provider:
+        env: NOTIFICATION_PROVIDER
+        input: notification-provider
+        var: NOTIFICATION_PROVIDER
+        type: enum
+        values: [none, feishu, wecom, telegram, all]
+        default: 'all'
+        desc: 'all 只发已配置好的渠道，一个都没配就不发也不失败'
+
+# ==================== secrets 侧：敏感配置 | Sensitive settings ====================
+# 来源是 secrets.PIPELINE_SECRETS，与明文的 PIPELINE_CONFIG 分开两份，
+# 所以把密钥误写进 vars 会被下面的「这项属于 secrets」检查当场挡住
+# [EN] These come from secrets.PIPELINE_SECRETS, kept separate from the plaintext
+# PIPELINE_CONFIG so that a credential written into vars by mistake is rejected outright
+secret_sections:
+  kube:
+    desc: '集群凭证 | Cluster credentials'
+    keys:
+      kubeconfig:
+        env: KUBECONFIG
+        secret: KUBECONFIG
+        type: secret
+        default: ''
+        desc: 'kubeconfig 全文，用 | 块标量写多行'
+  docker:
+    desc: '镜像仓库凭证 | Registry credentials'
+    keys:
+      username:
+        env: DOCKER_USERNAME
+        secret: DOCKER_USERNAME
+        type: secret
+        default: ''
+      password:
+        env: DOCKER_PASSWORD
+        secret: DOCKER_PASSWORD
+        type: secret
+        default: ''
+  notify:
+    desc: '通知 webhook 凭证 | Notification webhook credentials'
+    keys:
+      feishu_webhook_url:
+        env: FEISHU_WEBHOOK_URL
+        secret: FEISHU_WEBHOOK_URL
+        type: secret
+        default: ''
+      wecom_webhook_url:
+        env: WECOM_WEBHOOK_URL
+        secret: WECOM_WEBHOOK_URL
+        type: secret
+        default: ''
+      wecom_webhook_key:
+        env: WECOM_WEBHOOK_KEY
+        secret: WECOM_WEBHOOK_KEY
+        type: secret
+        default: ''
+      telegram_bot_token:
+        env: TELEGRAM_BOT_TOKEN
+        secret: TELEGRAM_BOT_TOKEN
+        type: secret
+        default: ''
+      telegram_chat_id:
+        env: TELEGRAM_CHAT_ID
+        secret: TELEGRAM_CHAT_ID
+        type: secret
+        default: ''
+  go:
+    desc: '私有模块拉取凭证 | Private module credentials'
+    keys:
+      app_id:
+        env: APP_ID
+        secret: APP_ID
+        type: secret
+        default: ''
+      app_private_key:
+        env: APP_PRIVATE_KEY
+        secret: APP_PRIVATE_KEY
+        type: secret
+        default: ''
+        desc: 'GitHub App 私钥全文，用 | 块标量写多行'
+      git_ssh_private_key:
+        env: GIT_SSH_PRIVATE_KEY
+        secret: GIT_SSH_PRIVATE_KEY
+        type: secret
+        default: ''
+  branch:
+    desc: '跨仓库批量操作凭证 | Cross-repository batch credentials'
+    keys:
+      token:
+        env: BRANCH_OPS_TOKEN
+        secret: BRANCH_OPS_TOKEN
+        type: secret
+        default: ''
+        desc: 'PAT 或 GitHub App token，需覆盖目标仓库；留空则回退本次运行的 GITHUB_TOKEN（只够操作当前仓库）'
+  # app 节是自由键值表：键名就是业务容器里的环境变量名，
+  # 由 deploy-k8s 的「同步密钥到集群」那步写成集群里的 K8s Secret。
+  # 不走 GITHUB_ENV，落到 RUNNER_TEMP 下 0600 的文件里，少一层暴露面。
+  # [EN] The app section is a free-form map whose keys are the environment variable names used
+  # by the service container; the deploy workflow's secret-sync step turns them into the
+  # in-cluster Secret. They go to a 0600 file under RUNNER_TEMP rather than GITHUB_ENV.
+  app:
+    desc: '业务密钥，键名即容器里的环境变量名 | Service secrets, keyed by container env name'
+    free_form: true

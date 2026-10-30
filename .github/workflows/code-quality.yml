@@ -32,6 +32,11 @@ on:
         type: string
         default: ''
     secrets:
+      # 聚合密钥：一个 secret 装下私有模块凭证，格式见 scripts/config/schema.yaml
+      # [EN] One secret holding the private-module credentials; see scripts/config/schema.yaml
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML（go.app_id / go.app_private_key / go.git_ssh_private_key），优先级高于下面的单个 secret'
+        required: false
       APP_ID:
         description: 'GitHub App ID (for app-token auth)'
         required: false
@@ -46,14 +51,24 @@ jobs:
   code-quality:
     name: 🔍 Code Quality Check
     runs-on: ubuntu-latest
-    env:
-      # 优先级: input > vars > 硬编码默认值
-      GO_VERSION: ${{ inputs.go-version || vars.GO_VERSION || '1.25.1' }}
-      GOTESTSUM_VERSION: ${{ inputs.gotestsum-version || vars.GOTESTSUM_VERSION || 'v1.13.0' }}
-      GOPROXY: ${{ inputs.goproxy || vars.GOPROXY || 'https://goproxy.cn|direct' }}
-      GOPRIVATE: ${{ inputs.goprivate || vars.GOPRIVATE || '' }}
-      GO_AUTH_METHOD: ${{ inputs.go-auth-method || vars.GO_AUTH_METHOD || 'none' }}
     steps:
+      # 所有配置先过这一步：校验 YAML、合并优先级、写进 GITHUB_ENV
+      # [EN] Every setting goes through this step first
+      - name: ⚙️ Resolve Pipeline Config
+        id: config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: builder
+          secret-sections: go
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: ${{ toJSON(secrets) }}
+          # 质量检查默认不走私有模块认证：公开依赖的仓库不该因为没配 App 就红
+          # [EN] The quality check defaults to no private-module auth, so a repository with only
+          # public dependencies does not fail for a missing App
+          defaults: |
+            GO_AUTH_METHOD=none
+
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
 
@@ -62,8 +77,8 @@ jobs:
         id: app_token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: ⚙️ Configure Git for App Token Auth
@@ -78,7 +93,7 @@ jobs:
         if: env.GO_AUTH_METHOD == 'ssh'
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
+          ssh-private-key: ${{ env.GIT_SSH_PRIVATE_KEY }}
 
       - name: ⚙️ Configure Git for SSH Auth
         if: env.GO_AUTH_METHOD == 'ssh'
