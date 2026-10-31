@@ -37,6 +37,35 @@ on:
         required: false
         type: string
         default: 'feishu'
+    secrets:
+      # 这五个必须在这里显式声明，哪怕调用方用了 secrets: inherit
+      #
+      # inherit 让 secrets.FEISHU_WEBHOOK_URL 这样「按名字取」能拿到值，但
+      # toJSON(secrets) **只枚举本块声明过的键**，未声明的继承 secret 不会出现在里面
+      # resolve-config 走的正是 toJSON(secrets)，所以不声明就等于那条
+      # 「回退到同名单个 secret」的降级路径永远取不到值 —— 而 Notify 步骤的 if:
+      # 在取不到时静默跳过、job 照样绿，于是「配了飞书却收不到消息」且无任何报错
+      #
+      # [EN] These five must be declared here even when the caller passes secrets: inherit.
+      # inherit makes secrets.NAME resolvable, but toJSON(secrets) only enumerates the keys
+      # declared in this block, and resolve-config reads toJSON(secrets). Without the
+      # declaration the standalone-secret fallback can never see them, and the Notify step
+      # skips silently while the job stays green
+      FEISHU_WEBHOOK_URL:
+        description: '飞书通知 Webhook URL'
+        required: false
+      WECOM_WEBHOOK_URL:
+        description: '企业微信群机器人 Webhook URL（完整地址）'
+        required: false
+      WECOM_WEBHOOK_KEY:
+        description: '企业微信群机器人 Webhook key（仅存 key 时用，与 URL 二选一）'
+        required: false
+      TELEGRAM_BOT_TOKEN:
+        description: 'Telegram 通知 Bot Token'
+        required: false
+      TELEGRAM_CHAT_ID:
+        description: 'Telegram 通知 Chat ID'
+        required: false
   workflow_dispatch:
     inputs:
       repos:
