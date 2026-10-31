@@ -120,7 +120,26 @@ jobs:
         uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
           secret-sections: notify
-          secrets-json: ${{ toJSON(secrets) }}
+          # 不能只用 toJSON(secrets)：调用方用 secrets: inherit 时它只枚举出
+          # github_token，继承来的键一个都不在里面（实测日志为证），而
+          # resolve-config 的「回退到同名单个 secret」正是从这份 JSON 里取值
+          # 按名字取 secrets.NAME 在 inherit 下是能拿到值的，所以这里逐个列名
+          # 拼 JSON —— 这样调用方无论用 inherit 还是显式映射都能工作，
+          # 不必让每个仓库各自改一遍
+          #
+          # [EN] toJSON(secrets) alone is not enough: under secrets: inherit it enumerates
+          # only github_token, while resolve-config reads this JSON for its standalone-secret
+          # fallback. Named lookups do resolve under inherit, so the JSON is assembled key by
+          # key, which makes both inherit and explicit mapping work without touching callers
+          secrets-json: >-
+            {
+            "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }},
+            "FEISHU_WEBHOOK_URL": ${{ toJSON(secrets.FEISHU_WEBHOOK_URL) }},
+            "WECOM_WEBHOOK_URL": ${{ toJSON(secrets.WECOM_WEBHOOK_URL) }},
+            "WECOM_WEBHOOK_KEY": ${{ toJSON(secrets.WECOM_WEBHOOK_KEY) }},
+            "TELEGRAM_BOT_TOKEN": ${{ toJSON(secrets.TELEGRAM_BOT_TOKEN) }},
+            "TELEGRAM_CHAT_ID": ${{ toJSON(secrets.TELEGRAM_CHAT_ID) }}
+            }
 
       # 所选渠道的 webhook 未配置（调用方仓库无此 secret）时静默跳过，不红 job
       - name: 📢 Notify
