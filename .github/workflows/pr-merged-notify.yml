@@ -65,6 +65,11 @@ jobs:
         uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
           secret-sections: notify
+          # vars 在可复用 workflow 里不需要调用方传递就能取到（与 secrets 不同），
+          # 带上它，notify 配置就也能走 vars.PIPELINE_CONFIG / vars.NOTIFY_CONFIG
+          # [EN] Unlike secrets, the vars context resolves without being passed, so
+          # passing it here lets the notify settings come from PIPELINE_CONFIG too
+          vars-json: ${{ toJSON(vars) }}
           # 不能只用 toJSON(secrets)：调用方用 secrets: inherit 时它只枚举出
           # github_token，继承来的键一个都不在里面（实测日志为证），而
           # resolve-config 的「回退到同名单个 secret」正是从这份 JSON 里取值
