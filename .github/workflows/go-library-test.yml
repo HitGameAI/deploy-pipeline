@@ -1,0 +1,426 @@
+name: 🧪 Go Library Test
+
+# go-* 公共库的统一测试流水线
+#
+# 为什么要有这个文件：三十来个 Go 库原先每个仓库各自手写一份 test.yml，分裂成五种方言，
+# 其中只有一个有编译闸门，大半把测试步骤挂上 continue-on-error
+#
+# 后果是实测过的：有库的默认分支编译不过，CI 日志里 FAIL 写得清清楚楚，
+# workflow 照报 success，坏版本就这么发了出去
+#
+# 两条硬规则，调用方无法关掉：
+#   1. Build 与 Vet 是独立闸门、跑在测试之前，编译坏了一眼可见
+#   2. 测试步骤绝不挂 continue-on-error，红就是红
+#
+# 配置走 resolve-config 的 golib 节，所以同一项既能用 vars.PIPELINE_CONFIG 一份总表
+# 批量配下来，也能在单个仓库用单个变量覆盖
+#
+# [EN] One test pipeline shared by some thirty Go libraries that each used to carry their own
+# hand-written CI in one of five dialects, only one with a build gate and most masking the test
+# step with continue-on-error -- which is how a repository reached its default branch unable to
+# compile while the workflow still reported success. Two rules callers cannot switch off: Build
+# and Vet are separate gates ahead of the tests, and the test step never swallows a failure
+
+on:
+  workflow_call:
+    inputs:
+      go-versions:
+        description: '覆盖用：显式指定矩阵版本（JSON 数组）。留空是常态 —— 留空时从 go.mod 的 go 指令算出地板，再配上当前发布的最新两个小版本，不需要任何配置'
+        required: false
+        type: string
+        default: ''
+      platforms:
+        description: 'JSON 数组，运行矩阵的平台'
+        required: false
+        type: string
+        default: ''
+      exclude:
+        description: 'JSON 数组，从矩阵里剔掉的组合，每项形如 {"go-version":"1.21.x","platform":"macos-latest"}。用于某个版本与某个平台物理上跑不了的情况'
+        required: false
+        type: string
+        default: '[]'
+      gofmt-check:
+        description: '是否把 gofmt 当闸门。仓库还有存量未格式化文件时先关掉，并把欠账写在调用处'
+        required: false
+        type: boolean
+        default: true
+      build-tags:
+        description: 'build tag，留空则不传 -tags'
+        required: false
+        type: string
+        default: ''
+      test-target:
+        description: '测试目标包'
+        required: false
+        type: string
+        default: './...'
+      test-flags:
+        description: '传给 go test 的参数'
+        required: false
+        type: string
+        default: ''
+      test-timeout:
+        description: 'go test 的 -timeout'
+        required: false
+        type: string
+        default: ''
+      gotestsum-version:
+        description: 'gotestsum 版本'
+        required: false
+        type: string
+        default: ''
+      coverage-go-version:
+        description: '由哪个 Go 版本的 job 上传覆盖率'
+        required: false
+        type: string
+        default: ''
+      coverage-platform:
+        description: '由哪个平台的 job 上传覆盖率'
+        required: false
+        type: string
+        default: ''
+      codecov-slug:
+        description: 'Codecov 的 slug，留空则用当前仓库'
+        required: false
+        type: string
+        default: ''
+      fail-fast:
+        description: '任一 job 失败时是否取消其余 job'
+        required: false
+        type: boolean
+        default: false
+      timeout-minutes:
+        description: '单个测试 job 的超时（分钟）'
+        required: false
+        type: number
+        default: 30
+      setup-script:
+        description: '测试前执行的 bash（装 nats-server、起 redis 之类），可用 $RUNNER_OS 分平台。job 的 services 块不能由 input 动态生成，需要外部依赖的仓库走这里'
+        required: false
+        type: string
+        default: ''
+      post-test-script:
+        description: '主测试之后执行的 bash（跑子模块测试之类）'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML，go 节可写 app_id / app_private_key'
+        required: false
+      APP_ID:
+        required: false
+      APP_PRIVATE_KEY:
+        required: false
+      CODECOV_TOKEN:
+        description: '没配也不影响流水线，上传步骤自己跳过'
+        required: false
+
+jobs:
+  # 矩阵的值要在 strategy 层就拿到，而 GITHUB_ENV 是 job 内有效，
+  # 所以配置单独一个 job 解析出来、经 outputs 交给测试 job
+  # [EN] The matrix values are needed at the strategy level while GITHUB_ENV is job-scoped, so
+  # configuration is resolved in its own job and handed over through outputs
+  config:
+    name: ⚙️ Resolve Config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      go-versions: ${{ steps.out.outputs.go-versions }}
+      platforms: ${{ steps.out.outputs.platforms }}
+      coverage-go-version: ${{ steps.out.outputs.coverage-go-version }}
+      coverage-platform: ${{ steps.out.outputs.coverage-platform }}
+      codecov-slug: ${{ steps.out.outputs.codecov-slug }}
+      gotestsum-version: ${{ steps.out.outputs.gotestsum-version }}
+      test-flags: ${{ steps.out.outputs.test-flags }}
+      test-timeout: ${{ steps.out.outputs.test-timeout }}
+      build-tags: ${{ steps.out.outputs.build-tags }}
+      gofmt-check: ${{ steps.out.outputs.gofmt-check }}
+    steps:
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: golib
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      # 矩阵默认不需要配置：地板从调用方 go.mod 的 go 指令读，上限取 Go 官方当前发布的
+      # 最新两个小版本。于是 Go 发新版之后矩阵自己跟上，而不是等人去三十个仓库里改一遍
+      #
+      # 为什么地板必须来自 go.mod：低于它的版本会被 Go 的工具链切换静默顶上去，写进矩阵
+      # 只是自欺。显式配置仍然可以覆盖，但那时就得自己保证不低于地板
+      #
+      # [EN] The matrix needs no configuration: its floor is the go directive in the caller's
+      # go.mod and its ceiling is the two most recent minor releases Go currently publishes, so
+      # the matrix follows new Go releases by itself instead of waiting for thirty repositories
+      # to be edited. The floor has to come from go.mod because anything below it is silently
+      # replaced by toolchain switching, which makes such an entry a lie
+      - name: 🧮 Derive Go Version Matrix
+        id: matrix
+        shell: bash
+        env:
+          CONFIGURED: ${{ env.GOLIB_GO_VERSIONS }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re, sys, urllib.request
+
+          configured = (os.environ.get("CONFIGURED") or "").strip()
+          if configured:
+              print("go-versions=%s" % configured)
+              print("source=显式配置")
+              sys.exit(0)
+
+          # 地板：go.mod 的 go 指令，1.25.0 -> 1.25
+          floor = None
+          for line in open("go.mod", encoding="utf-8"):
+              m = re.match(r"\s*go\s+(\d+)\.(\d+)", line)
+              if m:
+                  floor = (int(m.group(1)), int(m.group(2)))
+                  break
+          if floor is None:
+              print("::error title=读不到 go 指令 | No go directive::go.mod 里找不到 go 指令",
+                    file=sys.stderr)
+              sys.exit(1)
+
+          # 上限：Go 官方当前 stable 的最新两个小版本
+          latest = []
+          try:
+              with urllib.request.urlopen("https://go.dev/dl/?mode=json", timeout=20) as fh:
+                  for rel in json.load(fh):
+                      m = re.match(r"go(\d+)\.(\d+)", rel.get("version", ""))
+                      if m and rel.get("stable"):
+                          mv = (int(m.group(1)), int(m.group(2)))
+                          if mv not in latest:
+                              latest.append(mv)
+              latest = sorted(latest, reverse=True)[:2]
+          except Exception as exc:
+              print("::warning title=取不到 Go 发布列表 | Release feed unreachable::"
+                    "%s，矩阵退化成只测 go.mod 的地板版本" % exc, file=sys.stderr)
+
+          versions = sorted({floor} | {v for v in latest if v >= floor})
+          out = ["%d.%d.x" % v for v in versions]
+          print("go-versions=%s" % json.dumps(out))
+          print("source=地板 %d.%d 来自 go.mod，上限取当前最新小版本" % floor)
+          PY
+
+      - name: 📤 Export For Matrix
+        id: out
+        shell: bash
+        env:
+          FALLBACK_SLUG: ${{ github.repository }}
+          GO_VERSIONS: ${{ steps.matrix.outputs.go-versions }}
+          MATRIX_SOURCE: ${{ steps.matrix.outputs.source }}
+        run: |
+          # 覆盖率由矩阵里最高的那个版本上传。不写死版本号：矩阵会随 Go 发新版自己上移，
+          # 一个写死的值早晚匹配不到任何 job，于是覆盖率静默停止上传而 CI 仍然全绿
+          # [EN] Coverage is uploaded by the highest version in the matrix rather than a pinned
+          # one: the matrix moves up with each Go release, and a pinned value would eventually
+          # match no job at all, silently ending coverage uploads while CI stayed green
+          COVERAGE_VERSION="${GOLIB_COVERAGE_GO_VERSION}"
+          if [ -z "$COVERAGE_VERSION" ]; then
+            COVERAGE_VERSION="$(printf '%s' "$GO_VERSIONS" | python3 -c 'import json,sys; print(json.load(sys.stdin)[-1])')"
+            echo "覆盖率上传由矩阵最高版承担：${COVERAGE_VERSION}"
+          fi
+
+          {
+            echo "go-versions=${GO_VERSIONS}"
+            echo "platforms=${GOLIB_PLATFORMS}"
+            echo "coverage-go-version=${COVERAGE_VERSION}"
+            echo "coverage-platform=${GOLIB_COVERAGE_PLATFORM}"
+            echo "codecov-slug=${GOLIB_CODECOV_SLUG:-$FALLBACK_SLUG}"
+            echo "gotestsum-version=${GOTESTSUM_VERSION}"
+            echo "test-flags=${GOLIB_TEST_FLAGS}"
+            echo "test-timeout=${GOLIB_TEST_TIMEOUT}"
+            echo "build-tags=${GOLIB_BUILD_TAGS}"
+            echo "gofmt-check=${GOLIB_GOFMT_CHECK}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "矩阵 ${GO_VERSIONS} × ${GOLIB_PLATFORMS}（${MATRIX_SOURCE}）"
+
+  test:
+    name: Go ${{ matrix.go-version }} / ${{ matrix.platform }}
+    needs: config
+    strategy:
+      fail-fast: ${{ inputs.fail-fast }}
+      matrix:
+        go-version: ${{ fromJSON(needs.config.outputs.go-versions) }}
+        platform: ${{ fromJSON(needs.config.outputs.platforms) }}
+        # 剔掉物理上跑不了的组合。实例：Go 1.21 产出的 Mach-O 不带 LC_UUID，
+        # 新版 macOS 的 dyld 拒绝加载，测试二进制一跑就 abort trap —— 与代码无关
+        # [EN] Drops combinations that cannot run at all. For instance Go 1.21 emits Mach-O
+        # binaries without an LC_UUID load command, which current macOS dyld refuses to load,
+        # so the test binary aborts regardless of the code
+        exclude: ${{ fromJSON(inputs.exclude) }}
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: ⚙️ Resolve Credentials
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          secret-sections: go
+          vars-json: ${{ toJSON(vars) }}
+          secrets-json: >-
+            {
+              "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }},
+              "APP_ID": ${{ toJSON(secrets.APP_ID) }},
+              "APP_PRIVATE_KEY": ${{ toJSON(secrets.APP_PRIVATE_KEY) }}
+            }
+
+      - name: 🔑 Generate GitHub App Token
+        id: app_token
+        if: env.APP_ID != '' && env.APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: ⚙️ Configure Git For Private Modules
+        if: steps.app_token.outputs.token != ''
+        env:
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${APP_TOKEN}@github.com/".insteadOf "https://github.com/"
+          if [ -n "${GOPRIVATE:-}" ]; then
+            echo "GOPRIVATE=${GOPRIVATE}" >> "$GITHUB_ENV"
+          fi
+
+      - name: 🛠️ Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      # 这一步是本文件存在的最大理由
+      #
+      # go.mod 写 `go 1.25.0` 时，矩阵里的 1.21.x / 1.22.x / 1.23.x / 1.24.x 会被 Go 的
+      # 工具链切换**静默**换成 1.25.0：setup-go 照样报「Successfully set up Go 1.21.x」，
+      # 日志下一行却是 `go: downloading go1.25.0`，于是 5 个 job 实测同一个版本，
+      # 对外宣称支持 1.21 完全是假的，还白烧 4 份 CI 时间
+      #
+      # 输出全程正确、没有任何报错，所以这种谎言只能靠显式比对才看得见
+      #
+      # [EN] The main reason this file exists. With `go 1.25.0` in go.mod, a matrix entry of
+      # 1.21.x is silently replaced by 1.25.0 through toolchain switching -- setup-go still
+      # reports success for 1.21.x while the next log line reads `go: downloading go1.25.0`.
+      # Five jobs then test one version and the advertised support is fiction. Nothing errors,
+      # so only an explicit comparison makes it visible
+      - name: 🔎 Verify Toolchain Honesty
+        env:
+          WANT: ${{ matrix.go-version }}
+        run: |
+          want_prefix="${WANT%.x}"
+          got="$(go version | awk '{print $3}')"
+          got="${got#go}"
+          echo "矩阵要求 ${WANT} | 实际运行 ${got}"
+          case "$got" in
+            "$want_prefix" | "$want_prefix".*)
+              echo "✅ 一致，这个 job 真的在测 ${WANT}"
+              ;;
+            *)
+              echo "::error title=矩阵在说谎 | Matrix is lying::矩阵声明 Go ${WANT}，但 go.mod 的 go 指令把实际工具链切到了 ${got}，这个 job 并没有测到 ${WANT}。请把矩阵里低于 go.mod 的版本删掉，或下调 go.mod 的 go 指令"
+              exit 1
+              ;;
+          esac
+
+      - name: ⚙️ Setup External Dependencies
+        if: inputs.setup-script != ''
+        run: ${{ inputs.setup-script }}
+
+      - name: 📦 Download Dependencies
+        run: go mod download
+
+      # 只在 Linux 上跑：gofmt 是源码的平台无关属性，四个平台各跑一遍只是四倍开销，
+      # 而在 Windows 上它还是**错的** —— checkout 会把换行转成 CRLF，于是 gofmt 把仓库里
+      # 每一个 .go 文件都判为未格式化，与源码实际状态无关
+      # [EN] Linux only: gofmt checks a platform-independent property of the source, so running
+      # it on four platforms costs four times as much for no extra signal -- and on Windows it is
+      # outright wrong, because checkout rewrites line endings to CRLF and gofmt then flags every
+      # file in the repository regardless of its actual state
+      - name: ✨ Format Check (gofmt)
+        if: needs.config.outputs.gofmt-check == 'true' && runner.os == 'Linux'
+        run: |
+          unformatted="$(gofmt -s -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error title=有文件没过 gofmt | Unformatted files::以下文件需要 gofmt -s -w"
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+          echo "✅ gofmt 干净"
+
+      # Build 与 Vet 单独成步、且先于测试：依赖改名之类的编译问题不必等测试跑完就暴露，
+      # 日志里也一眼看出是「编译坏了」还是「测试挂了」
+      # [EN] Build and Vet stand alone ahead of the tests so a compilation break from a renamed
+      # dependency surfaces at once, and the log distinguishes a broken build from a failing test
+      - name: 🔨 Build
+        env:
+          BUILD_TAGS: ${{ needs.config.outputs.build-tags }}
+        run: |
+          if [ -n "$BUILD_TAGS" ]; then
+            go build -tags="$BUILD_TAGS" ./...
+          else
+            go build ./...
+          fi
+
+      - name: 🔍 Vet
+        env:
+          BUILD_TAGS: ${{ needs.config.outputs.build-tags }}
+        run: |
+          if [ -n "$BUILD_TAGS" ]; then
+            go vet -tags="$BUILD_TAGS" ./...
+          else
+            go vet ./...
+          fi
+
+      - name: 📦 Install gotestsum
+        env:
+          GOTESTSUM_VERSION: ${{ needs.config.outputs.gotestsum-version }}
+        run: go install "gotest.tools/gotestsum@${GOTESTSUM_VERSION}"
+
+      # 绝不加 continue-on-error：这正是让两个仓库带着编译错误进 master 的那一行
+      # [EN] Never continue-on-error here; that single line is what let two repositories reach
+      # master with a compilation error
+      - name: 🧪 Test
+        env:
+          BUILD_TAGS: ${{ needs.config.outputs.build-tags }}
+          TEST_TARGET: ${{ inputs.test-target }}
+          TEST_FLAGS: ${{ needs.config.outputs.test-flags }}
+          TEST_TIMEOUT: ${{ needs.config.outputs.test-timeout }}
+        run: |
+          tags_flag=""
+          if [ -n "$BUILD_TAGS" ]; then
+            tags_flag="-tags=$BUILD_TAGS"
+          fi
+          gotestsum -f testname -- $tags_flag "$TEST_TARGET" $TEST_FLAGS \
+            -timeout="$TEST_TIMEOUT" -coverprofile=coverage.txt -covermode=atomic
+
+      - name: 🧩 Post-test Script
+        if: inputs.post-test-script != ''
+        run: ${{ inputs.post-test-script }}
+
+      # always()：测试红了覆盖率照样上传，方便对比是哪些用例掉了
+      # [EN] always() keeps the upload after a red test run, so it stays possible to see which
+      # cases dropped out
+      - name: 📤 Upload Coverage to Codecov
+        if: >-
+          always()
+          && matrix.go-version == needs.config.outputs.coverage-go-version
+          && matrix.platform == needs.config.outputs.coverage-platform
+          && hashFiles('coverage.txt') != ''
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.txt
+          flags: unittests
+          slug: ${{ needs.config.outputs.codecov-slug }}
+          fail_ci_if_error: false
+        continue-on-error: true

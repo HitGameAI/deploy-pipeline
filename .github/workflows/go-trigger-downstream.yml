@@ -1,0 +1,385 @@
+name: 🔄 Go Trigger Downstream
+
+# 上游发 tag 后，通知依赖它的下游仓库来升级
+#
+# 为什么要有这个文件：原先三十来个仓库各自手写一份，下游清单硬编码在各自的
+# strategy.matrix 里，于是那张图是手维护的，必然和真实依赖图脱节
+#
+# 实测过的脱节程度：
+#   有基础库真实下游十余个，实际只通知到其中一个
+#   有库的清单既漏掉了真实依赖者，又多出两个并不依赖它的，还有一个根本不存在的仓库名
+#
+# 漏掉的那些就一直停在旧版本上，直到某天被别的链路间接带起来、然后编译崩掉
+#
+# 现在默认**不需要任何配置**：清单直接从真实依赖图推导出谁直接 require 了本模块
+# vars 退化成覆盖手段，配了才用，而且配了之后仍会比对真实依赖图、缺漏就在 summary 点出来
+#
+# [EN] The upstream half of the release chain. The hand-written copies each hard-coded their
+# downstream list in a strategy matrix, so the graph was maintained by hand and had drifted
+# badly out of step with the real one -- one base library notified a single one of its dozen-odd
+# dependents, and another's list both omitted real dependents and named two repositories that do
+# not depend on it plus one that does not exist. The list now comes from variables, configurable
+# in bulk or per repository, and a drift check names any real dependent missing from it
+
+on:
+  workflow_call:
+    inputs:
+      downstream-repos:
+        description: '覆盖用：显式指定下游清单。留空是常态 —— 留空时从真实依赖图自动推导一级下游，不需要任何配置'
+        required: false
+        type: string
+        default: ''
+      exclude-repos-regex:
+        description: '自动推导时排除掉匹配的仓库。默认排除已部署服务与模板，只在库之间联动'
+        required: false
+        type: string
+        default: '^(.*-template$|deploy-pipeline$)'
+      version:
+        description: '要通知的版本；留空则用当前 tag 名'
+        required: false
+        type: string
+        default: ''
+      only-repos:
+        description: '手动触发时只通知清单里的这几个下游，格式与 downstream-repos 相同（JSON 数组、逗号或空白分隔，裸仓库名按当前 owner 补全）；留空则通知全部'
+        required: false
+        type: string
+        default: ''
+      create-tag:
+        description: '下游升完依赖后是否自动打 tag，从而把联动继续往下传'
+        required: false
+        type: boolean
+        default: false
+      skip-paths-regex:
+        description: '只动了这些路径就不通知下游；按 tag 之间的 diff 判断'
+        required: false
+        type: string
+        default: '(^docs/|\.md$)'
+    secrets:
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML，go 节可写 app_id / app_private_key / gpa_token'
+        required: false
+      APP_ID:
+        required: false
+      APP_PRIVATE_KEY:
+        required: false
+      GH_GPA_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: 🧮 Resolve Downstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      repos: ${{ steps.list.outputs.repos }}
+      count: ${{ steps.list.outputs.count }}
+      should-dispatch: ${{ steps.changes.outputs.should-dispatch }}
+      module: ${{ steps.module.outputs.path }}
+      version: ${{ steps.module.outputs.version }}
+    steps:
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: golib
+          secret-sections: go
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: >-
+            {
+              "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }},
+              "APP_ID": ${{ toJSON(secrets.APP_ID) }},
+              "APP_PRIVATE_KEY": ${{ toJSON(secrets.APP_PRIVATE_KEY) }},
+              "GH_GPA_TOKEN": ${{ toJSON(secrets.GH_GPA_TOKEN) }}
+            }
+
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: 🛠️ Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # 模块路径从 go.mod 读，不用 github.repository 拼：带 /vN 后缀的模块拼不对
+      # [EN] The module path is read from go.mod rather than assembled from the repository name,
+      # which would be wrong for a module carrying a /vN suffix
+      - name: 🏷️ Resolve Module and Version
+        id: module
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          path="$(go list -m)"
+          echo "path=${path}" >> "$GITHUB_OUTPUT"
+          version="${VERSION_INPUT:-${GITHUB_REF_NAME}}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "模块 ${path} 版本 ${version}"
+
+      - name: 🔍 Check Whether Tag Is Worth Dispatching
+        id: changes
+        env:
+          SKIP_RE: ${{ inputs.skip-paths-regex }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            echo "should-dispatch=true" >> "$GITHUB_OUTPUT"
+            echo "非 tag 推送触发，不做路径过滤"
+            exit 0
+          fi
+
+          current="${GITHUB_REF_NAME}"
+          previous="$(git tag --sort=-v:refname | grep -v "^${current}$" | head -n 1 || true)"
+          if [ -z "$previous" ]; then
+            echo "should-dispatch=true" >> "$GITHUB_OUTPUT"
+            echo "没有上一个 tag，照常通知"
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "${previous}..${current}")"
+          if [ -z "$changed" ]; then
+            echo "should-dispatch=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=无需通知 | Nothing to dispatch::${previous}..${current} 之间没有文件改动"
+            exit 0
+          fi
+
+          if printf '%s\n' "$changed" | grep -Ev "$SKIP_RE" >/dev/null; then
+            echo "should-dispatch=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should-dispatch=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=只动了文档 | Docs only::${previous}..${current} 只动了匹配 ${SKIP_RE} 的路径，不通知下游"
+          fi
+
+      # 下游清单的来源，按优先级：
+      #   1. inputs.downstream-repos / vars（分节总表、全局总表、单个变量）—— 覆盖用
+      #   2. 都没配时，从**真实依赖图**自动推导 —— 这是默认，不需要任何配置
+      #
+      # 为什么默认要自动推导：手维护的清单必然脱节，实测有基础库真实一级下游十来个却
+      # 只通知到其中一个。要人在三十来个仓库里逐个配变量，等于把同一个错误换个地方犯
+      #
+      # 推导规则是「谁的 go.mod 直接 require 了本模块」：
+      #   - 带 // indirect 的传递依赖不算，它们由自己的直接上游在各自那一跳通知到
+      #   - 注释掉的 replace 行不算
+      #   - 已归档的仓库不算
+      #   - 默认排除已部署服务与模板，只在库之间联动，由 exclude-repos-regex 控制
+      #
+      # [EN] The list comes from inputs or variables when set, and is otherwise derived from the
+      # real dependency graph, which is the default and needs no configuration at all. A
+      # hand-maintained list always drifts, and asking a person to set one variable per
+      # repository across thirty repositories just relocates the same mistake. A repository
+      # counts as a first-level dependent when its go.mod requires this module directly:
+      # transitive requirements marked // indirect are reached by their own direct upstream at
+      # that hop, commented-out replace lines do not count, archived repositories do not count,
+      # and deployed services and templates are excluded by default
+      - name: 📋 Resolve Downstream List
+        id: list
+        env:
+          GH_TOKEN: ${{ env.GH_GPA_TOKEN || github.token }}
+          CONFIGURED: ${{ env.GOLIB_DOWNSTREAM_REPOS }}
+          ONLY: ${{ inputs.only-repos }}
+          OWNER: ${{ github.repository_owner }}
+          MODULE: ${{ steps.module.outputs.path }}
+          EXCLUDE_RE: ${{ inputs.exclude-repos-regex }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re, subprocess, sys
+
+          owner  = os.environ["OWNER"]
+          module = os.environ["MODULE"]
+          me     = os.environ.get("GITHUB_REPOSITORY", "").lower()
+          excl   = re.compile(os.environ.get("EXCLUDE_RE") or r"(?!)")
+
+          def note(kind, title, msg):
+              print("::%s title=%s::%s" % (kind, title, msg), file=sys.stderr)
+
+          def gh(path, raw=False):
+              cmd = ["gh", "api", path, "--paginate"]
+              if raw:
+                  cmd = ["gh", "api", path, "-H", "Accept: application/vnd.github.raw"]
+              r = subprocess.run(cmd, capture_output=True, text=True)
+              return r.stdout if r.returncode == 0 else None
+
+          def parse_list(raw, label):
+              """JSON 数组、逗号、空白、换行都认，裸仓库名补当前 owner"""
+              raw = (raw or "").strip()
+              if not raw:
+                  return []
+              if raw.startswith("["):
+                  try:
+                      items = [str(x) for x in json.loads(raw)]
+                  except json.JSONDecodeError as exc:
+                      note("error", "%s 不是合法 JSON | Invalid JSON" % label, exc)
+                      raise SystemExit(1)
+              else:
+                  items = re.split(r"[,\s]+", raw)
+              out, seen = [], set()
+              for it in items:
+                  it = it.strip().strip("/")
+                  if not it:
+                      continue
+                  if "/" not in it:
+                      it = "%s/%s" % (owner, it)
+                  if it.lower() == me or it in seen:
+                      continue
+                  seen.add(it)
+                  out.append(it)
+              return out
+
+          def requires_directly(gomod, module):
+              """只认一级依赖：跳过注释行与 // indirect"""
+              pat = re.compile(r"(?:^|\s)" + re.escape(module) + r"\s+v[0-9]")
+              for line in gomod.splitlines():
+                  if line.strip().startswith("//") or "// indirect" in line:
+                      continue
+                  if pat.search(line):
+                      return True
+              return False
+
+          def derive():
+              listing = (gh("/users/%s/repos?per_page=100&type=owner" % owner)
+                         or gh("/orgs/%s/repos?per_page=100" % owner))
+              if not listing:
+                  note("error", "列不出仓库 | Cannot list repositories",
+                       "推导不出下游清单。要么给 vars 配 GOLIB_DOWNSTREAM_REPOS，"
+                       "要么提供一个能读仓库列表的凭证")
+                  raise SystemExit(1)
+              names = []
+              for chunk in re.findall(r"\[.*?\]\s*(?=\[|$)", listing, re.S) or [listing]:
+                  try:
+                      names += [r for r in json.loads(chunk)]
+                  except json.JSONDecodeError:
+                      pass
+              found = []
+              for repo in names:
+                  full = repo.get("full_name", "")
+                  if not full or full.lower() == me or repo.get("archived"):
+                      continue
+                  if excl.search(full.split("/", 1)[-1]):
+                      continue
+                  gomod = gh("/repos/%s/contents/go.mod" % full, raw=True)
+                  if gomod and requires_directly(gomod, module):
+                      found.append(full)
+              return sorted(found)
+
+          configured = parse_list(os.environ.get("CONFIGURED"), "下游清单")
+          if configured:
+              repos, source = configured, "显式配置"
+          else:
+              repos, source = derive(), "依赖图自动推导"
+
+          only = parse_list(os.environ.get("ONLY"), "only-repos")
+          if only:
+              wanted = set(only)
+              unknown = [r for r in only if r not in set(repos)]
+              if unknown:
+                  note("warning", "这些下游不在清单里 | Not in the list", " ".join(unknown))
+              repos = [r for r in repos if r in wanted]
+
+          print("repos=%s" % json.dumps(repos))
+          print("count=%d" % len(repos))
+          print("source=%s" % source)
+
+          lines = ["### 🔄 一级下游 | First-level downstreams", "",
+                   "- 模块：`%s`" % module,
+                   "- 来源：%s" % source,
+                   "- 共 %d 个" % len(repos)]
+          lines += ["  - `%s`" % r for r in repos] or ["  - （空）"]
+
+          # 显式配置时顺手比一比真实依赖图，缺漏就点出来
+          # [EN] When the list is explicit, compare it against the real graph and name the gaps
+          if configured:
+              real = derive()
+              missing = [r for r in real if r not in set(configured)]
+              extra   = [r for r in configured if r not in set(real)]
+              if missing:
+                  lines += ["", "- **缺漏 %d 个**，它们直接 require 了本模块但不在清单上：" % len(missing)]
+                  lines += ["  - `%s`" % r for r in missing]
+                  note("warning", "下游清单有缺漏 | List incomplete",
+                       "%s 直接依赖本模块但不在清单上。删掉 GOLIB_DOWNSTREAM_REPOS "
+                       "即可改回自动推导" % " ".join(missing))
+              if extra:
+                  lines += ["", "- 多出 %d 个，它们并不直接依赖本模块：" % len(extra)]
+                  lines += ["  - `%s`" % r for r in extra]
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(lines) + "\n")
+          PY
+
+      - name: 🚨 No Downstream Found
+        if: steps.list.outputs.count == '0' && steps.changes.outputs.should-dispatch == 'true'
+        run: |
+          echo "::warning title=没有下游 | No downstream::这次发版没有通知任何仓库。如果本模块确实还没有下游，这是正常的；否则检查 only-repos 是否把清单筛空了，或给 vars 配 GOLIB_DOWNSTREAM_REPOS"
+
+  dispatch:
+    name: 🔄 Notify ${{ matrix.repo }}
+    needs: resolve
+    if: needs.resolve.outputs.should-dispatch == 'true' && needs.resolve.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJSON(needs.resolve.outputs.repos) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: ⚙️ Resolve Credentials
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          secret-sections: go
+          vars-json: ${{ toJSON(vars) }}
+          secrets-json: >-
+            {
+              "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }},
+              "APP_ID": ${{ toJSON(secrets.APP_ID) }},
+              "APP_PRIVATE_KEY": ${{ toJSON(secrets.APP_PRIVATE_KEY) }},
+              "GH_GPA_TOKEN": ${{ toJSON(secrets.GH_GPA_TOKEN) }}
+            }
+
+      # 跨仓库 dispatch 用不了 GITHUB_TOKEN，它只对本仓库有效，所以这里必须有 App 或 PAT
+      # [EN] GITHUB_TOKEN is scoped to its own repository and cannot dispatch across repositories,
+      # so an App token or a PAT is required here
+      - name: 🔑 Generate GitHub App Token
+        id: app_token
+        if: env.APP_ID != '' && env.APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.repo }}
+
+      - name: 🧾 Require A Cross-repo Credential
+        env:
+          APP_TOKEN_SET: ${{ steps.app_token.outputs.token != '' }}
+        run: |
+          if [ "$APP_TOKEN_SET" = "true" ]; then
+            echo "::notice title=凭证 | Credential::GitHub App token"
+          elif [ -n "${GH_GPA_TOKEN:-}" ]; then
+            echo "::notice title=凭证 | Credential::PAT，建议迁到 GitHub App"
+          else
+            echo "::error title=没有跨仓库凭证 | No cross-repo credential::GITHUB_TOKEN 只对本仓库有效，发不出跨仓库 dispatch。请配 APP_ID 与 APP_PRIVATE_KEY，或退一步配 GH_GPA_TOKEN"
+            exit 1
+          fi
+
+      - name: 🔄 Dispatch to ${{ matrix.repo }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ steps.app_token.outputs.token || env.GH_GPA_TOKEN }}
+          repository: ${{ matrix.repo }}
+          event-type: upstream-updated
+          client-payload: >-
+            {
+              "module": "${{ needs.resolve.outputs.module }}",
+              "version": "${{ needs.resolve.outputs.version }}",
+              "sha": "${{ github.sha }}",
+              "create_tag": ${{ inputs.create-tag }},
+              "commit_message": "📦 deps: 同步上游依赖 ${{ needs.resolve.outputs.version }}\n\n- 📦 更新 ${{ needs.resolve.outputs.module }} 到 ${{ needs.resolve.outputs.version }} (go.mod, go.sum)\n- 🔄 由上游 ${{ github.repository }} 发版联动 (go-trigger-downstream.yml)\n\nsync upstream ${{ needs.resolve.outputs.version }}"
+            }

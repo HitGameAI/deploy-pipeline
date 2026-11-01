@@ -18,6 +18,34 @@ on:
       PIPELINE_SECRETS:
         description: '聚合密钥 YAML（notify.feishu_webhook_url / notify.wecom_* / notify.telegram_*）'
         required: false
+      # 这五个必须在这里显式声明，哪怕调用方用了 secrets: inherit
+      #
+      # inherit 让 secrets.FEISHU_WEBHOOK_URL 这样「按名字取」能拿到值，但
+      # toJSON(secrets) **只枚举本块声明过的键**，未声明的继承 secret 不会出现在里面
+      # resolve-config 走的正是 toJSON(secrets)，所以不声明就等于那条
+      # 「回退到同名单个 secret」的降级路径永远取不到值 —— 而 Notify 步骤的 if:
+      # 在取不到时静默跳过、job 照样绿，于是「配了飞书却收不到消息」且无任何报错
+      #
+      # [EN] These five must be declared here even when the caller passes secrets: inherit.
+      # inherit makes secrets.NAME resolvable, but toJSON(secrets) only enumerates the keys
+      # declared in this block, and resolve-config reads toJSON(secrets). Without the
+      # declaration the standalone-secret fallback can never see them, and the Notify step
+      # skips silently while the job stays green
+      FEISHU_WEBHOOK_URL:
+        description: '飞书通知 Webhook URL'
+        required: false
+      WECOM_WEBHOOK_URL:
+        description: '企业微信群机器人 Webhook URL（完整地址）'
+        required: false
+      WECOM_WEBHOOK_KEY:
+        description: '企业微信群机器人 Webhook key（仅存 key 时用，与 URL 二选一）'
+        required: false
+      TELEGRAM_BOT_TOKEN:
+        description: 'Telegram 通知 Bot Token'
+        required: false
+      TELEGRAM_CHAT_ID:
+        description: 'Telegram 通知 Chat ID'
+        required: false
 
 permissions:
   contents: read
@@ -37,7 +65,31 @@ jobs:
         uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
           secret-sections: notify
-          secrets-json: ${{ toJSON(secrets) }}
+          # vars 在可复用 workflow 里不需要调用方传递就能取到（与 secrets 不同），
+          # 带上它，notify 配置就也能走 vars.PIPELINE_CONFIG / vars.NOTIFY_CONFIG
+          # [EN] Unlike secrets, the vars context resolves without being passed, so
+          # passing it here lets the notify settings come from PIPELINE_CONFIG too
+          vars-json: ${{ toJSON(vars) }}
+          # 不能只用 toJSON(secrets)：调用方用 secrets: inherit 时它只枚举出
+          # github_token，继承来的键一个都不在里面（实测日志为证），而
+          # resolve-config 的「回退到同名单个 secret」正是从这份 JSON 里取值
+          # 按名字取 secrets.NAME 在 inherit 下是能拿到值的，所以这里逐个列名
+          # 拼 JSON —— 这样调用方无论用 inherit 还是显式映射都能工作，
+          # 不必让每个仓库各自改一遍
+          #
+          # [EN] toJSON(secrets) alone is not enough: under secrets: inherit it enumerates
+          # only github_token, while resolve-config reads this JSON for its standalone-secret
+          # fallback. Named lookups do resolve under inherit, so the JSON is assembled key by
+          # key, which makes both inherit and explicit mapping work without touching callers
+          secrets-json: >-
+            {
+            "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }},
+            "FEISHU_WEBHOOK_URL": ${{ toJSON(secrets.FEISHU_WEBHOOK_URL) }},
+            "WECOM_WEBHOOK_URL": ${{ toJSON(secrets.WECOM_WEBHOOK_URL) }},
+            "WECOM_WEBHOOK_KEY": ${{ toJSON(secrets.WECOM_WEBHOOK_KEY) }},
+            "TELEGRAM_BOT_TOKEN": ${{ toJSON(secrets.TELEGRAM_BOT_TOKEN) }},
+            "TELEGRAM_CHAT_ID": ${{ toJSON(secrets.TELEGRAM_CHAT_ID) }}
+            }
 
       # 与 pr-opened-notify 行为对齐：所选渠道的 webhook 未配置（调用方仓库无此 secret）时静默跳过，不红 job
       - name: 📢 Notify
@@ -52,3 +104,14 @@ jobs:
             分支：${{ github.event.pull_request.head.ref }} → ${{ github.event.pull_request.base.ref }}
             作者：@${{ github.event.pull_request.user.login }}　合并：@${{ github.actor }}
             ${{ github.event.pull_request.html_url }}
+
+      # 一个渠道都没解析到时留下可见痕迹：原先这里是纯静默跳过，job 照样绿，
+      # 于是「配了飞书却收不到」没有任何线索可查
+      # 用 warning 而不是 error，是因为「没配通知」本身是合法状态，不该让 job 变红
+      # [EN] Leave a visible trace when no channel resolved. This used to skip silently with a
+      # green job, which left no clue when a configured webhook failed to reach the action.
+      # A warning rather than an error, because having no notification channel is legitimate
+      - name: 🔇 No Channel Configured
+        if: ${{ env.FEISHU_WEBHOOK_URL == '' && env.WECOM_WEBHOOK_URL == '' && env.WECOM_WEBHOOK_KEY == '' && env.TELEGRAM_BOT_TOKEN == '' }}
+        run: |
+          echo "::warning title=通知未发送 | Notification skipped::一个通知渠道都没解析到，已跳过推送。请确认调用方仓库配了 FEISHU_WEBHOOK_URL（或 WECOM_* / TELEGRAM_*），或在 PIPELINE_SECRETS 的 notify 节里写了对应字段；并确认调用方传了 secrets: inherit"

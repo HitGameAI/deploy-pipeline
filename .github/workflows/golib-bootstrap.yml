@@ -1,0 +1,236 @@
+name: 🧰 Go Library Bootstrap
+
+# 给 Go 库仓库下发并体检这套流水线的接入状态
+#
+# 为什么要有这个文件：GitHub 的 Actions secret 没有「个人账号级」这一层，只有组织级与
+# 仓库级。本仓库在个人账号下，所以 App 凭证必须逐个仓库存一份 —— 而人手去三十个仓库里
+# 点三十遍，漏配是必然的，实测就有九个仓库引用了某个 secret 却从没配上，于是上下游联动
+# 悄悄降级：跨仓库 dispatch 直接失败，而 bump 回落到 GITHUB_TOKEN，用它推的提交不触发
+# 任何 workflow
+#
+# 这个 workflow 把那三十遍点击变成一次运行：凭证只在本仓库存一份，由它分发下去
+#
+# [EN] GitHub has no account-level Actions secrets, only organization and repository level, so
+# under a personal account the App credentials must be stored once per repository. Doing that
+# by hand across thirty repositories guarantees omissions -- nine of them referenced a secret
+# that had never been set, silently degrading the release chain. This workflow turns those
+# thirty visits into one run: the credentials live here once and are distributed from here
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '做什么：audit 只体检不改动 | secrets 下发 App 凭证 | workflows 给缺少的仓库补瘦入口 | all 全做'
+        required: false
+        type: choice
+        default: audit
+        options: [audit, secrets, workflows, all]
+      repos:
+        description: '只处理这几个仓库，逗号或空白分隔；留空则自动枚举本账号下所有带 go.mod 的库'
+        required: false
+        type: string
+        default: ''
+      exclude-repos-regex:
+        description: '自动枚举时排除掉匹配的仓库，默认排除已部署服务与模板'
+        required: false
+        type: string
+        default: '^(.*-template$|deploy-pipeline$)'
+      dry-run:
+        description: '只打印将要做什么，不真的写入。secrets 与 workflows 模式默认先空跑一遍'
+        required: false
+        type: boolean
+        default: true
+  schedule:
+    # 每周一体检一次，只报告不改动：接入状态会随新仓库出现而漂移
+    # [EN] A weekly read-only audit, because the picture drifts as repositories appear
+    - cron: '0 1 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    name: 🧰 ${{ inputs.mode || 'audit' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: ⚙️ Resolve Credentials
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          secret-sections: go
+          vars-json: ${{ toJSON(vars) }}
+          secrets-json: >-
+            {
+              "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }},
+              "APP_ID": ${{ toJSON(secrets.APP_ID) }},
+              "APP_PRIVATE_KEY": ${{ toJSON(secrets.APP_PRIVATE_KEY) }},
+              "GH_GPA_TOKEN": ${{ toJSON(secrets.GH_GPA_TOKEN) }}
+            }
+
+      # 这里要的权限比别处多：除了读仓库，还要能写别的仓库的 Actions secret
+      # 对应 App 权限项 Secrets: Read and write，以及 Contents: Read and write（补文件用）
+      # [EN] This job needs more than read access: it writes Actions secrets in other
+      # repositories, which maps to the App's Secrets: Read and write permission
+      - name: 🔑 Generate GitHub App Token
+        id: app_token
+        if: env.APP_ID != '' && env.APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 🧾 Require A Credential
+        env:
+          APP_TOKEN_SET: ${{ steps.app_token.outputs.token != '' }}
+        run: |
+          if [ "$APP_TOKEN_SET" = "true" ]; then
+            echo "::notice title=凭证 | Credential::GitHub App token"
+          elif [ -n "${GH_GPA_TOKEN:-}" ]; then
+            echo "::notice title=凭证 | Credential::PAT，建议迁到 GitHub App"
+          else
+            echo "::error title=没有凭证 | No credential::本仓库需要配 APP_ID 与 APP_PRIVATE_KEY（或退一步配 GH_GPA_TOKEN）才能枚举与写入其他仓库"
+            exit 1
+          fi
+
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: 🧰 Audit And Apply
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token || env.GH_GPA_TOKEN }}
+          MODE: ${{ inputs.mode || 'audit' }}
+          REPOS_IN: ${{ inputs.repos }}
+          EXCLUDE_RE: ${{ inputs.exclude-repos-regex }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          OWNER: ${{ github.repository_owner }}
+          APP_ID_VALUE: ${{ env.APP_ID }}
+          APP_KEY_VALUE: ${{ env.APP_PRIVATE_KEY }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, re, subprocess, sys
+
+          OWNER   = os.environ["OWNER"]
+          MODE    = os.environ["MODE"]
+          DRY     = (os.environ.get("DRY_RUN") or "true").lower() == "true"
+          EXCL    = re.compile(os.environ.get("EXCLUDE_RE") or r"(?!)")
+          WANTED  = [w for w in re.split(r"[,\s]+", os.environ.get("REPOS_IN") or "") if w]
+          SHARED  = "kamalyes/deploy-pipeline/.github/workflows/go-"
+          FILES   = ["test.yml", "bump-upstream.yml", "trigger-downstream.yml"]
+
+          def gh(args, text=True):
+              r = subprocess.run(["gh"] + args, capture_output=True, text=text)
+              return r.stdout if r.returncode == 0 else None
+
+          def api(path, raw=False, paginate=False):
+              a = ["api", path]
+              if raw:      a += ["-H", "Accept: application/vnd.github.raw"]
+              if paginate: a += ["--paginate"]
+              return gh(a)
+
+          # ---------- 枚举 ----------
+          if WANTED:
+              repos = [w if "/" in w else "%s/%s" % (OWNER, w) for w in WANTED]
+          else:
+              listing = api("/users/%s/repos?per_page=100&type=owner" % OWNER, paginate=True) \
+                     or api("/orgs/%s/repos?per_page=100" % OWNER, paginate=True)
+              if not listing:
+                  print("::error title=列不出仓库 | Cannot list repositories::凭证权限不足")
+                  sys.exit(1)
+              names = []
+              for chunk in re.findall(r"\[.*?\](?=\s*\[|\s*$)", listing, re.S) or [listing]:
+                  try: names += json.loads(chunk)
+                  except json.JSONDecodeError: pass
+              repos = []
+              for it in names:
+                  full = it.get("full_name", "")
+                  if not full or it.get("archived"):            continue
+                  if EXCL.search(full.split("/", 1)[-1]):       continue
+                  if api("/repos/%s/contents/go.mod" % full, raw=True) is None: continue
+                  repos.append(full)
+              repos.sort()
+
+          print("范围：%d 个仓库，模式 %s%s" % (len(repos), MODE, "（空跑）" if DRY else ""))
+
+          # ---------- 体检 ----------
+          rows, todo_secrets, todo_files = [], [], []
+          for full in repos:
+              have = {}
+              for f in FILES:
+                  body = api("/repos/%s/contents/.github/workflows/%s" % (full, f), raw=True)
+                  have[f] = "共用" if (body and SHARED in body) else ("自写" if body else "缺")
+              sec_raw = api("/repos/%s/actions/secrets?per_page=100" % full)
+              try:
+                  names = {s["name"] for s in json.loads(sec_raw)["secrets"]} if sec_raw else set()
+              except Exception:
+                  names = set()
+              app_ok = {"APP_ID", "APP_PRIVATE_KEY"} <= names
+              rows.append((full, have, app_ok, sorted(names)))
+              if not app_ok:
+                  todo_secrets.append(full)
+              todo_files += [(full, f) for f in FILES if have[f] == "缺"]
+
+          # ---------- 下发凭证 ----------
+          did_sec = []
+          if MODE in ("secrets", "all"):
+              for full in todo_secrets:
+                  if DRY:
+                      print("  [空跑] 将给 %s 写 APP_ID / APP_PRIVATE_KEY" % full); continue
+                  ok1 = gh(["secret", "set", "APP_ID", "--repo", full,
+                            "--body", os.environ["APP_ID_VALUE"]]) is not None
+                  p = "/tmp/_k.pem"
+                  open(p, "w").write(os.environ["APP_KEY_VALUE"])
+                  with open(p) as fh:
+                      r = subprocess.run(["gh", "secret", "set", "APP_PRIVATE_KEY",
+                                          "--repo", full], stdin=fh,
+                                         capture_output=True, text=True)
+                  os.remove(p)
+                  did_sec.append((full, ok1 and r.returncode == 0))
+                  print("  %s %s" % ("✅" if ok1 and r.returncode == 0 else "❌", full))
+
+          # ---------- 补瘦入口 ----------
+          did_files = []
+          if MODE in ("workflows", "all"):
+              for full, f in todo_files:
+                  tpl = "templates/golib/%s" % f
+                  if not os.path.isfile(tpl):
+                      continue
+                  if DRY:
+                      print("  [空跑] 将给 %s 补 %s" % (full, f)); continue
+                  content = base64.b64encode(open(tpl, "rb").read()).decode()
+                  payload = json.dumps({
+                      "message": "🔧 chore(ci): 接入共用 Go 流水线的 %s\n\n由 deploy-pipeline 的 golib-bootstrap 下发" % f,
+                      "content": content,
+                  })
+                  r = subprocess.run(["gh", "api", "--method", "PUT",
+                                      "/repos/%s/contents/.github/workflows/%s" % (full, f),
+                                      "--input", "-"],
+                                     input=payload, capture_output=True, text=True)
+                  did_files.append((full, f, r.returncode == 0))
+                  print("  %s %s / %s" % ("✅" if r.returncode == 0 else "❌", full, f))
+
+          # ---------- 报告 ----------
+          L = ["## 🧰 Go 库流水线接入体检", "",
+               "| 仓库 | test | bump-upstream | trigger-downstream | App 凭证 |",
+               "|---|---|---|---|---|"]
+          mark = {"共用": "✅", "自写": "⚠️ 自写", "缺": "❌ 缺"}
+          for full, have, app_ok, names in rows:
+              L.append("| `%s` | %s | %s | %s | %s |" % (
+                  full, mark[have["test.yml"]], mark[have["bump-upstream.yml"]],
+                  mark[have["trigger-downstream.yml"]], "✅" if app_ok else "❌ 未配"))
+          L += ["", "- 共 %d 个仓库" % len(rows),
+                "- 未配 App 凭证：%d 个" % len(todo_secrets),
+                "- 缺瘦入口文件：%d 处" % len(todo_files)]
+          if todo_secrets and MODE == "audit":
+              L += ["", "未配凭证的仓库在上下游联动上会**静默降级**：跨仓库 dispatch 直接失败，"
+                        "而 bump 会回落到 GITHUB_TOKEN，用它推的提交不触发任何 workflow",
+                        "", "用 mode=secrets 跑一次即可下发（先 dry-run 看清单）"]
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8").write("\n".join(L) + "\n")
+
+          if MODE == "audit" and todo_secrets:
+              print("::warning title=有仓库未配 App 凭证 | Missing credentials::%d 个：%s"
+                    % (len(todo_secrets), " ".join(todo_secrets)))
+          PY

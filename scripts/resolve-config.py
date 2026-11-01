@@ -328,10 +328,24 @@ def pick(section, path, spec, sources, repo_name):
     for name in listify(spec.get("input")):
         if name in sources["inputs"]:
             value = sources["inputs"][name]
-            # 沿用原先 ${{ inputs.x || vars.X || '默认' }} 的语义：空串与 false 都算「没传」
-            # [EN] Mirrors the original expression chain, where an empty string and false both
-            # mean "not provided"
-            if value not in (None, "", False):
+            # 沿用原先 ${{ inputs.x || vars.X || '默认' }} 的语义：空串算「没传」
+            #
+            # false 只在**非 bool 键**上算「没传」—— 那是为了兼容字符串形态的开关
+            # （调用方传 "" 表示不覆盖）。但 bool 键的 false 是真实取值：
+            # workflow_call 的 boolean input 在调用方省略时会取 default，
+            # 所以「省略」和「显式传 false」在 inputs 里长得一样是不可能的，
+            # 把 false 当没传的后果是**默认为 true 的开关永远关不掉**
+            #
+            # 实测过的后果：go-toolbox 的调用处明明写了 gofmt-check: false，
+            # 解析结果仍是 true，于是 gofmt 闸门照跑、CI 常红
+            # 受影响的键：golib.gofmt_check、golib.bump_run_tests、branch.clean_features
+            #
+            # [EN] An empty string still means "not provided", but false counts as a real value
+            # for bool-typed keys. A workflow_call boolean input falls back to its default when
+            # omitted, so treating false as unset makes any switch defaulting to true impossible
+            # to turn off -- measured: a caller passing gofmt-check: false still resolved to true
+            unset = (None, "") if spec.get("type") == "bool" else (None, "", False)
+            if value not in unset:
                 return scalar(value), "input:%s" % name
 
     for name in listify(spec.get("var")):

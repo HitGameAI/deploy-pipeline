@@ -37,6 +37,41 @@ on:
         required: false
         type: string
         default: 'feishu'
+    secrets:
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML（notify.* / branch.token），优先级高于下面的单个 secret'
+        required: false
+      # 这五个必须在这里显式声明，哪怕调用方用了 secrets: inherit
+      #
+      # inherit 让 secrets.FEISHU_WEBHOOK_URL 这样「按名字取」能拿到值，但
+      # toJSON(secrets) **只枚举本块声明过的键**，未声明的继承 secret 不会出现在里面
+      # resolve-config 走的正是 toJSON(secrets)，所以不声明就等于那条
+      # 「回退到同名单个 secret」的降级路径永远取不到值 —— 而 Notify 步骤的 if:
+      # 在取不到时静默跳过、job 照样绿，于是「配了飞书却收不到消息」且无任何报错
+      #
+      # [EN] These five must be declared here even when the caller passes secrets: inherit.
+      # inherit makes secrets.NAME resolvable, but toJSON(secrets) only enumerates the keys
+      # declared in this block, and resolve-config reads toJSON(secrets). Without the
+      # declaration the standalone-secret fallback can never see them, and the Notify step
+      # skips silently while the job stays green
+      FEISHU_WEBHOOK_URL:
+        description: '飞书通知 Webhook URL'
+        required: false
+      WECOM_WEBHOOK_URL:
+        description: '企业微信群机器人 Webhook URL（完整地址）'
+        required: false
+      WECOM_WEBHOOK_KEY:
+        description: '企业微信群机器人 Webhook key（仅存 key 时用，与 URL 二选一）'
+        required: false
+      TELEGRAM_BOT_TOKEN:
+        description: 'Telegram 通知 Bot Token'
+        required: false
+      TELEGRAM_CHAT_ID:
+        description: 'Telegram 通知 Chat ID'
+        required: false
+      BRANCH_OPS_TOKEN:
+        description: '跨仓库分支操作用的 token（需要 repo 权限；也可写进 PIPELINE_SECRETS 的 branch.token）'
+        required: false
   workflow_dispatch:
     inputs:
       repos:
@@ -82,7 +117,27 @@ jobs:
           secret-sections: branch notify
           vars-json: ${{ toJSON(vars) }}
           inputs-json: ${{ toJSON(inputs) }}
-          secrets-json: ${{ toJSON(secrets) }}
+          # 不能只用 toJSON(secrets)：调用方用 secrets: inherit 时它只枚举出
+          # github_token，继承来的键一个都不在里面（实测日志为证），而
+          # resolve-config 的「回退到同名单个 secret」正是从这份 JSON 里取值
+          # 按名字取 secrets.NAME 在 inherit 下是能拿到值的，所以这里逐个列名
+          # 拼 JSON —— 这样调用方无论用 inherit 还是显式映射都能工作，
+          # 不必让每个仓库各自改一遍
+          #
+          # [EN] toJSON(secrets) alone is not enough: under secrets: inherit it enumerates
+          # only github_token, while resolve-config reads this JSON for its standalone-secret
+          # fallback. Named lookups do resolve under inherit, so the JSON is assembled key by
+          # key, which makes both inherit and explicit mapping work without touching callers
+          secrets-json: >-
+            {
+            "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }},
+            "FEISHU_WEBHOOK_URL": ${{ toJSON(secrets.FEISHU_WEBHOOK_URL) }},
+            "WECOM_WEBHOOK_URL": ${{ toJSON(secrets.WECOM_WEBHOOK_URL) }},
+            "WECOM_WEBHOOK_KEY": ${{ toJSON(secrets.WECOM_WEBHOOK_KEY) }},
+            "TELEGRAM_BOT_TOKEN": ${{ toJSON(secrets.TELEGRAM_BOT_TOKEN) }},
+            "TELEGRAM_CHAT_ID": ${{ toJSON(secrets.TELEGRAM_CHAT_ID) }},
+            "BRANCH_OPS_TOKEN": ${{ toJSON(secrets.BRANCH_OPS_TOKEN) }}
+            }
           defaults: |
             NOTIFICATION_PROVIDER=feishu
 

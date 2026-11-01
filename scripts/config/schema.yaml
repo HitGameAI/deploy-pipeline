@@ -475,6 +475,116 @@ sections:
         type: string
         default: '--best --lzma'
 
+  # -------------------- go-* 公共库 | Shared go-* libraries --------------------
+  # 这一节服务 go-library-test / go-bump-upstream / go-trigger-downstream 三个 workflow
+  #
+  # 取值走与其他节相同的五层优先级：分节 YAML > 总表 YAML > input > 单个 vars > 默认值
+  # 所以同一项既可以用 vars.PIPELINE_CONFIG 一份总表批量配下来，也可以在某个仓库
+  # 用单个 vars 覆盖掉，不必二选一
+  #
+  # 这里放的都不是密钥：下游仓库名在每个 public 仓库的 go.mod 里本来就是公开的，
+  # 版本号与测试参数更谈不上敏感。凭证一律走 secret_sections 的 go 节
+  # [EN] Shared by the three go-* library workflows. Values resolve through the same five
+  # layers as every other section, so one aggregate document can configure them all while a
+  # single repository variable still overrides it. Nothing here is a credential: downstream
+  # repository names are already public in each module's go.mod, and versions and test flags
+  # are not sensitive. Credentials go through the go section under secret_sections
+  golib:
+    desc: 'go-* 公共库的测试与上下游联动 | Test matrix and release chain for the go-* libraries'
+    keys:
+      go_versions:
+        env: GOLIB_GO_VERSIONS
+        input: go-versions
+        var: [GOLIB_GO_VERSIONS, GO_VERSIONS]
+        type: string
+        default: ''
+        desc: >-
+          JSON 数组，留空是常态。默认必须留空：工作流靠「这一项为空」来判断要不要从调用方
+          go.mod 推导矩阵，这里一旦填上静态默认值，推导分支就永远走不到 ——
+          实际发生过：默认值写成 ["1.25.x","1.26.x","1.27.x"] 时，地板是 1.26 的仓库拿到了
+          1.25.x（被工具链闸门当场判红），而地板是 1.21 / 1.23 的仓库则悄悄不再测自己的地板
+          填值只用于覆盖推导结果，且每一项都必须 >= 本仓库 go.mod 的 go 指令
+      platforms:
+        env: GOLIB_PLATFORMS
+        input: platforms
+        var: [GOLIB_PLATFORMS, PLATFORMS]
+        type: string
+        default: '["ubuntu-latest"]'
+        desc: 'JSON 数组，运行矩阵的平台'
+      gofmt_check:
+        env: GOLIB_GOFMT_CHECK
+        input: gofmt-check
+        var: GOLIB_GOFMT_CHECK
+        type: bool
+        default: 'true'
+        desc: '是否把 gofmt 当闸门；仓库还有存量未格式化文件时先关掉，并把欠账写在调用处'
+      build_tags:
+        env: GOLIB_BUILD_TAGS
+        input: build-tags
+        var: GOLIB_BUILD_TAGS
+        type: string
+        default: ''
+        desc: 'build tag，留空则不传 -tags'
+      test_flags:
+        env: GOLIB_TEST_FLAGS
+        input: test-flags
+        var: GOLIB_TEST_FLAGS
+        type: string
+        default: '-race -count=1 -shuffle=on'
+      test_timeout:
+        env: GOLIB_TEST_TIMEOUT
+        input: test-timeout
+        var: GOLIB_TEST_TIMEOUT
+        type: string
+        default: '10m'
+      gotestsum_version:
+        env: GOTESTSUM_VERSION
+        input: gotestsum-version
+        var: GOTESTSUM_VERSION
+        type: string
+        default: 'v1.13.0'
+      coverage_go_version:
+        env: GOLIB_COVERAGE_GO_VERSION
+        input: coverage-go-version
+        var: GOLIB_COVERAGE_GO_VERSION
+        type: string
+        default: ''
+        desc: '由哪个 Go 版本的 job 上传覆盖率；留空则取矩阵里最高的那个。不要写死某个版本号——矩阵会随 Go 发新版自己上移，写死的值早晚匹配不到，覆盖率会静默不再上传'
+      coverage_platform:
+        env: GOLIB_COVERAGE_PLATFORM
+        input: coverage-platform
+        var: GOLIB_COVERAGE_PLATFORM
+        type: string
+        default: 'ubuntu-latest'
+      codecov_slug:
+        env: GOLIB_CODECOV_SLUG
+        input: codecov-slug
+        var: GOLIB_CODECOV_SLUG
+        type: string
+        default: ''
+        desc: '留空则由 workflow 回落到 github.repository；注意 schema 的 {repo} 只展开仓库名，不含 owner，而 Codecov 要的是 owner/repo'
+      downstream_repos:
+        env: GOLIB_DOWNSTREAM_REPOS
+        input: downstream-repos
+        var: [GOLIB_DOWNSTREAM_REPOS, DOWNSTREAM_REPOS]
+        type: string
+        default: ''
+        desc: '下游仓库清单，owner/repo；接受 JSON 数组、逗号分隔或空白分隔，裸仓库名按当前 owner 补全'
+      downstream_create_tag:
+        env: GOLIB_DOWNSTREAM_CREATE_TAG
+        input: downstream-create-tag
+        var: GOLIB_DOWNSTREAM_CREATE_TAG
+        type: bool
+        default: 'false'
+        desc: '下游升完依赖后是否自动打 tag，从而把联动继续传下去'
+      bump_run_tests:
+        env: GOLIB_BUMP_RUN_TESTS
+        input: run-tests
+        var: GOLIB_BUMP_RUN_TESTS
+        type: bool
+        default: 'true'
+        desc: 'bump 推送前是否跑测试；build 与 vet 两道闸门关不掉'
+
   # -------------------- 清理 | Cleanup --------------------
   cleanup:
     desc: 'artifacts / cache / 镜像清理 | Artifact, cache and image cleanup'
@@ -762,6 +872,21 @@ secret_sections:
         secret: GIT_SSH_PRIVATE_KEY
         type: secret
         default: ''
+      # 上下游联动用的回退凭证：App 凭证缺失时才用它
+      #
+      # 为什么要往 App 迁：PAT 得在每个仓库单独配，三十来个仓库里漏配的不在少数，
+      # 而旧 bump 写的是 `GH_GPA_TOKEN || github.token`，于是在漏配的仓库悄悄回落到
+      # GITHUB_TOKEN —— 用它推的提交不会触发任何 workflow，bump 落了地 CI 根本不跑
+      # [EN] The fallback credential for the release chain, used only when App credentials are
+      # absent. A PAT must be configured per repository and was missing from a good number of
+      # them, where the old workflow fell back to GITHUB_TOKEN -- and a push made with that
+      # token triggers no workflow at all
+      gpa_token:
+        env: GH_GPA_TOKEN
+        secret: GH_GPA_TOKEN
+        type: secret
+        default: ''
+        desc: '上下游 dispatch 与推送的回退 PAT，优先级低于 App 凭证'
   branch:
     desc: '跨仓库批量操作凭证 | Cross-repository batch credentials'
     keys:
