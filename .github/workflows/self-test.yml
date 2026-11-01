@@ -1,0 +1,116 @@
+name: 🔬 Self Test
+
+# 这个仓库原先是唯一没有自己 CI 的那个 —— 它被二三十个仓库 uses: 引用，
+# 改坏了却要等某个下游仓库的流水线红了才知道，而那时现场已经在别人家
+#
+# docs/11-self-check.md 曾经是一张手工打勾的清单，勾是人填的、没人回去重跑，
+# 于是「每个 workflow 用到的 env 都由它请求的节导出」这种条目一直是 ✅ 而从未验证
+# 这条流水线把那些条目变成真跑的断言
+#
+# [EN] This repository used to be the only one without CI of its own, while two or three dozen
+# others reference it through uses:, so a break here surfaced as a red pipeline in someone
+# else's repository. The self-check list was ticked by hand and never re-run, which left
+# entries such as "every env the workflows use is exported by the sections they request"
+# permanently green without ever being verified. This pipeline turns them into real assertions
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 语法与表达式：未声明的 inputs.xxx 会求值成空串而不报错，
+  # 实测两处就是这么静默坏掉的（job 的 environment 没生效、产物保留天数回落成仓库默认）
+  # 所以这一步必须是硬闸门，不挂 continue-on-error
+  #
+  # [EN] Syntax and expressions: an undeclared input evaluates to an empty string instead of
+  # failing, which is exactly how two references here broke in silence. This gate therefore
+  # carries no continue-on-error
+  actionlint:
+    name: 🔎 Actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: 🔎 Lint Workflows
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
+
+  # shell 脚本：scripts/ 下的东西被各工作流直接 source 或执行，
+  # 这里的未引用变量与错误的测试写法同样不会在运行时报错，只会给出错的结果
+  # [EN] Shell scripts under scripts/ are sourced or executed by the workflows, where an
+  # unquoted variable or a wrong test form yields a wrong answer rather than an error
+  shellcheck:
+    name: 🐚 Shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: 🐚 Check Scripts
+        run: |
+          mapfile -t files < <(find scripts -name '*.sh' -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::warning title=没有脚本 | No scripts::scripts 下没有 .sh 文件"
+            exit 0
+          fi
+          printf '待检查 %d 个脚本\n' "${#files[@]}"
+          shellcheck --severity=warning "${files[@]}"
+          echo "✅ shellcheck 干净"
+
+  # 配置表与文档：断言内容见 scripts/self-test.py
+  config-and-docs:
+    name: ⚙️ Config And Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # resolve-config.py 与 self-test.py 都要 PyYAML
+      # runner 自带的 python 不一定有它，装一次比假设它在更可靠
+      # [EN] Both scripts need PyYAML, and the runner's interpreter does not always carry it,
+      # so installing it once is more reliable than assuming it is there
+      - name: 📦 Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: 🔬 Run Self Test
+        run: python3 scripts/self-test.py
+
+  # Python 语法：两个脚本都是在 runner 上现跑的，语法错会在流水线中途才炸
+  # [EN] Both scripts run on the runner, where a syntax error only surfaces mid-pipeline
+  python-syntax:
+    name: 🐍 Python Syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 🐍 Compile All Scripts
+        run: |
+          mapfile -t files < <(find scripts -name '*.py' -type f | sort)
+          printf '待编译 %d 个脚本\n' "${#files[@]}"
+          python3 -m py_compile "${files[@]}"
+          echo "✅ 全部能编译"
