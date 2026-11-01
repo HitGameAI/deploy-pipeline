@@ -306,6 +306,7 @@ Downstream](02-workflows.md) 三条工作流共用
 | `golib.coverage_platform` | `GOLIB_COVERAGE_PLATFORM` | `coverage-platform` | `GOLIB_COVERAGE_PLATFORM` | string | `ubuntu-latest` |
 | `golib.codecov_slug` | `GOLIB_CODECOV_SLUG` | `codecov-slug` | `GOLIB_CODECOV_SLUG` | string | `''` |
 | `golib.downstream_repos` | `GOLIB_DOWNSTREAM_REPOS` | `downstream-repos` | `GOLIB_DOWNSTREAM_REPOS` / `DOWNSTREAM_REPOS` | string | `''` |
+| `golib.exclude_repos_regex` | `GOLIB_EXCLUDE_REPOS_REGEX` | `exclude-repos-regex` | `GOLIB_EXCLUDE_REPOS_REGEX` | string | `^(.*-template$\|deploy-pipeline$)` |
 | `golib.downstream_create_tag` | `GOLIB_DOWNSTREAM_CREATE_TAG` | `downstream-create-tag` | `GOLIB_DOWNSTREAM_CREATE_TAG` | bool | `false` |
 | `golib.bump_run_tests` | `GOLIB_BUMP_RUN_TESTS` | `run-tests` | `GOLIB_BUMP_RUN_TESTS` | bool | `true` |
 
@@ -325,6 +326,11 @@ Downstream](02-workflows.md) 三条工作流共用
 `codecov_slug` 留空由工作流回落到 `github.repository`
 注意 schema 的 `{repo}` 只展开仓库名、不含 owner，而 Codecov 要的是 `owner/repo`，
 所以这一项不能用 `{repo}` 占位
+
+`exclude_repos_regex` 的默认值只排除模板与 pipeline 自身，这是对任何账号都成立的通用规则
+**组织内部那些「已部署服务」的清单不要写进共用流水线的默认值** —— 那会把服务名固化进一份
+公开资产，而这些名字对别的账号毫无意义
+要排除就配成一个组织级变量，一个变量管住全部仓库
 
 `downstream_repos` 留空走真实依赖图自动推导，这是默认也是推荐做法
 填了之后流水线仍会比对推导结果，缺漏的在 job summary 里点出来并发 warning

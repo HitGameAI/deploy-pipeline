@@ -34,6 +34,15 @@ on:
         description: '自动枚举时排除掉匹配的仓库，默认排除已部署服务与模板'
         required: false
         type: string
+        # 默认只排除模板与本仓库自身，这是对任何账号都成立的通用规则
+        # 组织内部那些「已部署服务」的清单不写进这里：它会把服务名固化到一份公开的共用流水线里，
+        # 而这些名字对别的账号毫无意义
+        # 要排除就在调用方配 vars 的 golib.exclude_repos_regex，一个组织级变量管住全部仓库
+        #
+        # [EN] The default excludes templates and this repository only, which holds for any account.
+        # A list of deployed service names does not belong in a shared pipeline that is public, and such
+        # names mean nothing to another account. Set golib.exclude_repos_regex in the caller's variables
+        # instead, where one organization-level variable covers every repository
         default: '^(.*-template$|deploy-pipeline$)'
       dry-run:
         description: '只打印将要做什么，不真的写入。secrets 与 workflows 模式默认先空跑一遍'

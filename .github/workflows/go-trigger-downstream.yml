@@ -33,6 +33,15 @@ on:
         description: '自动推导时排除掉匹配的仓库。默认排除已部署服务与模板，只在库之间联动'
         required: false
         type: string
+        # 默认只排除模板与本仓库自身，这是对任何账号都成立的通用规则
+        # 组织内部那些「已部署服务」的清单不写进这里：它会把服务名固化到一份公开的共用流水线里，
+        # 而这些名字对别的账号毫无意义
+        # 要排除就在调用方配 vars 的 golib.exclude_repos_regex，一个组织级变量管住全部仓库
+        #
+        # [EN] The default excludes templates and this repository only, which holds for any account.
+        # A list of deployed service names does not belong in a shared pipeline that is public, and such
+        # names mean nothing to another account. Set golib.exclude_repos_regex in the caller's variables
+        # instead, where one organization-level variable covers every repository
         default: '^(.*-template$|deploy-pipeline$)'
       version:
         description: '要通知的版本；留空则用当前 tag 名'
@@ -185,7 +194,9 @@ jobs:
           ONLY: ${{ inputs.only-repos }}
           OWNER: ${{ github.repository_owner }}
           MODULE: ${{ steps.module.outputs.path }}
-          EXCLUDE_RE: ${{ inputs.exclude-repos-regex }}
+          # 读解析后的值而不是 inputs：这样它既能从 input 传，也能来自调用方的 vars
+          # [EN] Reading the resolved value rather than the input lets it come from variables too
+          EXCLUDE_RE: ${{ env.GOLIB_EXCLUDE_REPOS_REGEX }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os, re, subprocess, sys

@@ -570,6 +570,18 @@ sections:
         type: string
         default: ''
         desc: '下游仓库清单，owner/repo；接受 JSON 数组、逗号分隔或空白分隔，裸仓库名按当前 owner 补全'
+      exclude_repos_regex:
+        env: GOLIB_EXCLUDE_REPOS_REGEX
+        input: exclude-repos-regex
+        var: GOLIB_EXCLUDE_REPOS_REGEX
+        type: string
+        default: '^(.*-template$|deploy-pipeline$)'
+        desc: >-
+          自动推导下游时排除掉匹配的仓库
+          默认只排除模板与本仓库自身，这是对任何账号都成立的通用规则
+          组织内部「已部署服务」的清单不要写进共用流水线的默认值 ——
+          那会把服务名固化进一份公开资产，而这些名字对别的账号毫无意义
+          配成一个组织级变量即可管住全部仓库
       downstream_create_tag:
         env: GOLIB_DOWNSTREAM_CREATE_TAG
         input: downstream-create-tag
