@@ -58,6 +58,7 @@
 | 09 | [Composite Actions](docs/09-composite-actions.md) | 7 个复合 Action 的入参与出参 |
 | 10 | [公共脚本](docs/10-scripts.md) | `scripts/` 下每个脚本的用法 |
 | 11 | [自测清单](docs/11-self-check.md) | 改完之后怎么验 |
+| 12 | [依赖层级](docs/12-dependency-graph.md) | 65 个仓库的真实依赖图、影响面与发版顺序 |
 
 ---
 
