@@ -168,7 +168,6 @@ jobs:
           BUILD_APP_NAME="${{ inputs.binary-name }}"
           DOCKER_RUN_WORKDIR="${{ env.DOCKER_RUN_WORKDIR }}"
           BASE_IMAGE="${{ env.BASE_IMAGE }}"
-          TIMEZONE="${{ env.TIMEZONE }}"
           BUILD_OS="${{ env.BUILD_DOCKER_OS }}"
           BUILD_ARCH="${{ env.BUILD_DOCKER_ARCH }}"
 
@@ -335,6 +334,13 @@ jobs:
         if: ${{ always() }}
         run: |
           # 二进制大小
+          # shellcheck disable=SC2012
+          # SC2012 担心的是文件名里有特殊字符时 ls 的输出不好解析，而这里的路径是
+          # 本次构建自己产出的二进制、且已经加了引号，取的又只是 awk 的第 5 列（大小）
+          # 换成 find 要多一层 -printf 或 stat 的平台差异，不值得
+          # [EN] SC2012 warns about parsing ls output for awkward filenames, but this path is a
+          # binary this build just produced and is already quoted, and only the size column is
+          # read. Switching to find would buy platform differences in -printf or stat instead
           BIN_SIZE=$(ls -lh "${{ inputs.binary-source-dir }}/${{ inputs.binary-name }}" 2>/dev/null | awk '{print $5}')
           [ -z "$BIN_SIZE" ] && BIN_SIZE="-"
 

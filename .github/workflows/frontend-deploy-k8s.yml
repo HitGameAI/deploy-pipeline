@@ -436,7 +436,7 @@ jobs:
           echo "============================================="
           echo "资源清单内容:"
           echo "============================================="
-          for file in ${DEPLOY_DIR}/*.yaml; do
+          for file in "${DEPLOY_DIR}"/*.yaml; do
             echo ""
             echo "--- $(basename "$file") ---"
             if [ "$(basename "$file")" = "configmap.yaml" ]; then
@@ -519,7 +519,7 @@ jobs:
 
             # 只检查新 ReplicaSet 的 Pod，忽略正在终止的旧 Pod
             if [ -n "$NEW_RS_HASH" ]; then
-              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH} \
+              PROBLEM_PODS=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l "app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH}" \
                 -o json | jq -r '.items[] | select(
                   (.status.containerStatuses[]?.restartCount // 0) > 3 or
                   (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
@@ -536,7 +536,7 @@ jobs:
               echo "警告: 新 ReplicaSet 中发现问题 Pod"
               for pod in $PROBLEM_PODS; do
                 echo "--- Pod: $pod ---"
-                kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=30 2>&1 || true
+                kubectl logs "$pod" -n "${{ env.NAMESPACE }}" --tail=30 2>&1 || true
               done
             fi
 

@@ -91,6 +91,11 @@ jobs:
           cd _deploy-workflows
           mkdir -p out
 
+          # shellcheck disable=SC2086
+          # SECTIONS 是空格分隔的节名清单，必须让 shell 拆成多个参数
+          # 加引号会把 "ports docker kube" 当成一个节名传进去，直接报未知配置节
+          # [EN] SECTIONS is a space-separated list of section names and has to word-split;
+          # quoting it would pass the whole list as one name and be rejected as unknown
           python3 scripts/resolve-config.py --print-example ${SECTIONS} > out/pipeline-config.yaml
           python3 scripts/resolve-config.py --print-example --secrets > out/pipeline-secrets.yaml
 

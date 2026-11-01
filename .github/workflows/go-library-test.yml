@@ -400,6 +400,13 @@ jobs:
           if [ -n "$BUILD_TAGS" ]; then
             tags_flag="-tags=$BUILD_TAGS"
           fi
+          # shellcheck disable=SC2086
+          # tags_flag 与 TEST_FLAGS 必须不加引号：前者为空时要整个消失，
+          # 后者形如 -race -count=1 -shuffle=on，加引号会被当成单个参数
+          # TEST_TARGET 反过来要加引号，它是单个路径
+          # [EN] tags_flag and TEST_FLAGS must stay unquoted, the first so it vanishes when
+          # empty and the second because it is several arguments; TEST_TARGET is quoted, being
+          # a single path
           gotestsum -f testname -- $tags_flag "$TEST_TARGET" $TEST_FLAGS \
             -timeout="$TEST_TIMEOUT" -coverprofile=coverage.txt -covermode=atomic
 

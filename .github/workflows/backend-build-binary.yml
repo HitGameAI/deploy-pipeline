@@ -268,7 +268,7 @@ jobs:
         # 两个文件取同一个目录，公共祖先与改动前完全一致，二进制位置不受影响
         run: |
           BINARY_DIR="$(dirname "${{ inputs.binary-output }}")"
-          echo "buildinfo=${BINARY_DIR}/buildinfo.txt" >> $GITHUB_OUTPUT
+          echo "buildinfo=${BINARY_DIR}/buildinfo.txt" >> "$GITHUB_OUTPUT"
 
       - name: 📤 Upload Binary
         uses: actions/upload-artifact@v4

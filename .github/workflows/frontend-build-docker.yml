@@ -180,7 +180,6 @@ jobs:
           BUILD_OUTPUT_DIR="${{ inputs.build-output-dir }}"
           APP_NAME="${{ inputs.app-name }}"
           BASE_IMAGE="${{ inputs.base-image }}"
-          TIMEZONE="${{ env.TIMEZONE }}"
           HTTP_PORT="${{ env.HTTP_PORT }}"
           NGINX_CONFIG_PATH="${{ inputs.nginx-config-path }}"
 

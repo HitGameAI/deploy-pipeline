@@ -221,6 +221,11 @@ jobs:
           if [ -n "${GOLIB_BUILD_TAGS}" ]; then
             tags_flag="-tags=${GOLIB_BUILD_TAGS}"
           fi
+          # shellcheck disable=SC2086
+          # 这两个必须不加引号：tags_flag 为空时要整个消失，GOLIB_TEST_FLAGS 形如
+          # -race -count=1 -shuffle=on，加引号会被当成单个参数传给 go test 并报错
+          # [EN] Both must stay unquoted: tags_flag has to vanish entirely when empty, and the
+          # test flags are several arguments that quoting would collapse into one
           gotestsum -f testname -- $tags_flag ./... ${GOLIB_TEST_FLAGS} -timeout="${GOLIB_TEST_TIMEOUT}"
 
       - name: 🧮 Collect Gate Verdict
@@ -293,6 +298,13 @@ jobs:
                      -m "- ⚠️ 未通过的闸门：${FAILED}，故未推默认分支 (go-bump-upstream.yml)"
           git push --force-with-lease origin "$branch"
 
+          # shellcheck disable=SC2016
+          # 下面整组 printf 的格式串都必须用单引号：%s 要留给 printf 替换，
+          # \n 要保持转义，反引号是写进 PR 正文的 markdown 代码标记，不能被 shell 展开
+          # 指令放在 { 之前，覆盖整个复合组
+          # [EN] Every printf format in this group must stay single-quoted: %s is printf's to
+          # substitute, \n must stay escaped, and the backticks are markdown going into the
+          # pull request body. The directive precedes the brace so it covers the whole group
           {
             printf '上游 `%s` 发布了 `%s`，自动升级后**未通过闸门**，所以没有推到默认分支\n\n' "$MODULE" "$VERSION"
             printf -- '- 未通过的闸门：`%s`\n' "$FAILED"

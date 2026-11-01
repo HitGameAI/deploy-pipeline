@@ -353,6 +353,18 @@ jobs:
       - name: 📝 Generate K8s Manifests
         id: manifests
         run: |
+          # 下面用 printf 拼 YAML 片段的那些赋值拆成两行
+          #
+          # 不是因为 printf 会失败（它不会），而是 shellcheck 的 SC2155 在 actionlint 的
+          # 调用下只对紧随其后的一条命令生效、不是文件级，要压掉就得写十七个 disable 注释，
+          # 那比拆开更难读
+          # 只拆带命令替换的那些，export VAR="字面量" 一律不动
+          #
+          # [EN] The printf-built assignments below are split in two. Not because printf can
+          # fail, which it cannot, but because under actionlint a shellcheck directive applies
+          # only to the command that follows rather than the whole script, so suppressing these
+          # would take seventeen separate comments, which reads worse. Only assignments with a
+          # command substitution are touched; a plain literal is left alone
           echo "Generating Kubernetes manifests for: ${{ inputs.binary-name }}"
           echo "  Namespace: ${{ env.NAMESPACE }}"
           echo "  Image: ${{ steps.image-name.outputs.image-name }}"
@@ -371,8 +383,10 @@ jobs:
 
           # HTTP 端口可选：部分服务（如纯 WS/gRPC 服务）无 HTTP 端口，设为空/0/none 则跳过
           if [ -n "${{ env.HTTP_PORT }}" ] && [ "${{ env.HTTP_PORT }}" != "0" ] && [ "${{ env.HTTP_PORT }}" != "none" ]; then
-            export DEPLOY_HTTP_PORT_BLOCK=$(printf '        - name: http\n          containerPort: %s\n          protocol: TCP\n' "${{ env.HTTP_PORT }}")
-            export SVC_HTTP_PORT_BLOCK=$(printf '    - name: http\n      port: %s\n      protocol: TCP\n      targetPort: http\n' "${{ env.HTTP_PORT }}")
+            export DEPLOY_HTTP_PORT_BLOCK
+            DEPLOY_HTTP_PORT_BLOCK=$(printf '        - name: http\n          containerPort: %s\n          protocol: TCP\n' "${{ env.HTTP_PORT }}")
+            export SVC_HTTP_PORT_BLOCK
+            SVC_HTTP_PORT_BLOCK=$(printf '    - name: http\n      port: %s\n      protocol: TCP\n      targetPort: http\n' "${{ env.HTTP_PORT }}")
           else
             export DEPLOY_HTTP_PORT_BLOCK=""
             export SVC_HTTP_PORT_BLOCK=""
@@ -380,8 +394,10 @@ jobs:
 
           # RPC 端口可选：gateway 类服务无 gRPC 端口，设为空/0/none 则跳过
           if [ -n "${{ env.RPC_PORT }}" ] && [ "${{ env.RPC_PORT }}" != "0" ] && [ "${{ env.RPC_PORT }}" != "none" ]; then
-            export DEPLOY_RPC_PORT_BLOCK=$(printf '        - name: rpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.RPC_PORT }}")
-            export SVC_RPC_PORT_BLOCK=$(printf '    - name: rpc\n      port: %s\n      protocol: TCP\n      targetPort: rpc\n' "${{ env.RPC_PORT }}")
+            export DEPLOY_RPC_PORT_BLOCK
+            DEPLOY_RPC_PORT_BLOCK=$(printf '        - name: rpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.RPC_PORT }}")
+            export SVC_RPC_PORT_BLOCK
+            SVC_RPC_PORT_BLOCK=$(printf '    - name: rpc\n      port: %s\n      protocol: TCP\n      targetPort: rpc\n' "${{ env.RPC_PORT }}")
           else
             export DEPLOY_RPC_PORT_BLOCK=""
             export SVC_RPC_PORT_BLOCK=""
@@ -389,8 +405,10 @@ jobs:
 
           # WebSocket 端口可选：部分服务需要 WebSocket 支持，设为空/0/none 则跳过
           if [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
-            export DEPLOY_WS_PORT_BLOCK=$(printf '        - name: ws\n          containerPort: %s\n          protocol: TCP\n' "${{ env.WS_PORT }}")
-            export SVC_WS_PORT_BLOCK=$(printf '    - name: ws\n      port: %s\n      protocol: TCP\n      targetPort: ws\n' "${{ env.WS_PORT }}")
+            export DEPLOY_WS_PORT_BLOCK
+            DEPLOY_WS_PORT_BLOCK=$(printf '        - name: ws\n          containerPort: %s\n          protocol: TCP\n' "${{ env.WS_PORT }}")
+            export SVC_WS_PORT_BLOCK
+            SVC_WS_PORT_BLOCK=$(printf '    - name: ws\n      port: %s\n      protocol: TCP\n      targetPort: ws\n' "${{ env.WS_PORT }}")
           else
             export DEPLOY_WS_PORT_BLOCK=""
             export SVC_WS_PORT_BLOCK=""
@@ -398,8 +416,10 @@ jobs:
 
           # Pprof 端口可选：部分服务不需要 pprof，设为空/0/none 则跳过
           if [ -n "${{ env.PPROF_PORT }}" ] && [ "${{ env.PPROF_PORT }}" != "0" ] && [ "${{ env.PPROF_PORT }}" != "none" ]; then
-            export DEPLOY_PPROF_PORT_BLOCK=$(printf '        - name: pprof\n          containerPort: %s\n          protocol: TCP\n' "${{ env.PPROF_PORT }}")
-            export SVC_PPROF_PORT_BLOCK=$(printf '    - name: pprof\n      port: %s\n      protocol: TCP\n      targetPort: pprof\n' "${{ env.PPROF_PORT }}")
+            export DEPLOY_PPROF_PORT_BLOCK
+            DEPLOY_PPROF_PORT_BLOCK=$(printf '        - name: pprof\n          containerPort: %s\n          protocol: TCP\n' "${{ env.PPROF_PORT }}")
+            export SVC_PPROF_PORT_BLOCK
+            SVC_PPROF_PORT_BLOCK=$(printf '    - name: pprof\n      port: %s\n      protocol: TCP\n      targetPort: pprof\n' "${{ env.PPROF_PORT }}")
           else
             export DEPLOY_PPROF_PORT_BLOCK=""
             export SVC_PPROF_PORT_BLOCK=""
@@ -407,8 +427,10 @@ jobs:
 
           # Node gRPC 端口可选：notify 服务多节点部署时启用节点间 gRPC 通信（其他服务默认跳过）
           if [ -n "${{ env.NODE_GRPC_PORT }}" ] && [ "${{ env.NODE_GRPC_PORT }}" != "0" ] && [ "${{ env.NODE_GRPC_PORT }}" != "none" ]; then
-            export DEPLOY_NODE_GRPC_PORT_BLOCK=$(printf '        - name: node-grpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.NODE_GRPC_PORT }}")
-            export SVC_NODE_GRPC_PORT_BLOCK=$(printf '    - name: node-grpc\n      port: %s\n      protocol: TCP\n      targetPort: node-grpc\n' "${{ env.NODE_GRPC_PORT }}")
+            export DEPLOY_NODE_GRPC_PORT_BLOCK
+            DEPLOY_NODE_GRPC_PORT_BLOCK=$(printf '        - name: node-grpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.NODE_GRPC_PORT }}")
+            export SVC_NODE_GRPC_PORT_BLOCK
+            SVC_NODE_GRPC_PORT_BLOCK=$(printf '    - name: node-grpc\n      port: %s\n      protocol: TCP\n      targetPort: node-grpc\n' "${{ env.NODE_GRPC_PORT }}")
           else
             export DEPLOY_NODE_GRPC_PORT_BLOCK=""
             export SVC_NODE_GRPC_PORT_BLOCK=""
@@ -432,9 +454,12 @@ jobs:
 
           # 探针块：无可用端口时跳过探针
           if [ -n "${PROBE_PORT_NAME}" ]; then
-            export STARTUP_PROBE_BLOCK=$(printf '        startupProbe:\n          tcpSocket:\n            port: %s\n          failureThreshold: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.STARTUP_FAILURE_THRESHOLD }}" "${{ env.STARTUP_PERIOD }}")
-            export READINESS_PROBE_BLOCK=$(printf '        readinessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.READINESS_DELAY }}" "${{ env.READINESS_PERIOD }}")
-            export LIVENESS_PROBE_BLOCK=$(printf '        livenessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.LIVENESS_DELAY }}" "${{ env.LIVENESS_PERIOD }}")
+            export STARTUP_PROBE_BLOCK
+            STARTUP_PROBE_BLOCK=$(printf '        startupProbe:\n          tcpSocket:\n            port: %s\n          failureThreshold: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.STARTUP_FAILURE_THRESHOLD }}" "${{ env.STARTUP_PERIOD }}")
+            export READINESS_PROBE_BLOCK
+            READINESS_PROBE_BLOCK=$(printf '        readinessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.READINESS_DELAY }}" "${{ env.READINESS_PERIOD }}")
+            export LIVENESS_PROBE_BLOCK
+            LIVENESS_PROBE_BLOCK=$(printf '        livenessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.LIVENESS_DELAY }}" "${{ env.LIVENESS_PERIOD }}")
           else
             export STARTUP_PROBE_BLOCK=""
             export READINESS_PROBE_BLOCK=""
@@ -446,7 +471,8 @@ jobs:
           export METRICS_PORT="${{ env.METRICS_PORT }}"
           export METRICS_PATH="${{ env.METRICS_PATH }}"
           if [ -n "${{ env.METRICS_PORT }}" ] && [ "${{ env.METRICS_PORT }}" != "0" ] && [ "${{ env.METRICS_PORT }}" != "none" ]; then
-            export ANNOTATIONS_BLOCK=$(printf '      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "%s"\n        prometheus.io/path: "%s"\n' "${{ env.METRICS_PORT }}" "${{ env.METRICS_PATH }}")
+            export ANNOTATIONS_BLOCK
+            ANNOTATIONS_BLOCK=$(printf '      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "%s"\n        prometheus.io/path: "%s"\n' "${{ env.METRICS_PORT }}" "${{ env.METRICS_PATH }}")
             echo "Prometheus annotations will be injected (port: ${{ env.METRICS_PORT }}, path: ${{ env.METRICS_PATH }})"
           else
             export ANNOTATIONS_BLOCK=""
@@ -493,7 +519,8 @@ jobs:
           # 尾换行必须外挂 $'\n'：$(...) 命令替换会剥掉尾部换行，
           # 模板中本块与 POD_NAME 行同处一行，靠自带收尾换行断行（见 deployment.yaml 拼接处）
           if [ -n "$EXTRA_ENV_BLOCK_INPUT" ]; then
-            export EXTRA_ENV_BLOCK="$(printf '%s' "$EXTRA_ENV_BLOCK_INPUT" | sed 's/^/        /')"$'\n'
+            export EXTRA_ENV_BLOCK
+            EXTRA_ENV_BLOCK="$(printf '%s' "$EXTRA_ENV_BLOCK_INPUT" | sed 's/^/        /')"$'\n'
           else
             export EXTRA_ENV_BLOCK=""
           fi
@@ -570,13 +597,14 @@ jobs:
             esac
             goml_mib=$((mem_mib * 10#$goml_pct / 100))
             if [ "$mem_mib" -ge 10 ] && [ "$goml_mib" -ge 1 ]; then
-              export GOMEMLIMIT_ENV_BLOCK="$(printf '        - name: GOMEMLIMIT\n          value: "%dMiB"' "$goml_mib")"$'\n'
+              export GOMEMLIMIT_ENV_BLOCK
+              GOMEMLIMIT_ENV_BLOCK="$(printf '        - name: GOMEMLIMIT\n          value: "%dMiB"' "$goml_mib")"$'\n'
               echo "GOMEMLIMIT injected: ${goml_mib}MiB (${goml_pct}% of ${MEMORY_LIMIT})"
             else
               echo "Warning: GOMEMLIMIT_PERCENT=${goml_pct} but MEMORY_LIMIT '${MEMORY_LIMIT}' unparsable or too small (need <n>Ki/Mi/Gi/Ti, >=10Mi), skip"
             fi
           fi
-          : ${GOMEMLIMIT_ENV_BLOCK:=}
+          : "${GOMEMLIMIT_ENV_BLOCK:=}"
 
           envsubst < _deploy-workflows/templates/k8s/backend/deployment.yaml > ${DEPLOY_DIR}/deployment.yaml
           echo "Deployment generated"
@@ -610,7 +638,13 @@ jobs:
             # 必须置于主 route 之前，Traefik 按声明顺序匹配，更具体的 PathPrefix 优先
             if [ -n "${{ env.HTTP_PORT }}" ] && [ "${{ env.HTTP_PORT }}" != "0" ] && [ "${{ env.HTTP_PORT }}" != "none" ] \
                && [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
-              export INGRESS_WS_ROUTE_BLOCK=$(printf '  - match: Host(`%s`) && PathPrefix(`/ws`)\n    kind: Rule\n    services:\n    - name: %s\n      port: %s\n' "${{ env.INGRESS_HOST }}" "${APP_NAME}" "${{ env.WS_PORT }}")
+              export INGRESS_WS_ROUTE_BLOCK
+              # shellcheck disable=SC2016
+          # 格式串必须用单引号：%s 要留给 printf 替换，\n 要保持转义，
+          # Traefik 规则里的反引号也必须原样进 YAML，换双引号会让 shell 先去展开
+          # [EN] The format must stay single-quoted: %s is printf's to substitute, \n must
+          # stay escaped, and the backticks in the Traefik rule go into the YAML verbatim
+          INGRESS_WS_ROUTE_BLOCK=$(printf '  - match: Host(`%s`) && PathPrefix(`/ws`)\n    kind: Rule\n    services:\n    - name: %s\n      port: %s\n' "${{ env.INGRESS_HOST }}" "${APP_NAME}" "${{ env.WS_PORT }}")
             else
               export INGRESS_WS_ROUTE_BLOCK=""
             fi
@@ -667,7 +701,7 @@ jobs:
           echo "============================================="
           echo "Manifest contents:"
           echo "============================================="
-          for file in ${DEPLOY_DIR}/*.yaml; do
+          for file in "${DEPLOY_DIR}"/*.yaml; do
             echo ""
             echo "--- $(basename "$file") ---"
             if [ "$(basename "$file")" = "configmap.yaml" ]; then
@@ -934,7 +968,7 @@ jobs:
 
             # 只检查新 ReplicaSet 的 Pod，忽略正在终止的旧 Pod
             if [ -n "$NEW_RS_HASH" ]; then
-              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }},pod-template-hash=${NEW_RS_HASH} \
+              PROBLEM_PODS=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l "app=${{ inputs.binary-name }},pod-template-hash=${NEW_RS_HASH}" \
                 -o json | jq -r '.items[] | select(
                   (.status.containerStatuses[]?.restartCount // 0) > 3 or
                   (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
@@ -951,7 +985,7 @@ jobs:
               echo "Warning: Found problematic pods in new ReplicaSet"
               for pod in $PROBLEM_PODS; do
                 echo "--- Pod: $pod ---"
-                kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=30 2>&1 || true
+                kubectl logs "$pod" -n "${{ env.NAMESPACE }}" --tail=30 2>&1 || true
               done
             fi
 
