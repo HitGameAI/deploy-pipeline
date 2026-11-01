@@ -663,14 +663,31 @@ gofmt 只在 Linux 跑有两个原因：它检查的是源码的平台无关属�
 好让失败时走「开分支提 PR」而不是直接中断
 测试还多两个条件：vet 得先成功，且 `GOLIB_BUMP_RUN_TESTS == 'true'`
 
-**裁决之后的两条路：**
+**闸门红了之后先问一句「升级之前它是绿的吗」**（`🧪 Baseline Before The Bump`）
 
-| 裁决 | 走哪条 | 行为 |
-|------|--------|------|
-| 全过 | ✅ Commit and Push | 用载荷里的 `commit_message`，没给则生成三段式默认信息，推默认分支 |
-| 有挂 | 🚧 Open Pull Request Instead | 切 `chore/bump-<module>-<version>` 分支，`--force-with-lease` 推上去，建或更新 PR，然后**判红退出** |
+`go.mod` 与 `go.sum` 的改动此时还在工作区没提交，所以 `git checkout --` 回去就是升级前的状态，
+在那上面把同一组闸门重跑一遍
+只在闸门已经红了的时候才跑，所以正常的绿色路径一点不多花时间
 
-默认分支在闸门没过时绝不被碰，这是整条流水线最硬的一条规则
+不加这一步的话，仓库里本来就有的失败会被算到这次升级头上
+实测过一次：某个库在 `-shuffle=3` 下有个指针解引用的 panic，与被升级的依赖毫无关系，
+却让 bump 判红、开出一个无从下手的 PR
+
+这一步里会先 `command -v gotestsum` 确认再调：上面那个安装步骤的条件是「vet 通过」，
+所以失败在 build 或 vet 时它根本没跑
+不确认就直接调会得到 command not found，被 `||` 当成「基线测试失败」，
+于是一次真的破坏了构建的升级会被误判成「升级前就红」而放行 —— 正好放过该拦的
+
+**🧮 Final Verdict 的三条路：**
+
+| 闸门 | 基线 | proceed | 行为 |
+|------|------|---------|------|
+| 全过 | 不跑 | `true` | ✅ Commit and Push，发 notice |
+| 有挂 | **也挂** | `true` | ✅ 照常推送，发 **warning** 并在 job summary 里点明「这个仓库在升级前就是红的」 |
+| 有挂 | 全过 | `false` | 🚧 开 `chore/bump-<module>-<version>` 分支、`--force-with-lease` 推上去、建或更新 PR，然后**判红退出** |
+
+默认分支在「升级确实破坏了闸门」时绝不被碰，这是整条流水线最硬的一条规则
+而「仓库自身本来就红」不该挡住升级 —— 否则它会挡住这个仓库后续每一次升级的判定
 
 **🏷️ Create Downstream Tag** 三个条件同时成立才跑：推送成功、`allow-create-tag` 为真、
 载荷 `create_tag == true`
