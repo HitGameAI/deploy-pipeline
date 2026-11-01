@@ -71,8 +71,31 @@ owner_of() {
     | cut -d/ -f1
 }
 
+# 仓库名也要取：替换必须是 <org>/<repo> 这个整体，不能只换裸组织名
+#
+# 只换裸组织名会连带改掉内容里正当的同组织引用 本仓库的
+# docs/12-dependency-graph.md 与 scripts/dep-graph.py 里就有
+# github.com/<org>/go-dbsync 这类真实模块路径，dep-graph.py 的 startswith 判断
+# 更是功能性的 —— 一刀切换完，依赖图会去扫一个不存在的组织，而且不报错
+#
+# [EN] The repository name is taken as well, because the replacement has to be the whole
+# <org>/<repo> and not the bare organization name: swapping the bare name also rewrites
+# legitimate same-organization references in the content, such as the real module paths
+# github.com/<org>/go-dbsync in docs/12-dependency-graph.md and scripts/dep-graph.py, whose
+# startswith test is functional rather than cosmetic, so a blanket swap silently points the
+# dependency graph at an organization that does not exist
+repo_of() {
+  local url
+  url="$(cd "$1" && git remote get-url origin 2>/dev/null || true)"
+  printf '%s\n' "${url}" \
+    | sed -E 's|^git@[^:]+:||; s|^https?://[^/]+/||; s|\.git$||' \
+    | cut -d/ -f2
+}
+
 FROM_ORG="$(owner_of "${SRC}")"
 TO_ORG="$(owner_of "${DEST}")"
+FROM_REF="${FROM_ORG}/$(repo_of "${SRC}")"
+TO_REF="${TO_ORG}/$(repo_of "${DEST}")"
 if [ -z "${FROM_ORG}" ] || [ -z "${TO_ORG}" ]; then
   exit 1
 fi
@@ -83,7 +106,7 @@ fi
 
 echo "📦 来源 : ${SRC}  (${FROM_ORG})"
 echo "📦 去向 : ${DEST}  (${TO_ORG})"
-echo "🔁 改写 : ${FROM_ORG} → ${TO_ORG}"
+echo "🔁 改写 : ${FROM_REF} → ${TO_REF}"
 [ -n "${FORCE}" ] && echo "💣 强制 : 对面多出来的文件会被删掉"
 [ -n "${CHECK_ONLY}" ] && echo "👀 模式 : 只检查，不落盘"
 echo ""
@@ -110,7 +133,7 @@ for rel in "${targets[@]}"; do
   # [EN] The prefix swap applies to text files; everything else is copied byte for byte
   case "${rel}" in
     *.yml|*.yaml|*.md|*.sh|*.py|*.json|*.txt)
-      new_content="$(sed "s|${FROM_ORG}|${TO_ORG}|g" "${src_file}")"
+      new_content="$(sed "s|${FROM_REF}|${TO_REF}|g" "${src_file}")"
       ;;
     *)
       new_content="$(cat "${src_file}")"
@@ -162,18 +185,24 @@ else
   echo "✅ 两边文件集合一致"
 fi
 
-# 换前缀漏网检查：同步完对面不该再出现来源组织名
-# [EN] After the swap, the source organization must not appear on the other side
+# 换前缀漏网检查：同步完对面不该再出现指向来源仓库的自引用
+#
+# 查的是 <org>/<repo> 而不是裸组织名：后者会把内容里正当的同组织引用也判成残留，
+# 逼着替换一刀切 —— 校验和缺陷互相掩护，两边一起错
+#
+# [EN] The check looks for <org>/<repo> rather than the bare organization name, which would
+# flag legitimate same-organization references as residue and force the blanket swap that
+# causes the corruption, the check and the defect covering for each other
 if [ -z "${CHECK_ONLY}" ]; then
   echo ""
-  leftover="$(cd "${DEST}" && grep -rln "${FROM_ORG}" --exclude-dir=.git . || true)"
+  leftover="$(cd "${DEST}" && grep -rln "${FROM_REF}" --exclude-dir=.git . || true)"
   if [ -n "${leftover}" ]; then
-    echo "❌ ${DEST} 里还残留 ${FROM_ORG}：" >&2
+    echo "❌ ${DEST} 里还残留 ${FROM_REF}：" >&2
     printf '     %s\n' ${leftover} >&2
     echo "二进制文件或没列进扩展名白名单的文件会漏，检查一下那几个" >&2
     exit 1
   fi
-  echo "✅ 对面已无 ${FROM_ORG} 残留"
+  echo "✅ 对面已无 ${FROM_REF} 残留"
   echo ""
   echo "下一步：cd ${DEST} && git diff --stat && git add -A && git commit"
 fi
