@@ -857,4 +857,50 @@ PR 逐条列出，直接提交单独分一组，两者都空则写「区间内�
 
 ---
 
-本仓库 `.github/workflows/` 下共 18 个工作流，本文逐个说明了全部 18 个
+### 本仓库自己的工作流
+
+#### 🔬 Self Test（`self-test.yml`）
+
+这个仓库原先是唯一没有自己 CI 的那个：它被二三十个仓库 `uses:` 引用，
+改坏了却要等某个下游仓库的流水线红了才知道，而那时现场已经在别人家
+`push` 到默认分支、任何 `pull_request`、以及手动触发都会跑，
+`permissions: contents: read`，同 ref 上的旧运行会被取消
+
+四个 job 并行，彼此独立：
+
+| Job | 查什么 | 为什么必须查 |
+|-----|--------|-------------|
+| 🔎 Actionlint | 全仓工作流的语法与表达式 | 未声明的 `inputs.xxx` 求值成空串而不报错 |
+| 🐚 Shellcheck | `scripts/` 下所有 `.sh`，`--severity=warning` | 未加引号的变量与错误的 test 写法给出错的结果而不是报错 |
+| ⚙️ Config And Docs | 跑 `scripts/self-test.py` 的 62 项断言 | 见下 |
+| 🐍 Python Syntax | `scripts/` 下所有 `.py` 过一遍 `py_compile` | 脚本是在 runner 上现跑的，语法错会在流水线中途才炸 |
+
+**`scripts/self-test.py` 断言的东西**，本地也能跑（`python3 scripts/self-test.py`，需要 PyYAML）：
+
+| 组 | 断言 |
+|----|------|
+| 配置表 | `--print-example` 能跑通且有输出；产出的示例能通过 `--check` |
+| 配置表 | 每一节单独生成的**总表形状**示例能通过 `--check` |
+| 配置表 | 每一节剥掉外层的**分节形状**能通过 `--check --section`，即分节变量这条路没坏 |
+| 配置表 | `generate-config` 逐节试的节名从配置表读取，不会漏节 |
+| 零配置 | 完全不配 `vars` 与 `secrets` 时，所有节一起解析退出码为 0，且有内容写进 `GITHUB_ENV` |
+| env 覆盖 | 每个工作流请求的节都在配置表里 |
+| env 覆盖 | 每个工作流的 `env.XXX` 引用都有出处：来自它请求的节、或自己 `env:` 块声明的、或 shell 里赋的、或 runner 自带的、或 `resolve-config.py` 合成导出的 |
+| 文档 | 每个工作流文件都在本文里有说明 |
+| 文档 | README 与 `docs/` 下所有 md 里没有中文句号 |
+| 文档 | 站内链接都能解析到真实文件 |
+| 文档 | README 链到了每一篇 docs |
+| 模板 | `templates/` 下 K8s 模板的 `${VAR}` 占位符都有来源 |
+
+env 覆盖那条是这套检查里最值得有的一条：它原先在 `docs/11-self-check.md` 里打着 ✅，
+但那个勾是人填的，从来没有真跑过
+
+两个 lint job 都不挂 `continue-on-error`：实测就是靠它们抓出两处静默失效 ——
+`backend-build-binary.yml` 的 job 一直在引用没声明的 `inputs.environment`，
+求值成空串于是 environment 等于没设，环境级保护规则与 secret 全不生效；
+`code-quality.yml` 的覆盖率上传引用没声明的 `inputs.retention-days`，
+回落到仓库默认的 90 天，而文档里写的是 7 天
+
+---
+
+本仓库 `.github/workflows/` 下共 19 个工作流，本文逐个说明了全部 19 个
