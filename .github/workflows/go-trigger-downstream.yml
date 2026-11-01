@@ -356,17 +356,41 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ matrix.repo }}
 
+      # 不止判「配了没」，还要判「还活着没」
+      #
+      # 一个过期或被吊销的 PAT 仍然是个非空字符串，光看有没有值就会放它过闸，于是真正的
+      # 失败落在 dispatch 动作里，报的是 `Parameter token or opts.auth is required`
+      # 这种与病因毫无关系的话（实测日志为证），而上一行的 notice 还在说「凭证：PAT」
+      # 诊断信息自己撒谎比没有诊断信息更糟，所以这里花一次 /user 调用把凭证验活
+      #
+      # [EN] Not only whether a credential is set but whether it still works. An expired or
+      # revoked PAT is still a non-empty string, so an emptiness test lets it through the gate
+      # and the real failure lands inside the dispatch action, reported as a message bearing no
+      # relation to the cause while the preceding notice still claims a credential is in use.
+      # Diagnostics that lie are worse than none, so one call to /user settles it here
       - name: 🧾 Require A Cross-repo Credential
         env:
-          APP_TOKEN_SET: ${{ steps.app_token.outputs.token != '' }}
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
-          if [ "$APP_TOKEN_SET" = "true" ]; then
-            echo "::notice title=凭证 | Credential::GitHub App token"
+          if [ -n "$APP_TOKEN" ]; then
+            kind="GitHub App token"
+            token="$APP_TOKEN"
           elif [ -n "${GH_GPA_TOKEN:-}" ]; then
-            echo "::notice title=凭证 | Credential::PAT，建议迁到 GitHub App"
+            kind="PAT"
+            token="${GH_GPA_TOKEN}"
           else
             echo "::error title=没有跨仓库凭证 | No cross-repo credential::GITHUB_TOKEN 只对本仓库有效，发不出跨仓库 dispatch。请配 APP_ID 与 APP_PRIVATE_KEY，或退一步配 GH_GPA_TOKEN"
             exit 1
+          fi
+
+          if ! GH_TOKEN="$token" gh api /user --silent 2>"$RUNNER_TEMP/cred_err.txt"; then
+            echo "::error title=凭证无效 | Credential rejected::配的 ${kind} 拿不到 /user，GitHub 的回答是：$(tr -d '\n' < "$RUNNER_TEMP/cred_err.txt" | head -c 300)。它是个非空字符串但已经过期或被吊销，请重新签发；App 凭证可以用 golib-bootstrap 的 secrets 模式一次下发到各仓库"
+            exit 1
+          fi
+
+          echo "::notice title=凭证 | Credential::${kind}，已验活"
+          if [ "$kind" = "PAT" ]; then
+            echo "::warning title=建议迁到 GitHub App | Prefer a GitHub App::PAT 会随个人账号过期或被吊销，App 凭证按仓库授权且可集中轮换"
           fi
 
       - name: 🔄 Dispatch to ${{ matrix.repo }}
