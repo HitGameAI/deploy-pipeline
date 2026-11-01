@@ -538,18 +538,323 @@ build-binary:
 
 ---
 
-## 📎 其余工作流的说明在别处
+### Go 库工作流
 
-这些工作流有专门的文档，这里不重复，只给入口：
+三十来个 Go 库共用这三条流水线加一个接入工具，调用方仓库里只放一个瘦入口
+背景与事故记录见 [Go 库流水线](05-go-library-pipeline.md)，这里是逐项的参数与行为说明
 
-| 工作流 | 文件 | 看这里 |
-|---|---|---|
-| 🧪 Go Library Test | `go-library-test.yml` | [Go 库流水线](05-go-library-pipeline.md) |
-| 📦 Go Bump Upstream | `go-bump-upstream.yml` | [Go 库流水线](05-go-library-pipeline.md) |
-| 🔄 Go Trigger Downstream | `go-trigger-downstream.yml` | [Go 库流水线](05-go-library-pipeline.md) |
-| 🧰 Go Library Bootstrap | `golib-bootstrap.yml` | [Go 库流水线](05-go-library-pipeline.md) |
-| PR Opened Notify | `pr-opened-notify.yml` | [通知与发布单](07-notifications.md) |
-| PR Merged Notify | `pr-merged-notify.yml` | [通知与发布单](07-notifications.md) |
-| 📋 Release Note | `release-note.yml` | [通知与发布单](07-notifications.md) |
+#### 🧪 Go Library Test（`go-library-test.yml`）
 
-本仓库 `.github/workflows/` 下共 18 个工作流，上表 7 个加本文正文 11 个，覆盖齐全
+`workflow_call`，挂在调用方的 push 还是 pull_request 由调用方决定
+两个 job：`config`（解析配置、推导矩阵）→ `test`（矩阵跑测）
+
+| 入参 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `go-versions` | string | ❌ | `''` | JSON 数组，显式指定矩阵版本；留空是常态，走自动推导 |
+| `platforms` | string | ❌ | `''` | JSON 数组，运行平台；留空取 `golib` 节默认 |
+| `exclude` | string | ❌ | `[]` | JSON 数组，剔掉的组合，每项形如 `{"go-version":"1.21.x","platform":"macos-latest"}` |
+| `gofmt-check` | boolean | ❌ | `true` | 是否把 gofmt 当闸门 |
+| `build-tags` | string | ❌ | `''` | build tag，留空则不传 `-tags` |
+| `test-target` | string | ❌ | `./...` | 测试目标包 |
+| `test-flags` | string | ❌ | `''` | 传给 `go test` 的参数 |
+| `test-timeout` | string | ❌ | `''` | `go test` 的 `-timeout` |
+| `gotestsum-version` | string | ❌ | `''` | gotestsum 版本 |
+| `coverage-go-version` | string | ❌ | `''` | 由哪个 Go 版本上传覆盖率；留空取矩阵最高版 |
+| `coverage-platform` | string | ❌ | `''` | 由哪个平台上传覆盖率 |
+| `codecov-slug` | string | ❌ | `''` | 留空则用 `github.repository` |
+| `fail-fast` | boolean | ❌ | `false` | 任一 job 失败时是否取消其余 job |
+| `timeout-minutes` | number | ❌ | `30` | 单个测试 job 的超时 |
+| `setup-script` | string | ❌ | `''` | 测试前执行的 bash，可用 `$RUNNER_OS` 分平台 |
+| `post-test-script` | string | ❌ | `''` | 主测试之后执行的 bash |
+
+默认值写 `''` 的那些不是「没有默认」：它们留空时由 `resolve-config` 的 `golib` 节接手，
+所以同一个值既能从 input 传，也能写在 `vars` 的分节总表或全局总表里，
+优先级见 [配置解析](03-configuration.md)
+
+**所需 Secrets：**
+
+| Secret | 必填 | 说明 |
+|--------|------|------|
+| `PIPELINE_SECRETS` | ❌ | 聚合密钥 YAML，`go` 节可写 `app_id` / `app_private_key` |
+| `APP_ID` | ❌ | 单独配的 App ID，私有模块拉取与私有仓库 checkout 用 |
+| `APP_PRIVATE_KEY` | ❌ | 同上 |
+| `CODECOV_TOKEN` | ❌ | 没配也不影响流水线，上传步骤自己跳过 |
+
+**`config` job 的 10 个输出**：`go-versions`、`platforms`、`coverage-go-version`、
+`coverage-platform`、`codecov-slug`、`gotestsum-version`、`test-flags`、`test-timeout`、
+`build-tags`、`gofmt-check`，全部给 `test` job 消费
+
+**矩阵怎么推导出来的**（`🧮 Derive Go Version Matrix`）：
+
+1. `GOLIB_GO_VERSIONS` 有值就原样用，来源标成「显式配置」，不再联网
+2. 否则读调用方 `go.mod` 的 `go` 指令当**地板**，`go 1.25.0` 取成 `1.25`；读不到 `go` 指令直接判红
+3. 取 `https://go.dev/dl/?mode=json`（20s 超时）里 `stable` 的最新两个小版本当**上限**；
+   取不到就发 warning，矩阵退化成只测地板版
+4. 结果是「地板」并上「不低于地板的最新两版」，升序，格式化成 `1.25.x` 这种
+
+地板必须来自 `go.mod`：低于它的版本会被 Go 的工具链切换静默顶上去，写进矩阵只是自欺
+
+**`test` job 的步骤顺序**，闸门就是这个顺序本身：
+
+| # | 步骤 | 条件 | 做什么 |
+|---|------|------|--------|
+| 1 | ⚙️ Resolve Credentials | 总是 | 解析 `go` 节密钥到 env |
+| 2 | 🔑 Generate GitHub App Token | `APP_ID` 与 `APP_PRIVATE_KEY` 都非空 | 换 App token |
+| 3 | 📥 Checkout Repository | 总是 | `actions/checkout@v6` |
+| 4 | ⚙️ Configure Git For Private Modules | 拿到 App token | `url.insteadOf` 改写成带 token 的 https，并透传 `GOPRIVATE` |
+| 5 | 🛠️ Set up Go | 总是 | `go-version: matrix.go-version`，开缓存 |
+| 6 | 🔎 Verify Toolchain Honesty | 总是 | 比对矩阵声明与 `go version` 实报，不一致判红 |
+| 7 | ⚙️ Setup External Dependencies | `setup-script != ''` | 装 nats-server、起 redis 之类 |
+| 8 | 📦 Download Dependencies | 总是 | `go mod download` |
+| 9 | ✨ Format Check (gofmt) | `gofmt-check == 'true'` **且** `runner.os == 'Linux'` | `gofmt -s -l .`，有输出就判红 |
+| 10 | 🔨 Build | 总是 | `go build ./...`，带 tag 则加 `-tags` |
+| 11 | 🔍 Vet | 总是 | `go vet ./...` |
+| 12 | 📦 Install gotestsum | 总是 | `go install gotest.tools/gotestsum@<版本>` |
+| 13 | 🧪 Test | 总是 | `gotestsum -f testname` 跑 `test-target`，带 `-coverprofile=coverage.txt -covermode=atomic` |
+| 14 | 🧩 Post-test Script | `post-test-script != ''` | 跑子模块测试之类 |
+| 15 | 📤 Upload Coverage to Codecov | `always()` 且版本与平台都等于指定的那一组 且 `coverage.txt` 存在 | 上传，自身挂 `continue-on-error` |
+
+关不掉的两条：**Build 与 Vet 独立成步且先于测试**；**测试步骤绝不挂 `continue-on-error`**
+
+gofmt 只在 Linux 跑有两个原因：它检查的是源码的平台无关属性，四个平台各跑一遍只是四倍开销；
+而在 Windows 上它还是错的，checkout 会把换行转成 CRLF，于是仓库里每个 `.go` 都被判为未格式化
+
+第 6 步是这个文件存在的最大理由：`go.mod` 写 `go 1.25.0` 时，矩阵里的 `1.21.x` 会被工具链切换
+静默换成 `1.25.0`，setup-go 照样报成功，日志下一行却是 `go: downloading go1.25.0`
+输出全程正确、没有任何报错，所以这种谎言只能靠显式比对才看得见
+
+覆盖率上传不写死版本号，取矩阵里最高的那个：矩阵会随 Go 发新版上移，
+写死的值早晚匹配不到任何 job，于是覆盖率静默停止上传而 CI 仍然全绿
+
+#### 📦 Go Bump Upstream（`go-bump-upstream.yml`）
+
+`workflow_call`，单 job `bump`，`permissions: contents: write, pull-requests: write`
+实际触发事件在调用方那侧，是上游派发过来的 `repository_dispatch`，
+载荷从 `github.event.client_payload` 读：`module`、`version`、`create_tag`、`commit_message`
+
+| 入参 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `run-tests` | boolean | ❌ | `true` | 推送前是否跑测试；build 与 vet 两道闸门关不掉 |
+| `build-tags` | string | ❌ | `''` | build tag |
+| `test-flags` | string | ❌ | `''` | 传给 `go test` 的参数 |
+| `test-timeout` | string | ❌ | `''` | `go test` 的 `-timeout` |
+| `gotestsum-version` | string | ❌ | `''` | gotestsum 版本 |
+| `allow-create-tag` | boolean | ❌ | `true` | 是否允许按上游版本跨度生成下游 tag，还要载荷的 `create_tag` 同时为真 |
+| `timeout-minutes` | number | ❌ | `30` | job 超时 |
+
+**所需 Secrets：** `PIPELINE_SECRETS`（`go` 节可写 `app_id` / `app_private_key` / `gpa_token`）、
+`APP_ID`、`APP_PRIVATE_KEY`、`GH_GPA_TOKEN`，均非必填
+
+**凭证优先级**：App token 优先，其次 `GH_GPA_TOKEN`，最后 `github.token`
+`secrets` 上下文在步骤的 `if:` 里不可用，所以凭证先过 `resolve-config` 落到 env 再判断
+回落到 `github.token` 时会发 warning：用它推的提交**不触发本仓库任何 workflow**，
+于是 bump 的结果无人校验
+
+**⬆️ Bump Dependency 做的事：**
+
+- 载荷缺 `module` 或 `version` 直接判红
+- `go list -m -f '{{.Version}}'` 记下原版本，输出到 `old-version`
+- `go get <module>@<version>` 加 `go mod tidy`
+- 比对主次版本号算出 `bump-level`：`major` / `minor` / `patch`，供后面生成 tag 用
+- `git diff --quiet -- go.mod go.sum` 没变化就输出 `changed=false`，后续全跳过
+
+**三道闸门与裁决**：`🔨 Build`、`🔍 Vet`、`🧪 Test` 各自挂 `continue-on-error`，
+**不是为了掩盖失败**，而是把结论收到 `🧮 Collect Gate Verdict` 一处判，
+好让失败时走「开分支提 PR」而不是直接中断
+测试还多两个条件：vet 得先成功，且 `GOLIB_BUMP_RUN_TESTS == 'true'`
+
+**裁决之后的两条路：**
+
+| 裁决 | 走哪条 | 行为 |
+|------|--------|------|
+| 全过 | ✅ Commit and Push | 用载荷里的 `commit_message`，没给则生成三段式默认信息，推默认分支 |
+| 有挂 | 🚧 Open Pull Request Instead | 切 `chore/bump-<module>-<version>` 分支，`--force-with-lease` 推上去，建或更新 PR，然后**判红退出** |
+
+默认分支在闸门没过时绝不被碰，这是整条流水线最硬的一条规则
+
+**🏷️ Create Downstream Tag** 三个条件同时成立才跑：推送成功、`allow-create-tag` 为真、
+载荷 `create_tag == true`
+取最新的 `vX.Y.Z` tag 按 `bump-level` 递增；一个 tag 都没有时按 `v0.1.0` 起步（major 则 `v1.0.0`）；
+要发的 tag 主版本 ≥ 2 而模块路径没有 `/vN` 后缀就判红，因为那种 tag 发出去也没人 `go get` 得到；
+tag 已存在则跳过
+
+#### 🔄 Go Trigger Downstream（`go-trigger-downstream.yml`）
+
+`workflow_call`，`permissions: contents: read`，两个 job：`resolve` → `dispatch`
+调用方挂在 `push` 的 `tags: v*` 上
+
+| 入参 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `downstream-repos` | string | ❌ | `''` | 显式指定下游清单；留空是常态，走自动推导 |
+| `exclude-repos-regex` | string | ❌ | 见下 | 自动推导时排除匹配的仓库 |
+| `version` | string | ❌ | `''` | 要通知的版本；留空用当前 tag 名 |
+| `only-repos` | string | ❌ | `''` | 只通知清单里的这几个，格式同 `downstream-repos` |
+| `create-tag` | boolean | ❌ | `false` | 下游升完依赖后是否自动打 tag，把联动继续往下传 |
+| `skip-paths-regex` | string | ❌ | 文档路径与 `.md` | 只动了这些路径就不通知下游 |
+
+`exclude-repos-regex` 的默认值排除已部署服务与模板，只在库之间联动
+
+**所需 Secrets：** `PIPELINE_SECRETS`、`APP_ID`、`APP_PRIVATE_KEY`、`GH_GPA_TOKEN`，均非必填
+
+**`resolve` job 的输出**：`repos`、`count`、`should-dispatch`、`module`、`version`
+
+模块路径用 `go list -m` 读，不用 `github.repository` 拼：带 `/vN` 后缀的模块拼不对
+
+**🔍 Check Whether Tag Is Worth Dispatching 的判断顺序：**
+
+1. 不是 `push` 事件（手动触发）时通知，不做路径过滤
+2. 找不到上一个 tag 时通知
+3. 上一个 tag 到当前 tag 之间没有文件改动时不通知
+4. 改动的路径**全部**匹配 `skip-paths-regex` 时不通知，发 notice
+5. 其余情况通知
+
+**📋 Resolve Downstream List 的优先级：**
+
+1. `inputs.downstream-repos` 或 `vars` 的 `GOLIB_DOWNSTREAM_REPOS`，覆盖用
+2. 都没配时从**真实依赖图**自动推导，这是默认，不需要任何配置
+
+清单格式认 JSON 数组、逗号、空白、换行；裸仓库名按当前 owner 补全；自己和重复项剔掉
+
+推导规则是「谁的 `go.mod` 直接 require 了本模块」：
+
+- 带 `// indirect` 的传递依赖不算，它们由自己的直接上游在各自那一跳通知到
+- 注释掉的 `replace` 行不算
+- 已归档的仓库不算
+- 匹配 `exclude-repos-regex` 的不算
+
+配了清单也仍然会比对推导结果：缺漏的在 job summary 里逐个点出来并发 warning，多出的也列出来
+`only-repos` 在清单定下来之后再做一次筛选
+
+清单筛空而又该通知时，`🚨 No Downstream Found` 发 warning 说明可能是 `only-repos` 筛过头了
+
+**`dispatch` job**：`should-dispatch == 'true'` 且 `count != '0'` 才跑，
+按 `repos` 展成矩阵，`fail-fast: false`，一个下游失败不影响其余
+
+App token 在这里按 `repositories: matrix.repo` 收窄授权范围
+
+`🧾 Require A Cross-repo Credential` 不只判「配了没」还判「还活着没」：
+一个过期或被吊销的 PAT 仍然是个非空字符串，光看有没有值就会放它过闸，
+于是真正的失败落在 dispatch 动作里，报的是 `Parameter token or opts.auth is required`
+这种与病因毫无关系的话，而上一行还在说「凭证：PAT」
+所以这一步花一次 `gh api /user` 把凭证验活，拿不到就判红并把 GitHub 的原话打出来
+
+`GITHUB_TOKEN` 只对本仓库有效，发不出跨仓库 dispatch，所以这里必须有 App 或 PAT
+
+派发用 `peter-evans/repository-dispatch@v3`，`event-type: upstream-updated`，
+载荷带 `module`、`version`、`sha`、`create_tag`、`commit_message`
+
+#### 🧰 Go Library Bootstrap（`golib-bootstrap.yml`）
+
+只在本仓库跑，不是可复用工作流：`workflow_dispatch` 手动触发，
+外加 `schedule: '0 1 * * 1'` 每周一的只读体检，因为接入状态会随新仓库出现而漂移
+`permissions: contents: read`，凭证读本仓库自己的 secret
+
+| 入参 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `mode` | choice | ❌ | `audit` | `audit` 只体检 / `secrets` 下发 App 凭证 / `workflows` 补瘦入口 / `all` 全做 |
+| `repos` | string | ❌ | `''` | 只处理这几个，逗号或空白分隔；留空自动枚举 |
+| `exclude-repos-regex` | string | ❌ | 同上文那条 | 自动枚举时排除匹配的仓库 |
+| `dry-run` | boolean | ❌ | `true` | 只打印将要做什么，不真的写入 |
+
+`secrets` 与 `workflows` 两个模式默认先空跑，要真写入得显式把 `dry-run` 关掉
+
+**枚举**：给了 `repos` 就用给的；否则列 `/users/<owner>/repos?type=owner`
+（取不到再试 `/orgs/<owner>/repos`），逐个排除已归档的、匹配排除正则的、
+以及**没有 `go.mod` 的**，最后一条是「是不是 Go 库」的唯一判据
+
+**体检**看三件事，对 `test.yml`、`bump-upstream.yml`、`trigger-downstream.yml` 各判一次：
+
+| 判定 | 含义 |
+|------|------|
+| 共用 | 文件里出现 `kamalyes/deploy-pipeline/.github/workflows/go-`，即已接入 |
+| 自写 | 文件存在但没引用共用流水线 |
+| 缺 | 文件不存在 |
+
+同时列该仓库的 Actions secret 名单，`APP_ID` 与 `APP_PRIVATE_KEY` 齐了才算 `app_ok`
+
+**`secrets` 模式**给缺凭证的仓库写 `APP_ID` 与 `APP_PRIVATE_KEY`，
+值取本仓库自己的同名 secret，所以私钥不经过任何中间环节
+**`workflows` 模式**给判为「缺」的仓库补上瘦入口文件
+
+结果写成表格进 job summary；`audit` 模式下有仓库缺 App 凭证会发 warning 并列出仓库名
+
+---
+
+### 通知与发布单工作流
+
+三条都是 `workflow_call`，渠道配置与企业微信的坑见 [通知与发布单](07-notifications.md)
+
+#### PR Opened Notify（`pr-opened-notify.yml`）
+
+单 job `summarize`，`permissions: contents: read, pull-requests: write`
+调用方挂在 `pull_request` 的 `opened` 上
+
+| 入参 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `provider` | string | ❌ | `all` | `feishu` / `wecom` / `telegram` / `all` / `none`，`all` 只发已配置的渠道 |
+
+**所需 Secrets：** `PIPELINE_SECRETS` 外加 `FEISHU_WEBHOOK_URL`、`WECOM_WEBHOOK_URL`、
+`WECOM_WEBHOOK_KEY`、`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，均非必填
+
+这五个必须在 `secrets:` 块里**显式声明**，哪怕调用方用了 `secrets: inherit`
+`inherit` 让 `secrets.FEISHU_WEBHOOK_URL` 这样按名字取能拿到值，但 `toJSON(secrets)`
+只枚举本块声明过的键，未声明的继承 secret 一个都不在里面
+而 `resolve-config` 走的正是 `toJSON(secrets)`，不声明就等于那条「回退到同名单个 secret」
+的降级路径永远取不到值，偏偏 Notify 步骤的 `if:` 在取不到时静默跳过、job 照样绿，
+于是「配了飞书却收不到消息」且无任何报错
+
+**步骤：**
+
+| # | 步骤 | 做什么 |
+|---|------|--------|
+| 1 | 📋 Generate Summary | 拉 `pulls/N/commits` 取每个 commit 首行；拉 `pulls/N/files` 取状态与增删行数，算出新增、修改、删除与总数 |
+| 2 | 💬 Comment On PR | `gh pr comment` 把摘要贴到 PR 下 |
+| 3 | ⚙️ Resolve Pipeline Config | 解析 `notify` 节，结果经 `GITHUB_ENV` 给下一步 |
+| 4 | 📢 Notify | 任一渠道解析到就发，`status: info`，标题带仓库名与 PR 标题 |
+| 5 | 🔇 No Channel Configured | 一个渠道都没解析到时发 warning |
+
+文件明细只列前 20 个，其余折成「等 N 个文件」
+第 5 步用 warning 不用 error：「没配通知」本身是合法状态，不该让 job 变红，
+但得留下可见痕迹，否则配错了无从查起
+
+#### PR Merged Notify（`pr-merged-notify.yml`）
+
+单 job `notify`，`permissions: contents: read`
+入参与 Secrets 跟 PR Opened Notify 完全一致，包括那五个必须显式声明的渠道 secret
+
+与 PR Opened 的区别：**不生成文件摘要，也不往 PR 下贴评论**，
+只发一条 `status: success` 的通知，正文是 PR 标题、源分支到目标分支、作者与合并人、PR 链接
+同样有 `🔇 No Channel Configured` 的 warning 兜底
+
+#### 📋 Release Note（`release-note.yml`）
+
+单 job `release-note`，`permissions: contents: write, pull-requests: read`，
+读权限是收集 PR 明细需要的
+tag push 发布模式构建成功后调用
+
+| 入参 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `image-name` | string | ✅ | - | 发布的镜像全名，展示在发布单中 |
+| `platform` | string | ❌ | `''` | 镜像平台，如 `linux/amd64`；留空显示 `linux` |
+
+没有 `secrets:` 块，用 `secrets.GITHUB_TOKEN`
+
+**怎么算变更区间**：`git describe --tags --abbrev=0 <tag>^` 找上一个 tag，
+找不到就按首个发布处理，区间取全历史
+`--tags` 这个参数是必须的：默认只认 annotated tag，会把首个发布判错
+
+**怎么分类**：走 `git log --first-parent --format='%s|%an'`，
+标题里含 `#N` 的算 PR（再用 `gh api` 逐个取标题与作者），不含的算直接提交
+Merge 与 Squash 两种合并方式都落在这条规则里
+
+**发布单内容**：一张表（版本、上一版本、镜像、平台、发布人、发布时间按 `Asia/Shanghai`）
+加一节变更内容，标题里带 PR 数、提交数与 `git diff --shortstat`
+PR 逐条列出，直接提交单独分一组，两者都空则写「区间内无变更记录」
+
+**幂等**：release 已存在就 `gh release edit --notes-file` 更新，
+否则 `gh release create --verify-tag` 新建
+同一份内容也写进 job summary
+
+---
+
+本仓库 `.github/workflows/` 下共 18 个工作流，本文逐个说明了全部 18 个
