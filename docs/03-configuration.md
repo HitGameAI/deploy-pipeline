@@ -288,6 +288,52 @@ jobs:
 | `builder.upx.enable` | `UPX_COMPRESS` | `UPX_COMPRESS` | bool | `false` |
 | `builder.upx.level` | `UPX_LEVEL` | `UPX_LEVEL` | string | `--best --lzma` |
 
+#### `golib` — go-* 公共库的测试与上下游联动 | Test matrix and release chain for the go-* libraries
+
+这一节管着所有 Go 库的 CI 与上下游联动，由 [Go Library Test / Bump Upstream / Trigger
+Downstream](02-workflows.md) 三条工作流共用
+
+| YAML 路径 | 导出的 env | workflow input | 旧式单个 vars | 类型 | 默认值 |
+|---|---|---|---|---|---|
+| `golib.go_versions` | `GOLIB_GO_VERSIONS` | `go-versions` | `GOLIB_GO_VERSIONS` / `GO_VERSIONS` | string | `''` |
+| `golib.platforms` | `GOLIB_PLATFORMS` | `platforms` | `GOLIB_PLATFORMS` / `PLATFORMS` | string | `["ubuntu-latest"]` |
+| `golib.gofmt_check` | `GOLIB_GOFMT_CHECK` | `gofmt-check` | `GOLIB_GOFMT_CHECK` | bool | `true` |
+| `golib.build_tags` | `GOLIB_BUILD_TAGS` | `build-tags` | `GOLIB_BUILD_TAGS` | string | `''` |
+| `golib.test_flags` | `GOLIB_TEST_FLAGS` | `test-flags` | `GOLIB_TEST_FLAGS` | string | `-race -count=1 -shuffle=on` |
+| `golib.test_timeout` | `GOLIB_TEST_TIMEOUT` | `test-timeout` | `GOLIB_TEST_TIMEOUT` | string | `10m` |
+| `golib.gotestsum_version` | `GOTESTSUM_VERSION` | `gotestsum-version` | `GOTESTSUM_VERSION` | string | `v1.13.0` |
+| `golib.coverage_go_version` | `GOLIB_COVERAGE_GO_VERSION` | `coverage-go-version` | `GOLIB_COVERAGE_GO_VERSION` | string | `''` |
+| `golib.coverage_platform` | `GOLIB_COVERAGE_PLATFORM` | `coverage-platform` | `GOLIB_COVERAGE_PLATFORM` | string | `ubuntu-latest` |
+| `golib.codecov_slug` | `GOLIB_CODECOV_SLUG` | `codecov-slug` | `GOLIB_CODECOV_SLUG` | string | `''` |
+| `golib.downstream_repos` | `GOLIB_DOWNSTREAM_REPOS` | `downstream-repos` | `GOLIB_DOWNSTREAM_REPOS` / `DOWNSTREAM_REPOS` | string | `''` |
+| `golib.downstream_create_tag` | `GOLIB_DOWNSTREAM_CREATE_TAG` | `downstream-create-tag` | `GOLIB_DOWNSTREAM_CREATE_TAG` | bool | `false` |
+| `golib.bump_run_tests` | `GOLIB_BUMP_RUN_TESTS` | `run-tests` | `GOLIB_BUMP_RUN_TESTS` | bool | `true` |
+
+**四个默认值留空是故意的，填上会坏事：**
+
+`go_versions` 留空不是「还没想好默认值」，而是工作流靠「这一项为空」判断要不要从调用方
+`go.mod` 推导矩阵
+一旦填上静态默认值，推导分支就永远走不到 —— 这个错犯过：默认值写成
+`["1.25.x","1.26.x","1.27.x"]` 时，地板是 1.26 的仓库拿到了 1.25.x，被工具链闸门当场判红；
+而地板是 1.21 或 1.23 的仓库则悄悄不再测自己的地板
+要覆盖推导结果就填，但每一项都必须不低于本仓库 `go.mod` 的 `go` 指令
+
+`coverage_go_version` 留空取矩阵里最高的那个
+别写死版本号：矩阵会随 Go 发新版自己上移，写死的值早晚匹配不到任何 job，
+于是覆盖率静默停止上传而 CI 仍然全绿
+
+`codecov_slug` 留空由工作流回落到 `github.repository`
+注意 schema 的 `{repo}` 只展开仓库名、不含 owner，而 Codecov 要的是 `owner/repo`，
+所以这一项不能用 `{repo}` 占位
+
+`downstream_repos` 留空走真实依赖图自动推导，这是默认也是推荐做法
+填了之后流水线仍会比对推导结果，缺漏的在 job summary 里点出来并发 warning
+格式认 JSON 数组、逗号分隔、空白分隔，裸仓库名按当前 owner 补全
+真实的依赖图与各仓库的影响面见 [依赖层级](12-dependency-graph.md)
+
+**`test_flags` 的默认值带 `-shuffle=on`**，所以测试之间不能有顺序依赖
+依赖全局状态初值的用例在这个默认下会随机失败，那是用例的问题不是流水线的问题
+
 #### `cleanup` — artifacts / cache / 镜像清理 | Artifact, cache and image cleanup
 
 | YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
@@ -374,6 +420,14 @@ env:
 | `go.app_id` | `APP_ID` | `APP_ID` | secret | `''` |
 | `go.app_private_key` | `APP_PRIVATE_KEY` | `APP_PRIVATE_KEY` | secret | `''` |
 | `go.git_ssh_private_key` | `GIT_SSH_PRIVATE_KEY` | `GIT_SSH_PRIVATE_KEY` | secret | `''` |
+| `go.gpa_token` | `GH_GPA_TOKEN` | `GH_GPA_TOKEN` | secret | `''` |
+
+`gpa_token` 是上下游 dispatch 与推送的**回退** PAT，优先级低于 App 凭证
+三条 Go 工作流取凭证的顺序都是 App token 优先、其次 `GH_GPA_TOKEN`、最后 `github.token`
+回落到 `github.token` 时跨仓库 dispatch 根本发不出去（它只对本仓库有效），
+而 bump 用它推的提交**不触发本仓库任何 workflow**，于是升级结果无人校验
+
+`app_private_key` 要写 GitHub App 私钥全文，在 YAML 里用 `|` 块标量写多行
 
 #### `branch` — 跨仓库批量操作凭证 | Cross-repository batch credentials
 

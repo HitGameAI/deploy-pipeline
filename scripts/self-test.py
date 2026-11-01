@@ -320,7 +320,44 @@ def check_docs(_yaml_mod):
                 dead.append("%s -> %s" % (os.path.relpath(p, ROOT), m.group(1)))
     check(not dead, "文档里的站内链接都有效", "\n".join(dead) if dead else "")
 
-    # 4. README 必须链到每一篇 docs
+    # 4. 配置表里每一节、每一个键都要在配置文档里出现
+    #
+    # 实测漏过一整节：golib 有 13 个键，管着所有 Go 库的 CI，
+    # 而 03-configuration.md 里一行都没有
+    # 键是逐个比对 YAML 路径（如 kube.hpa.enable），不是只看节名在不在
+    #
+    # [EN] Every section and every key in the schema has to appear in the configuration
+    # document. A whole section had been missing: golib carries thirteen keys governing CI for
+    # every Go library and the document did not mention one of them. Keys are matched by their
+    # YAML path rather than by section name alone
+    import yaml as _yaml
+    schema = load_schema(_yaml)
+    cfg_doc = io.open(os.path.join(docs_dir, "03-configuration.md"), encoding="utf-8").read()
+
+    missing_sections, missing_keys = [], []
+    for group, label in (("sections", "明文"), ("secret_sections", "密钥")):
+        for sec, body in (schema.get(group) or {}).items():
+            keys = (body or {}).get("keys") or {}
+            if not keys:
+                # 自由键值表（env / app）没有固定键，只要节名在文档里就算覆盖
+                if "`%s`" % sec not in cfg_doc:
+                    missing_sections.append("%s/%s" % (label, sec))
+                continue
+            if "`%s`" % sec not in cfg_doc:
+                missing_sections.append("%s/%s（%d 个键）" % (label, sec, len(keys)))
+                continue
+            for k in keys:
+                path = "%s.%s" % (sec, k)
+                if path not in cfg_doc:
+                    missing_keys.append("%s/%s" % (label, path))
+
+    check(not missing_sections, "配置表里每一节都在 03-configuration.md 里",
+          "文档里没有这些节：\n" + "\n".join(missing_sections) if missing_sections else "")
+    check(not missing_keys, "配置表里每个键都在 03-configuration.md 里",
+          "文档里没有这 %d 个键：\n" % len(missing_keys) + "\n".join(missing_keys)
+          if missing_keys else "")
+
+    # 5. README 必须链到每一篇 docs
     readme = io.open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
     unlinked = [
         os.path.basename(p) for p in md_files[1:]
