@@ -1,6 +1,6 @@
 # 自测清单
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## ✅ 自测清单
 

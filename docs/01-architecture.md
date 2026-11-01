@@ -1,6 +1,6 @@
 # 项目架构与脚本引用机制
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## 🏗️ 项目架构
 

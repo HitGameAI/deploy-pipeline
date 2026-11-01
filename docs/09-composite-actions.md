@@ -1,15 +1,16 @@
 # Composite Actions
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## 🧩 Composite Actions
 
-`.github/actions/` 下的复合 Action，可在自己的工作流里单独引用。
+`.github/actions/` 下的复合 Action，可在自己的工作流里单独引用
 
 ### resolve-config
 
 所有配置的唯一入口：把聚合 YAML 校验、合并、兜底、打码之后写进 `GITHUB_ENV`，
-之后同一个 job 里的步骤一律用 `${{ env.XXX }}` 取值。详见[配置章节](#-配置一份聚合-yaml)。
+之后同一个 job 里的步骤一律用 `${{ env.XXX }}` 取值
+详见[配置章节](#-配置一份聚合-yaml)
 
 | 入参 | 必填 | 说明 |
 |------|------|------|
@@ -25,7 +26,7 @@
 
 | 出参 | 说明 |
 |------|------|
-| `json` | 解析结果的 JSON（不含密钥）。job 级字段取不到 `GITHUB_ENV`，要跨 job 传值就用 `fromJSON(steps.<id>.outputs.json).XXX` |
+| `json` | 解析结果的 JSON（不含密钥），job 级字段取不到 `GITHUB_ENV`，要跨 job 传值就用 `fromJSON(steps.<id>.outputs.json).XXX` |
 
 ```yaml
 - name: ⚙️ Resolve Pipeline Config
@@ -42,16 +43,18 @@
 ```
 
 密钥的处理：每个叶子值逐行 `::add-mask::` 打码（4 个字符以下不打，免得日志全是 `***`）；
-`app` 节不进 `GITHUB_ENV`，而是落到 `$RUNNER_TEMP` 下 0600 的文件，由部署那步读去同步成集群 Secret。
+`app` 节不进 `GITHUB_ENV`，而是落到 `$RUNNER_TEMP` 下 0600 的文件，由部署那步读去同步成集群 Secret
 
 ### resolve-service-vars
 
 服务流水线的 setup 一步到位：算出产物与镜像身份、构建部署决策、ConfigMap 与启动参数、
-容器 env 列表。替掉的是调用方 `pipeline.yml` 里那段 158 行 shell（三个服务仓库逐字节
-相同，只差一个默认 Secret 名）。内部先跑 [resolve-config](#resolve-config) 解析
-`service` / `env` / `docker` / `kube` / `notify` 几节，再跑 `scripts/service-vars.sh`。
+容器 env 列表
+替掉的是调用方 `pipeline.yml` 里那段 158 行 shell（三个服务仓库逐字节
+相同，只差一个默认 Secret 名）
+内部先跑 [resolve-config](#resolve-config) 解析
+`service` / `env` / `docker` / `kube` / `notify` 几节，再跑 `scripts/service-vars.sh`
 
-**调用方必须先 `actions/checkout`**：这一步要读服务的配置文件、扫源码抽密钥名。
+**调用方必须先 `actions/checkout`**：这一步要读服务的配置文件、扫源码抽密钥名
 
 | 入参 | 必填 | 默认 | 说明 |
 |------|------|------|------|
@@ -66,19 +69,20 @@
 `version` / `build-time` / `git-commit` / `image-base` / `image-name` / `release-mode` /
 `deploy-environment` / `should-build-docker` / `should-deploy-k8s` / `code-quality` /
 `notification-provider` / `k8s-config-yaml` / `k8s-configmap-name` / `k8s-enable-hpa` /
-`k8s-secret-name` / `cmd-args` / `extra-copy-dirs` / `extra-env-block`。
+`k8s-secret-name` / `cmd-args` / `extra-copy-dirs` / `extra-env-block`
 
 用法见[后端 Go 服务示例](#后端-go-服务示例)；各项默认值与模板占位符见
-[`service` 配置节](#全部配置项)。
+[`service` 配置节](#全部配置项)
 
 ### normalize-image-name
 
-把 Docker 镜像名规范化，并按需生成 tag 列表。
+把 Docker 镜像名规范化，并按需生成 tag 列表
 
-**为什么需要它**：Docker 对镜像名有两条硬规则 —— repository 部分必须全小写，tag 里不能出现 `/`。
+**为什么需要它**：Docker 对镜像名有两条硬规则 —— repository 部分必须全小写，tag 里不能出现 `/`
 而 GitHub 的组织名常带大写（`MyOrgName`），分支名常带斜杠（`feature/turnover`），直接拼进镜像名
-会在 push 阶段报 `invalid reference format`。这个 Action 把 repository 转小写、把 tag 里的 `/` 换成 `-`，
-同时**不碰 registry 端口号**（`registry:5000/app:v1` 里 `/` 之前的冒号不会被当成 tag 分隔符）。
+会在 push 阶段报 `invalid reference format`
+这个 Action 把 repository 转小写、把 tag 里的 `/` 换成 `-`，
+同时**不碰 registry 端口号**（`registry:5000/app:v1` 里 `/` 之前的冒号不会被当成 tag 分隔符）
 
 | 入参 | 必填 | 默认 | 说明 |
 |------|------|------|------|
@@ -104,10 +108,11 @@
 
 ### print-runner-info
 
-打印 runner 的内核、架构、CPU 型号与核数、内存、磁盘。无入参无出参。
+打印 runner 的内核、架构、CPU 型号与核数、内存、磁盘
+无入参无出参
 
 排查这几类问题时很省事：构建突然变慢（换了规格更低的 runner）、交叉编译结果不对
-（架构与预期不符）、`go build` 被 OOM kill（内存不够）、磁盘写满导致 docker build 失败。
+（架构与预期不符）、`go build` 被 OOM kill（内存不够）、磁盘写满导致 docker build 失败
 
 ```yaml
 - uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
@@ -116,12 +121,12 @@
 ### notify
 
 统一的通知 Action，支持飞书 / 企业微信 / Telegram，详见
-[通知与发布单](#-通知与发布单) 一节的「通用通知 Action」。
+[通知与发布单](#-通知与发布单) 一节的「通用通知 Action」
 
 ### update-proto-mod
 
 下游仓库升级 proto 模块引用，详见
-[proto 模块引用升级](#proto-模块引用升级update-proto-mod) 一节。
+[proto 模块引用升级](#proto-模块引用升级update-proto-mod) 一节
 
 ---
 
@@ -129,7 +134,7 @@
 
 ### fetch-pipeline-assets
 
-把本仓库自带的 `scripts/` 与 `templates/` 复制到调用方工作区。
+把本仓库自带的 `scripts/` 与 `templates/` 复制到调用方工作区
 
 | 入参 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -138,25 +143,27 @@
 
 **为什么需要它，而不是直接 checkout 本仓库**
 
-复用工作流要用到本仓库的 `scripts/` 与 `templates/`。直觉做法是
+复用工作流要用到本仓库的 `scripts/` 与 `templates/`
+直觉做法是
 
 ```yaml
 - uses: actions/checkout@v6
   with: { repository: kamalyes/deploy-pipeline, ref: master }
 ```
 
-但在复用工作流里，`GITHUB_TOKEN` 的作用域是**调用方仓库**，对本仓库没有读权限。而 GitHub 对
+但在复用工作流里，`GITHUB_TOKEN` 的作用域是**调用方仓库**，对本仓库没有读权限
+而 GitHub 对
 无权访问的私有仓库返回 **404 而不是 403**（避免泄漏仓库是否存在），所以报错是
-`remote: Repository not found.` —— 看起来像仓库不存在，实际是没权限，这个误导性很强。
+`remote: Repository not found.` —— 看起来像仓库不存在，实际是没权限，这个误导性很强
 
 Settings → Actions → General → Access 只放开 `uses:` 对私有工作流/Action 的**引用**权限，
-不会给 checkout 提供凭据，所以开了 Access 也修不掉那一步。
+不会给 checkout 提供凭据，所以开了 Access 也修不掉那一步
 
 换成 action 之后**不需要任何凭据**：远程引用 action 时 runner 已经把整个仓库下载到 `_actions`
-下，这两个目录本来就在手边，用 `GITHUB_ACTION_PATH` 相对定位即可。
+下，这两个目录本来就在手边，用 `GITHUB_ACTION_PATH` 相对定位即可
 
-使用方：`backend-build-binary.yml`、`branch-cut.yml`、`branch-recycle.yml`。
+使用方：`backend-build-binary.yml`、`branch-cut.yml`、`branch-recycle.yml`
 
-> 层数约定：action 位于 `.github/actions/<name>/`，所以回三层到仓库根。
+> 层数约定：action 位于 `.github/actions/<name>/`，所以回三层到仓库根
 > `notify` action 里的 `${GITHUB_ACTION_PATH}/../../../scripts/notify.sh` 是同一层数，
-> 改目录结构时两处要一起改。
+> 改目录结构时两处要一起改

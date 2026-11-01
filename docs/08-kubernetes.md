@@ -1,6 +1,6 @@
 # K8s 部署架构与模板
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## 📊 K8s 部署架构
 
@@ -138,7 +138,7 @@ flowchart TD
 ### CI/CD 调用时序
 
 上面的流程图讲「有哪些环节」，这张图讲「谁在什么时候调了谁」——
-可复用工作流的交接点、产物在哪一步落地、通知在哪一步发出。
+可复用工作流的交接点、产物在哪一步落地、通知在哪一步发出
 
 ```mermaid
 sequenceDiagram
@@ -179,14 +179,14 @@ sequenceDiagram
 ```
 
 > 每个 `uses:` 都是一次独立的 job 交接：产物只能通过 artifact 传递，环境变量与 Secret
-> 不会自动跨 job 继承 —— 这就是为什么调用方必须显式写 `secrets:` 或 `secrets: inherit`。
+> 不会自动跨 job 继承 —— 这就是为什么调用方必须显式写 `secrets:` 或 `secrets: inherit`
 
 ---
 
 ## 📦 K8s 模板清单与占位符
 
-`templates/k8s/` 下的 12 个 yaml 不是直接 apply 的成品，而是 **envsubst 模板**。
-部署工作流会把本仓库 checkout 到 `_deploy-workflows/`，导出一堆环境变量，再逐个渲染。
+`templates/k8s/` 下的 12 个 yaml 不是直接 apply 的成品，而是 **envsubst 模板**
+部署工作流会把本仓库 checkout 到 `_deploy-workflows/`，导出一堆环境变量，再逐个渲染
 
 ```text
 deploy-pipeline checkout → _deploy-workflows/templates/k8s/<backend|frontend>/*.yaml
@@ -196,8 +196,9 @@ deploy-pipeline checkout → _deploy-workflows/templates/k8s/<backend|frontend>/
 ```
 
 > ⚠️ **Ingress 相关模板是 Traefik CRD**（`traefik.io/v1alpha1` 的 `IngressRoute` 与
-> `Middleware`），不是 k8s 原生 `Ingress`。集群里没装 Traefik 的话，这几个资源
-> apply 会失败 —— 要么装 Traefik，要么 fork 掉这几个模板换成自己的 Ingress 实现。
+> `Middleware`），不是 k8s 原生 `Ingress`
+> 集群里没装 Traefik 的话，这几个资源
+> apply 会失败 —— 要么装 Traefik，要么 fork 掉这几个模板换成自己的 Ingress 实现
 
 ### 后端模板（templates/k8s/backend/）
 
@@ -222,7 +223,7 @@ deploy-pipeline checkout → _deploy-workflows/templates/k8s/<backend|frontend>/
 | `middleware.yaml` | Traefik Middleware | `ingress-path-prefix` 非空 | StripPrefix |
 
 后端比前端多出 `ingress-http.yaml` 与 `middleware-redirect.yaml`，因为后端对外常要同时
-保留 80（跳转）和 443（服务）；前端站点一般由上层网关统一接管跳转。
+保留 80（跳转）和 443（服务）；前端站点一般由上层网关统一接管跳转
 
 ### 占位符从哪来
 
@@ -302,6 +303,6 @@ sequenceDiagram
 | 加一种全新资源（如 ServiceMonitor）| 在 `templates/k8s/<side>/` 加模板，并在对应 deploy 工作流里补 envsubst 与 apply |
 
 调试建议：部署工作流会把渲染后的 yaml 作为 artifact 上传，出问题时先下载它看实际渲染结果 ——
-绝大多数「apply 报错」都是某个 `_BLOCK` 拼出来缩进不对，直接看成品比猜变量快。
+绝大多数「apply 报错」都是某个 `_BLOCK` 拼出来缩进不对，直接看成品比猜变量快
 
 ---

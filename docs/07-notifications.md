@@ -1,6 +1,6 @@
 # 通知与发布单
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## 📣 通知与发布单
 
@@ -55,7 +55,7 @@ jobs:
     secrets: inherit
 ```
 
-> 所选渠道的 webhook 未配置时静默跳过，不会把 job 判红。
+> 所选渠道的 webhook 未配置时静默跳过，不会把 job 判红
 
 ### 通用通知 Action
 
@@ -81,7 +81,7 @@ jobs:
 ### 企业微信群机器人
 
 群设置 → 群机器人 → 添加，复制 Webhook 地址存为 secret `WECOM_WEBHOOK_URL`
-（只想存 key 时用 `WECOM_WEBHOOK_KEY`，脚本会自行拼 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=`；两者都给时 URL 优先）。
+（只想存 key 时用 `WECOM_WEBHOOK_KEY`，脚本会自行拼 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=`；两者都给时 URL 优先）
 
 ```yaml
 # 部署通知
@@ -91,7 +91,8 @@ secrets:
   WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
 ```
 
-消息用群机器人的 `markdown` 类型。平台侧的硬限制与本脚本的处理：
+消息用群机器人的 `markdown` 类型
+平台侧的硬限制与本脚本的处理：
 
 | 限制 | 说明 | 脚本处理 |
 |------|------|----------|
@@ -108,9 +109,9 @@ env:
   WECOM_MENTIONED_MOBILE_LIST: '@all'            # 手机号或 @all，需 text 类型，额外补发 1 条
 ```
 
-`WECOM_MENTIONED_MOBILE_LIST` 补发的那条 text 只含标题；它失败不影响主通知的成败判定。
+`WECOM_MENTIONED_MOBILE_LIST` 补发的那条 text 只含标题；它失败不影响主通知的成败判定
 
-> 没选企业微信的 `markdown_v2`：v2 支持表格和代码块，但不支持字体色，也不支持 `<@userid>` 扩展语法，拿不到与飞书卡片一致的状态配色。
+> 没选企业微信的 `markdown_v2`：v2 支持表格和代码块，但不支持字体色，也不支持 `<@userid>` 扩展语法，拿不到与飞书卡片一致的状态配色
 
 ### proto 模块引用升级（update-proto-mod）
 

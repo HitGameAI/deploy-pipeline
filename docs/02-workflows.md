@@ -1,6 +1,6 @@
 # 工作流列表与详细说明
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## 📋 工作流列表
 
@@ -25,7 +25,7 @@
 | **Go 库** | Trigger Downstream | `go-trigger-downstream.yml` | 发 tag 后通知一级下游，清单由依赖图自动推导 |
 | **Go 库** | Bootstrap | `golib-bootstrap.yml` | 体检并下发各库的接入状态与 App 凭证 |
 
-> GitHub reusable workflow 的 `uses:` 目标必须直接位于 `.github/workflows/` 顶层，不能放在 `backend/`、`frontend/`、`shared/` 等二级目录。
+> GitHub reusable workflow 的 `uses:` 目标必须直接位于 `.github/workflows/` 顶层，不能放在 `backend/`、`frontend/`、`shared/` 等二级目录
 
 ---
 
@@ -63,8 +63,9 @@ sequenceDiagram
 ```
 
 > 两个令牌职责不同：`PROTO_READ_TOKEN` 只需要对 proto 仓库有读权限，
-> `PUSH_TOKEN` 需要对**当前仓库**有写权限。混用一个全权令牌能跑通，
-> 但一旦泄露影响面要大得多。
+> `PUSH_TOKEN` 需要对**当前仓库**有写权限
+> 混用一个全权令牌能跑通，
+> 但一旦泄露影响面要大得多
 
 
 ### 共享工作流
@@ -183,8 +184,8 @@ cleanup:
 #### Generate Pipeline Config
 
 接入新服务时不用翻文档抄配置项：到 Actions 里手动触发它，带注释的默认配置会整份打到
-job summary 里（明文那份 + 密钥骨架），顺手上传成 artifact，直接贴进仓库变量即可。
-已经写好的配置也可以贴进来让它校验，省得推一次流水线才发现键名拼错。
+job summary 里（明文那份 + 密钥骨架），顺手上传成 artifact，直接贴进仓库变量即可
+已经写好的配置也可以贴进来让它校验，省得推一次流水线才发现键名拼错
 
 | 入参 | 必填 | 默认 | 说明 |
 |------|------|------|------|
@@ -193,13 +194,13 @@ job summary 里（明文那份 + 密钥骨架），顺手上传成 artifact，�
 | `config` | ❌ | `''` | `validate` 模式下待校验的 YAML |
 
 `validate` 模式不用先说明「这是哪一节」：先按总表校，不匹配就逐节试一遍，
-都不匹配才报错，并给出具体路径与「是否想写」建议。
+都不匹配才报错，并给出具体路径与「是否想写」建议
 
-generate 出来的东西自己会过一遍校验 —— 示例要是都通不过，说明配置表本身有问题。
+generate 出来的东西自己会过一遍校验 —— 示例要是都通不过，说明配置表本身有问题
 
 ### 分支管理工作流
 
-周节奏 SOP 的分支工程化：周三上线发布后 dev 回收重切（git 树每周归零）+ 新迭代从最新 master 切 feature。
+周节奏 SOP 的分支工程化：周三上线发布后 dev 回收重切（git 树每周归零）+ 新迭代从最新 master 切 feature
 
 #### Branch Recycle（dev 回收重切 + 已合并 feature 清理）
 
@@ -259,8 +260,8 @@ notify:
 ```
 
 旧式单个变量 `vars.BRANCH_OPS_REPOS` / `secrets.BRANCH_OPS_TOKEN` 仍然有效，
-优先级在聚合 YAML 之下，详见[配置章节](#-配置一份聚合-yaml)。
-`branch.token` 留空时回退本次运行的 `GITHUB_TOKEN`，那只够操作当前仓库，跨仓库批量会 404。
+优先级在聚合 YAML 之下，详见[配置章节](#-配置一份聚合-yaml)
+`branch.token` 留空时回退本次运行的 `GITHUB_TOKEN`，那只够操作当前仓库，跨仓库批量会 404
 
 **调用示例**：
 
@@ -283,7 +284,7 @@ branch-recycle:
 
 #### Branch Cut（批量切分支）
 
-新迭代启动（周三发布后定下版本内容）：从最新 master 给一批仓库统一切出 `feature/xx`。
+新迭代启动（周三发布后定下版本内容）：从最新 master 给一批仓库统一切出 `feature/xx`
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -293,7 +294,8 @@ branch-recycle:
 | `dry-run` | boolean | 否 | `false` | 干跑模式 |
 | `notification-provider` | string | 否 | `feishu` | 通知渠道 |
 
-幂等：目标分支已存在的仓库自动跳过。切完自动推结果卡片，替代群里人肉喊"大家切分支了"。
+幂等：目标分支已存在的仓库自动跳过
+切完自动推结果卡片，替代群里人肉喊"大家切分支了"
 
 ```yaml
 # 在 deploy-pipeline 仓库手动 dispatch：new-branch=feature/xxx，repos 留空用 branch.repos
@@ -351,7 +353,8 @@ bash scripts/branch-ops.sh cut                # 切分支模式
 
 #### 🔐 Go 私有模块认证（`go-auth-method`）
 
-当项目依赖私有 Go 模块（通过 `goprivate` 指定）时，CI 需要认证才能拉取。`go-auth-method` 支持三种方式：
+当项目依赖私有 Go 模块（通过 `goprivate` 指定）时，CI 需要认证才能拉取
+`go-auth-method` 支持三种方式：
 
 | 值 | 说明 | Secrets | 安全性 |
 |-----|------|---------|--------|
@@ -549,4 +552,4 @@ build-binary:
 | PR Merged Notify | `pr-merged-notify.yml` | [通知与发布单](07-notifications.md) |
 | 📋 Release Note | `release-note.yml` | [通知与发布单](07-notifications.md) |
 
-本仓库 `.github/workflows/` 下共 18 个工作流，上表 7 个加本文正文 11 个，覆盖齐全。
+本仓库 `.github/workflows/` 下共 18 个工作流，上表 7 个加本文正文 11 个，覆盖齐全

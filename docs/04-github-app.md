@@ -1,12 +1,13 @@
 # GitHub App 创建与配置
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## 🔑 GitHub App 创建与配置
 
 `APP_ID` + `APP_PRIVATE_KEY` 这两个 Secret 不是随手填的字符串，它们来自一个你自己注册的
-GitHub App。本节把「从零注册到工作流跑通」这条路写完整，官方文档见
-[注册 GitHub App](https://docs.github.com/zh/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)。
+GitHub App
+本节把「从零注册到工作流跑通」这条路写完整，官方文档见
+[注册 GitHub App](https://docs.github.com/zh/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
 
 ### 为什么用 App 而不是 PAT
 
@@ -19,7 +20,7 @@ GitHub App。本节把「从零注册到工作流跑通」这条路写完整，�
 | 成员席位 | 不占用组织席位 | 机器人账号要占席位（私有仓库要付费）|
 
 工作流里用的是 [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)：
-它拿 App ID 与私钥换一个**短时效的安装令牌**，用完即弃。
+它拿 App ID 与私钥换一个**短时效的安装令牌**，用完即弃
 
 ### 这个仓库用 App 做什么
 
@@ -33,12 +34,12 @@ GitHub App。本节把「从零注册到工作流跑通」这条路写完整，�
 | 给各库下发 App 凭证（写别人仓库的 Actions secret）| `golib-bootstrap.yml` | Secrets: **Read and write** |
 | 推导依赖图（枚举仓库、读各库 `go.mod`）| `go-trigger-downstream.yml`、`golib-bootstrap.yml` | Metadata + Contents: **Read-only** 即可 |
 
-只做前一件事时，权限给到 `Contents: Read-only` 就够了。
-把三件事放在同一个 App 上没问题 —— 权限是按安装仓库生效的，不会让只读场景拿到写权限。
+只做前一件事时，权限给到 `Contents: Read-only` 就够了
+把三件事放在同一个 App 上没问题 —— 权限是按安装仓库生效的，不会让只读场景拿到写权限
 
 ### 令牌是怎么换出来的
 
-弄清这条链路，才知道为什么「App 建好了但还是 403」——问题几乎总出在第 3 步的安装关系上。
+弄清这条链路，才知道为什么「App 建好了但还是 403」——问题几乎总出在第 3 步的安装关系上
 
 ```mermaid
 sequenceDiagram
@@ -85,20 +86,22 @@ sequenceDiagram
    | Pull requests | Read and write（只拉模块可不给）| 机器人评论 PR |
    | Metadata | Read-only（勾了上面会自动带上）| GitHub 强制要求 |
 
-   其余一律不动。多给的权限不会让流程更顺，只会扩大泄露后的影响面。
+   其余一律不动
+   多给的权限不会让流程更顺，只会扩大泄露后的影响面
 
 4. **选安装范围**：Where can this GitHub App be installed → **Only on this account**
 
 5. **创建并记下 App ID**：创建后页面顶部的 `App ID`（纯数字）就是 `APP_ID`
 
 6. **生成私钥**：同一页 → Private keys → Generate a private key，浏览器会下载一个
-   `.pem` 文件。**这个文件只能下载这一次**，关掉页面就拿不回来了（可以再生成新的）
+   `.pem` 文件
+   **这个文件只能下载这一次**，关掉页面就拿不回来了（可以再生成新的）
 
 7. **安装到仓库**：左侧 Install App → 选择账号/组织 → 选 `Only select repositories`，
    勾上需要被访问的仓库（比如 proto 仓库 + 所有要拉它的业务仓库）
 
    > 漏装是最常见的失败原因：App 创建好了但没装到目标仓库，换令牌会成功，
-   > 但用它 `git clone` 私有仓库仍然 404。
+   > 但用它 `git clone` 私有仓库仍然 404
 
 8. **写进 Secrets**（仓库 Settings → Secrets and variables → Actions）
 
@@ -108,9 +111,9 @@ sequenceDiagram
    | `APP_PRIVATE_KEY` | `.pem` 文件的**全部内容**，含 `-----BEGIN RSA PRIVATE KEY-----` 和 `-----END` 两行 |
 
    粘贴私钥时保持原始换行，不要手动删空行或加缩进 —— 粘成一行会报
-   `error:0909006C:PEM routines:get_name:no start line`。
+   `error:0909006C:PEM routines:get_name:no start line`
 
-   组织多仓库复用时，用 **Organization secrets** 配一次，再按仓库授权，比每个仓库各存一份好维护。
+   组织多仓库复用时，用 **Organization secrets** 配一次，再按仓库授权，比每个仓库各存一份好维护
 
 9. **在工作流里启用**：把认证方式切到 `app-token` 并把两个 Secret 透传给可复用工作流
 
@@ -127,7 +130,7 @@ sequenceDiagram
    ```
 
    也可以把 `go-auth-method` 配成仓库 Variable `GO_AUTH_METHOD=app-token`，省掉每个
-   工作流都写一遍。
+   工作流都写一遍
 
 ### 常见错误对照
 

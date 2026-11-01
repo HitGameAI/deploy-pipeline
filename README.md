@@ -7,12 +7,12 @@
 > 同一套工作流在两个组织下各留一份：私有仓库默认不对其它仓库开放 `uses:` 引用
 > （放开办法是 Settings → Actions → General → 底部 Access → "Accessible from repositories
 > in the organization"，没放开时调用方会收到 `workflow was not found`），
-> 所以调用方指向能访问的那一份。
+> 所以调用方指向能访问的那一份
 >
 > 两份内容**完全相同**，唯一的差别是自引用里的组织前缀 ——
-> `uses:` 的路径、`repository:` 的值，都指向各自所在的组织。
+> `uses:` 的路径、`repository:` 的值，都指向各自所在的组织
 > 文档里的示例也只带这个前缀，不带任何项目内部信息：内容本身就是通用的，
-> 所以同步只是「换前缀」，**哪一份当源头都行**，不存在一份要脱敏、一份不用的问题。
+> 所以同步只是「换前缀」，**哪一份当源头都行**，不存在一份要脱敏、一份不用的问题
 >
 > 同步用 [scripts/sync-fork.sh](scripts/sync-fork.sh)，两边组织名都从各自的 git remote
 > 推出来，脚本里不写死任何组织名，因此两份副本里是同一个脚本，反向同步只是把参数
@@ -27,8 +27,8 @@
 > bash scripts/sync-fork.sh ../deploy-pipeline-fork            # 只覆盖与新增，不删
 > ```
 >
-> 脚本只改工作区文件，不碰 git 历史：落盘后在对面仓库自己看 diff 再提交。
-> 换完前缀会校验对面不再残留来源组织名，残留就非零退出。
+> 脚本只改工作区文件，不碰 git 历史：落盘后在对面仓库自己看 diff 再提交
+> 换完前缀会校验对面不再残留来源组织名，残留就非零退出
 >
 > [EN] The same workflows live under two organizations, because a private repository is not
 > referenceable by other repositories by default, so callers point at whichever copy they can
@@ -42,7 +42,8 @@
 
 ## 📑 文档索引
 
-正文按主题拆到 `docs/`，本页只做汇总。每篇都能单独读。
+正文按主题拆到 `docs/`，本页只做汇总
+每篇都能单独读
 
 | # | 文档 | 看这里解决什么问题 |
 |---|---|---|
@@ -63,7 +64,8 @@
 ## 🧭 一分钟全貌
 
 **这个仓库提供什么**：18 个可复用工作流 + 7 个 composite action + 一套 `scripts/`，
-被三个账号下的二三十个仓库通过 `uses:` 引用。改这里一处，所有调用方同时生效。
+被三个账号下的二三十个仓库通过 `uses:` 引用
+改这里一处，所有调用方同时生效
 
 **两条主线**
 
@@ -77,8 +79,8 @@
 - 明文走 `vars`：一份 `PIPELINE_CONFIG` 总表，可按节用 `<SECTION>_CONFIG` 覆盖
 - 密钥走 `secrets`：一份 `PIPELINE_SECRETS`，或逐个单独的 secret
 
-两者都由 `resolve-config` 这一个 action 解析、校验、合并、打码，再经 `GITHUB_ENV` 交给后续步骤。
-详见 [配置](docs/03-configuration.md)。
+两者都由 `resolve-config` 这一个 action 解析、校验、合并、打码，再经 `GITHUB_ENV` 交给后续步骤
+详见 [配置](docs/03-configuration.md)
 
 **最容易踩的三个坑**
 

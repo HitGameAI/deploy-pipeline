@@ -1,19 +1,20 @@
 # 快速接入与多架构构建
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## 🚀 快速接入
 
-> 下面的示例用 `secrets: inherit` 图省事。**调用方与本仓库在同一账号下时它是有效的**；
+> 下面的示例用 `secrets: inherit` 图省事
+> **调用方与本仓库在同一账号下时它是有效的**；
 > 跨账号（例如本仓库在个人账号、调用方在组织）必须改成逐个显式映射，
-> 原因见[那条说明](#inherit-cross-account)。
+> 原因见[那条说明](#inherit-cross-account)
 
 
 ### 后端 Go 服务示例
 
-调用方的 `pipeline.yml` 只写两类东西：**触发条件**与**本仓特有的决策**。
+调用方的 `pipeline.yml` 只写两类东西：**触发条件**与**本仓特有的决策**
 产物名、版本号、镜像名、要不要部署、ConfigMap、容器 env 列表这些，
-由 [resolve-service-vars](#resolve-service-vars) 一步算出来。
+由 [resolve-service-vars](#resolve-service-vars) 一步算出来
 
 ```yaml
 name: 🚀 CI/CD Pipeline
@@ -145,8 +146,9 @@ jobs:
 ```
 
 端口、资源限制、镜像仓库、产物布局这些**一行都不用写在这里**，全在
-`vars.PIPELINE_CONFIG` 里。要配哪些、默认值是什么，手动触发
-[⚙️ Generate Pipeline Config](#generate-pipeline-config) 就会整份打印出来。
+`vars.PIPELINE_CONFIG` 里
+要配哪些、默认值是什么，手动触发
+[⚙️ Generate Pipeline Config](#generate-pipeline-config) 就会整份打印出来
 
 一个后端服务典型的配置：
 
@@ -309,7 +311,7 @@ jobs:
 
 ## 🏗️ 多架构构建（amd64 / arm64）
 
-K8s 集群同时含 amd64 与 arm64 节点时，镜像 manifest 必须标记正确架构，否则调度到 arm64 节点会拉取失败（`no matching manifest for linux/arm64/v8`）。
+K8s 集群同时含 amd64 与 arm64 节点时，镜像 manifest 必须标记正确架构，否则调度到 arm64 节点会拉取失败（`no matching manifest for linux/arm64/v8`）
 
 本流水线采用**单架构参数化构建**——每次调用只产出一个架构镜像，由调用方按目标集群节点架构选择：
 
@@ -338,6 +340,7 @@ jobs:
       # ...其他参数
 ```
 
-> **注意**：`arch` 必须前后一致。binary workflow 用 arm64 交叉编译，docker workflow 也必须传 arm64，否则 manifest 架构标记与二进制实际架构不匹配，运行时会崩溃。
+> **注意**：`arch` 必须前后一致
+> binary workflow 用 arm64 交叉编译，docker workflow 也必须传 arm64，否则 manifest 架构标记与二进制实际架构不匹配，运行时会崩溃
 
 ---

@@ -1,13 +1,13 @@
 # 配置：一份聚合 YAML
 
-> 本文是 [deploy-pipeline](../README.md) 文档的一部分。
+> 本文是 [deploy-pipeline](../README.md) 文档的一部分
 
 ## 🔐 配置：一份聚合 YAML
 
 > 以前每个配置项都是一个 GitHub 变量：`K8S_CPU_LIMIT`、`K8S_MIN_REPLICAS`、`INGRESS_HOST`……
-> 配一个服务要在 Settings 里点几十次，还得记住每个名字。
-> 现在**一个变量装完整份配置**，子对象分节写，推送前能本地校验。
-> 旧的单个变量**继续有效**，作为聚合 YAML 之下的一层回退，不用一次性迁完。
+> 配一个服务要在 Settings 里点几十次，还得记住每个名字
+> 现在**一个变量装完整份配置**，子对象分节写，推送前能本地校验
+> 旧的单个变量**继续有效**，作为聚合 YAML 之下的一层回退，不用一次性迁完
 >
 > [EN] Every setting used to be one GitHub variable, which meant dozens of clicks per service
 > and a name to remember for each. One variable now holds the whole document as nested
@@ -37,10 +37,11 @@
 ```
 
 常用姿势：`PIPELINE_CONFIG` 写仓库级基线（端口、资源、Go 版本），各环境只用 `KUBE_CONFIG`
-覆盖差异的那几项（命名空间、副本数、域名）。
+覆盖差异的那几项（命名空间、副本数、域名）
 
 > **input 层的语义**：沿用原先 `${{ inputs.x || vars.X || '默认' }}` 的判断，空字符串和 `false`
-> 都算「没传」。所以调用方不传就自动落到 vars 与默认值，和改造前一致。
+> 都算「没传」
+> 所以调用方不传就自动落到 vars 与默认值，和改造前一致
 >
 > [EN] The input layer keeps the semantics of the original expression chain: an empty string and
 > false both mean "not provided", so a caller that passes nothing falls through to the variables
@@ -162,7 +163,7 @@ python3 scripts/resolve-config.py --print-example kube docker
 ```
 
 流水线里也是同一套校验：配错了在第一步就红，并且在 job summary 里给出「每一项最终值 + 它来自哪一层」的表，
-排查「为什么是这个值」只看这一张表。
+排查「为什么是这个值」只看这一张表
 
 ### 工作流里的样子
 
@@ -187,21 +188,23 @@ jobs:
 调用方要注意两点：
 
 - **`PIPELINE_SECRETS` 要能传到被调用的工作流**：在 `secrets:` 里显式写
-  `PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}`。只显式传了几个 secret 又没带它的话，聚合密钥读不到。
+  `PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}`
+  只显式传了几个 secret 又没带它的话，聚合密钥读不到
 
   > <a id="inherit-cross-account"></a>**不要依赖 `secrets: inherit`**：它在**跨账号**调用时
-  > 一个 secret 都传不过去 —— 可复用工作流在个人账号、调用方在组织时实测如此。
+  > 一个 secret 都传不过去 —— 可复用工作流在个人账号、调用方在组织时实测如此
   > 而且不只是 `toJSON(secrets)` 枚举不到：按名字取 `toJSON(secrets.FEISHU_WEBHOOK_URL)`
-  > 也求值成 `null`，即该 secret 根本没进被调方上下文。
-  > 症状是**没有任何报错** —— job 绿、其余步骤正常，只有依赖那个 secret 的一步静默跳过。
+  > 也求值成 `null`，即该 secret 根本没进被调方上下文
+  > 症状是**没有任何报错** —— job 绿、其余步骤正常，只有依赖那个 secret 的一步静默跳过
   >
   > 对照之下 `vars` 是另一回事：同一次运行里 `toJSON(vars)` 能完整拿到调用方的全部仓库变量，
-  > 调用方一行都不用传。所以配置走 `vars`、凭证走**显式映射**。
+  > 调用方一行都不用传
+  > 所以配置走 `vars`、凭证走**显式映射**
   >
-  > 同账号调用时 `inherit` 是有效的，但显式映射在两种情形下都成立，没有理由不写。
-- **job 名与 job 级 `if:` 看不到解析结果**：这两处在任何 step 之前求值，拿不到 `GITHUB_ENV`。
+  > 同账号调用时 `inherit` 是有效的，但显式映射在两种情形下都成立，没有理由不写
+- **job 名与 job 级 `if:` 看不到解析结果**：这两处在任何 step 之前求值，拿不到 `GITHUB_ENV`
   所以 build 的 job 名不再内联平台（改成在步骤日志与报告里显示），`notify` job 的跳过条件仍按
-  `notification-provider` 这个 input 判断，而真正发哪些渠道由解析后的 `notify.provider` 决定。
+  `notification-provider` 这个 input 判断，而真正发哪些渠道由解析后的 `notify.provider` 决定
 
 ### 全部配置项
 
@@ -330,7 +333,8 @@ jobs:
 
 #### `env` — 容器里的非密钥环境变量，键名即变量名 | Plaintext container environment, keyed by name
 
-自由键值表：键名由你定（必须是大写环境变量名），值是明文。整节合并后交给 [service-vars.sh](#service-varssh) 渲染成 Deployment 的 env 条目。
+自由键值表：键名由你定（必须是大写环境变量名），值是明文
+整节合并后交给 [service-vars.sh](#service-varssh) 渲染成 Deployment 的 env 条目
 
 ```yaml
 env:
@@ -379,11 +383,12 @@ env:
 
 #### `app` — 业务密钥，键名即容器里的环境变量名 | Service secrets, keyed by container env name
 
-自由键值表：键名就是业务容器里的环境变量名，值是密钥内容。由 `backend-deploy-k8s` 的「同步密钥到集群」那步写成集群里的 K8s Secret，名单取自 `extra-env-block` 里的 `secretKeyRef`（也就是 service-vars.sh 自动抽出来的那份）。
+自由键值表：键名就是业务容器里的环境变量名，值是密钥内容
+由 `backend-deploy-k8s` 的「同步密钥到集群」那步写成集群里的 K8s Secret，名单取自 `extra-env-block` 里的 `secretKeyRef`（也就是 service-vars.sh 自动抽出来的那份）
 
 ### 旧式单个变量（仍然有效）
 
-上面每张表的「旧式单个 vars / secret」列就是原先那套变量名，一个都没废弃，优先级在聚合 YAML 之下。
-已经配好的仓库不动也能跑；想迁移就把它们合成一份 `PIPELINE_CONFIG`，迁完再把旧变量删掉。
+上面每张表的「旧式单个 vars / secret」列就是原先那套变量名，一个都没废弃，优先级在聚合 YAML 之下
+已经配好的仓库不动也能跑；想迁移就把它们合成一份 `PIPELINE_CONFIG`，迁完再把旧变量删掉
 
 ---
