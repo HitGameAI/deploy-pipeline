@@ -1,4 +1,12 @@
-### 
+#!/bin/bash
+# 后端 Go 二进制构建 | Backend Go binary build
+#
+# 原先首行只剩一个 ### ，既没有 shebang 也没有说明
+# 没有 shebang 时 shellcheck 不知道该按哪种 shell 检查，直接报 error 级的 SC2148，
+# 而这个文件用了 set -e，按 sh 而非 bash 去读会得出完全不同的结论
+# [EN] The first line had been reduced to a bare marker with neither a shebang nor a
+# description. Without one shellcheck cannot tell which shell to assume and reports an error,
+# and this file uses set -e, which reads very differently under sh
 
 set -e
 

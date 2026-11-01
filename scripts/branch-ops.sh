@@ -72,7 +72,10 @@ do_recycle() {
   local FEATURE_PREFIX="${BRANCH_OPS_FEATURE_PREFIX:-feature/}"
   local CLEAN_FEATURES="${BRANCH_OPS_CLEAN_FEATURES:-true}"
   local REQUIRE_TAG="${BRANCH_OPS_REQUIRE_TAG:-false}"
-  local TODAY_TAG_PREFIX="prod-$(date +%Y.%m.%d)"
+  # 拆成两行而不是加 disable：本文件没开 set -e，而 date 不会失败，拆开零风险
+  # [EN] Split rather than suppressed: this file does not use set -e and date cannot fail
+  local TODAY_TAG_PREFIX
+  TODAY_TAG_PREFIX="prod-$(date +%Y.%m.%d)"
 
   echo "================================================"
   echo "  ${DRY_TAG}dev 回收重切 + feature 清理"

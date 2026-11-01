@@ -1,6 +1,19 @@
 #!/bin/bash
 # 通用通知脚本 - 支持飞书 / 企业微信 / Telegram
 
+# shellcheck disable=SC2155
+# 这里大量 local x=$(cmd) 是刻意的，不要拆成两行
+#
+# 本文件开了 set -e，而多处取值形如 local title=$(echo "$info" | grep "^title=" | cut ...)
+# grep 没匹配到就返回 1：合写时退出码被 local 吃掉，拿到空串并继续；
+# 拆成两行之后那一行会直接中断，于是少一个可选字段就整条通知发不出去
+# 实测验证过这个差别
+#
+# [EN] The combined form is deliberate and must not be split. This file runs under set -e and
+# several values come from a grep that legitimately finds nothing, returning 1. Combined, that
+# status is swallowed by local and an empty string is used; split, the line aborts, so one
+# missing optional field would stop the whole notification. The difference was verified
+
 set -e
 
 # 引入通用函数库
