@@ -68,6 +68,18 @@ on:
         required: false
         type: string
         default: '7'
+      # job 的 environment: 一直在引用这个输入，但从来没声明过
+      # 未声明的 inputs.environment 求值成空串，于是 environment 等于没设，
+      # 该环境上配的保护规则与环境级 secret 全都不生效，而且不报任何错
+      # [EN] The job's environment has always referenced this input without declaring it. An
+      # undeclared input evaluates to an empty string, so no environment is applied and the
+      # protection rules and environment-scoped secrets attached to it quietly do not take
+      # effect, with nothing reported
+      environment:
+        description: '部署环境名，用于套用环境级保护规则与 secret；留空则不绑定环境 | Environment name for protection rules and scoped secrets; empty binds none'
+        required: false
+        type: string
+        default: ''
       os:
         description: 'Target OS（为空时回退到 vars.BUILD_BINARY_OS，再为空用 linux）'
         required: false

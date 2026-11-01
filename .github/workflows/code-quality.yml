@@ -16,6 +16,17 @@ on:
         required: false
         type: string
         default: ''
+      # 上传覆盖率那步一直在引用这个输入，但从来没声明过
+      # 未声明就求值成空串，upload-artifact 于是回落到仓库默认的 90 天，
+      # 而文档里写的是 7 天 —— 文档与实现对不上，且没有任何报错提示
+      # [EN] The coverage upload step has always referenced this input without declaring it,
+      # so it evaluated to an empty string and the upload silently fell back to the
+      # repository default instead of the value the documentation promises
+      retention-days:
+        description: '覆盖率产物保留天数 | Coverage artifact retention in days'
+        required: false
+        type: string
+        default: '7'
       goproxy:
         description: 'Go module proxy (overrides vars.GOPROXY)'
         required: false
