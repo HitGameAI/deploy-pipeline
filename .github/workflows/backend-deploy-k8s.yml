@@ -894,116 +894,6 @@ jobs:
           else
             export EXTRA_ENV_BLOCK=""
           fi
-
-          # ConfigMap 由 python 生成，不用 heredoc + sed 拼
-          #
-          # data 的每个值都是 YAML 块标量，正文每一行都要缩进到同一层
-          # 一份配置还能靠 sed 's/^/    /' 对付，但 service.configmap_dir 下的文件
-          # 行数与缩进都不可控，而拼错的现象是 kubectl 报键名不合规或整份 apply 失败，
-          # 报错里看不出是哪个文件写出来的
-          # [EN] The ConfigMap is generated with python rather than a heredoc and sed. Every data
-          # value is a YAML block scalar needing a uniform body indent; one config file can be
-          # handled with sed, but the files under service.configmap_dir have no predictable lines
-          # or indentation, and a mistake surfaces as kubectl rejecting a key or the whole apply
-          if [ -n "${{ inputs.config-yaml }}" ] || [ -n "${CONFIGMAP_DIR:-}" ]; then
-            CONFIG_YAML_PATH="${{ inputs.config-yaml }}" \
-            CONFIGMAP_NAME="${{ inputs.configmap-name }}" \
-            CONFIGMAP_NAMESPACE="${{ env.NAMESPACE }}" \
-            OUT="${DEPLOY_DIR}/configmap.yaml" \
-            python3 - <<'PYEOF'
-          import os, sys
-
-          out = os.environ["OUT"]
-          data, seen = {}, {}
-
-          def add(path):
-              with open(path, encoding="utf-8") as fh:
-                  body = fh.read()
-              name = os.path.basename(path)
-              # 明文 ConfigMap 里不许有私钥：命名空间里有读权限的人都能看
-              #
-              # 硬挡而不是警告 —— 警告会被忽略，而 ConfigMap 一旦 apply 上去，
-              # 撤回也救不了已经泄露的私钥 密钥该走 secrets 侧的 app 节，
-              # 渲染成 secretKeyRef，值只存在集群的 Secret 里
-              # 公钥证书（BEGIN CERTIFICATE）不受影响，它本来就是公开的
-              #
-              # [EN] No private key may enter a plaintext ConfigMap, readable by anyone with read
-              # access to the namespace. A hard stop rather than a warning: warnings get ignored,
-              # and once applied, removing the ConfigMap does not unleak the key. Credentials go
-              # through the secrets side's app section and exist only in the in-cluster Secret.
-              # A public certificate is unaffected
-              if "PRIVATE KEY-----" in body:
-                  sys.exit("::error::%s 里有私钥块，而 ConfigMap 是明文的 —— "
-                           "密钥请配到 secrets 的 app 节，会渲染成 secretKeyRef | "
-                           "a private key must not go into a plaintext ConfigMap" % path)
-              if name in seen and seen[name] != path:
-                  sys.exit("::error::ConfigMap 里出现同名文件 %s：%s 与 %s —— "
-                           "data 的键名是文件名，重名会互相覆盖 | duplicate file name"
-                           % (name, seen[name], path))
-              seen[name] = path
-              data[name] = body
-
-          # 服务自己那份配置
-          # [EN] The service's own config file
-          own = os.environ.get("CONFIG_YAML_PATH", "")
-          if own and os.path.isfile(own):
-              add(own)
-
-          # service.configmap_dir 下的文件：只取第一层，不递归
-          #
-          # 不递归是刻意的：ConfigMap 的 data 键名是扁平的文件名，子目录里的文件
-          # 一进来就只剩 basename，层级信息丢掉，还会和同名文件撞上
-          # 需要分层的话用 subPath 挂载，那是另一件事
-          #
-          # [EN] Only the top level, deliberately: a ConfigMap's data keys are flat file names,
-          # so a file in a subdirectory arrives as its basename alone, losing the hierarchy and
-          # colliding with same-named files. Layered layouts need subPath mounts instead
-          cmdir = os.environ.get("CONFIGMAP_DIR", "").strip()
-          if cmdir:
-              if not os.path.isdir(cmdir):
-                  sys.exit("::error::service.configmap_dir 指向的 %s 不是目录 | not a directory"
-                           % cmdir)
-              for name in sorted(os.listdir(cmdir)):
-                  # 点文件是仓库自己的东西（.gitkeep / .sops.yaml 之类），不是配置
-                  # 带目录结构就得有占位文件，而 ConfigMap 的键名就是文件名，
-                  # 不跳过的话容器的 resources/ 下会凭空多出一个 .gitkeep
-                  # [EN] Dotfiles belong to the repository (.gitkeep, .sops.yaml), not to the
-                  # service: a placeholder is needed to carry the directory structure, and since
-                  # a ConfigMap key is the file name, not skipping them would invent a .gitkeep
-                  # inside the container's resources/
-                  if name.startswith("."):
-                      continue
-                  path = os.path.join(cmdir, name)
-                  if os.path.isfile(path):
-                      add(path)
-
-          if not data:
-              sys.exit(0)
-
-          lines = [
-              "apiVersion: v1",
-              "kind: ConfigMap",
-              "metadata:",
-              "  name: %s" % os.environ["CONFIGMAP_NAME"],
-              "  namespace: %s" % os.environ["CONFIGMAP_NAMESPACE"],
-              "data:",
-          ]
-          for name in sorted(data):
-              body = data[name]
-              # | 保住原文的尾换行，|- 不凭空加一个
-              # 有的解析器要求配置文件以换行结尾，两头都不能乱动
-              # [EN] | keeps the source's trailing newline and |- avoids inventing one; some
-              # parsers require a config file to end with a newline, so neither may be altered
-              lines.append("  %s: %s" % (name, "|" if body.endswith("\n") else "|-"))
-              for line in body.rstrip("\n").split("\n"):
-                  lines.append("    " + line if line else "")
-          with open(out, "w", encoding="utf-8") as fh:
-              fh.write("\n".join(lines) + "\n")
-          print("ConfigMap generated: %d 个文件 | %d file(s) — %s"
-                % (len(data), len(data), " ".join(sorted(data))))
-          PYEOF
-          fi
-
           : ${REPLICAS:=1}
           : ${REVISION_HISTORY_LIMIT:=10}
           : ${IMAGE_PULL_POLICY:=IfNotPresent}
@@ -1173,6 +1063,138 @@ jobs:
               cat "$file"
             fi
           done
+      # ConfigMap 单独成一步，不是风格问题：GitHub 对「含 ${{ }} 的标量」有 21000 字符上限，
+      # 渲染那一步本来就有 138 处插值、21577 字符，加上这段 ConfigMap 生成直接越线，
+      # 报的是 Invalid workflow file / Exceeded max expression length —— 整个工作流不给跑
+      #
+      # 所以这一步的 run 体里一个 ${{ }} 都不留：要用的值走 env: 声明（每条都是独立的小标量），
+      # 不含表达式的标量根本不会被当模板，也就没有这个上限
+      #
+      # [EN] The ConfigMap is a step of its own for a hard reason: GitHub caps a scalar containing
+      # ${{ }} at 21000 characters, and the render step already had 138 interpolations across
+      # 21577 characters, so appending this generator pushed it over and the whole workflow was
+      # rejected with "Exceeded max expression length". This step's run body therefore contains no
+      # ${{ }} at all: the values it needs arrive through env:, each its own small scalar, and a
+      # scalar with no expression is never treated as a template and has no such limit.
+      - name: 📦 Generate ConfigMap
+        env:
+          CONFIG_YAML_INPUT: ${{ inputs.config-yaml }}
+          CONFIGMAP_NAME_INPUT: ${{ inputs.configmap-name }}
+          DEPLOY_DIR_INPUT: ${{ inputs.binary-source-dir }}
+        run: |
+          set -uo pipefail
+          DEPLOY_DIR="${DEPLOY_DIR_INPUT}"
+          mkdir -p "${DEPLOY_DIR}"
+
+          # ConfigMap 由 python 生成，不用 heredoc + sed 拼
+          #
+          # data 的每个值都是 YAML 块标量，正文每一行都要缩进到同一层
+          # 一份配置还能靠 sed 's/^/    /' 对付，但 service.configmap_dir 下的文件
+          # 行数与缩进都不可控，而拼错的现象是 kubectl 报键名不合规或整份 apply 失败，
+          # 报错里看不出是哪个文件写出来的
+          # [EN] The ConfigMap is generated with python rather than a heredoc and sed. Every data
+          # value is a YAML block scalar needing a uniform body indent; one config file can be
+          # handled with sed, but the files under service.configmap_dir have no predictable lines
+          # or indentation, and a mistake surfaces as kubectl rejecting a key or the whole apply
+          if [ -n "${CONFIG_YAML_INPUT}" ] || [ -n "${CONFIGMAP_DIR:-}" ]; then
+            CONFIG_YAML_PATH="${CONFIG_YAML_INPUT}" \
+            CONFIGMAP_NAME="${CONFIGMAP_NAME_INPUT}" \
+            CONFIGMAP_NAMESPACE="${NAMESPACE}" \
+            OUT="${DEPLOY_DIR}/configmap.yaml" \
+            python3 - <<'PYEOF'
+          import os, sys
+
+          out = os.environ["OUT"]
+          data, seen = {}, {}
+
+          def add(path):
+              with open(path, encoding="utf-8") as fh:
+                  body = fh.read()
+              name = os.path.basename(path)
+              # 明文 ConfigMap 里不许有私钥：命名空间里有读权限的人都能看
+              #
+              # 硬挡而不是警告 —— 警告会被忽略，而 ConfigMap 一旦 apply 上去，
+              # 撤回也救不了已经泄露的私钥 密钥该走 secrets 侧的 app 节，
+              # 渲染成 secretKeyRef，值只存在集群的 Secret 里
+              # 公钥证书（BEGIN CERTIFICATE）不受影响，它本来就是公开的
+              #
+              # [EN] No private key may enter a plaintext ConfigMap, readable by anyone with read
+              # access to the namespace. A hard stop rather than a warning: warnings get ignored,
+              # and once applied, removing the ConfigMap does not unleak the key. Credentials go
+              # through the secrets side's app section and exist only in the in-cluster Secret.
+              # A public certificate is unaffected
+              if "PRIVATE KEY-----" in body:
+                  sys.exit("::error::%s 里有私钥块，而 ConfigMap 是明文的 —— "
+                           "密钥请配到 secrets 的 app 节，会渲染成 secretKeyRef | "
+                           "a private key must not go into a plaintext ConfigMap" % path)
+              if name in seen and seen[name] != path:
+                  sys.exit("::error::ConfigMap 里出现同名文件 %s：%s 与 %s —— "
+                           "data 的键名是文件名，重名会互相覆盖 | duplicate file name"
+                           % (name, seen[name], path))
+              seen[name] = path
+              data[name] = body
+
+          # 服务自己那份配置
+          # [EN] The service's own config file
+          own = os.environ.get("CONFIG_YAML_PATH", "")
+          if own and os.path.isfile(own):
+              add(own)
+
+          # service.configmap_dir 下的文件：只取第一层，不递归
+          #
+          # 不递归是刻意的：ConfigMap 的 data 键名是扁平的文件名，子目录里的文件
+          # 一进来就只剩 basename，层级信息丢掉，还会和同名文件撞上
+          # 需要分层的话用 subPath 挂载，那是另一件事
+          #
+          # [EN] Only the top level, deliberately: a ConfigMap's data keys are flat file names,
+          # so a file in a subdirectory arrives as its basename alone, losing the hierarchy and
+          # colliding with same-named files. Layered layouts need subPath mounts instead
+          cmdir = os.environ.get("CONFIGMAP_DIR", "").strip()
+          if cmdir:
+              if not os.path.isdir(cmdir):
+                  sys.exit("::error::service.configmap_dir 指向的 %s 不是目录 | not a directory"
+                           % cmdir)
+              for name in sorted(os.listdir(cmdir)):
+                  # 点文件是仓库自己的东西（.gitkeep / .sops.yaml 之类），不是配置
+                  # 带目录结构就得有占位文件，而 ConfigMap 的键名就是文件名，
+                  # 不跳过的话容器的 resources/ 下会凭空多出一个 .gitkeep
+                  # [EN] Dotfiles belong to the repository (.gitkeep, .sops.yaml), not to the
+                  # service: a placeholder is needed to carry the directory structure, and since
+                  # a ConfigMap key is the file name, not skipping them would invent a .gitkeep
+                  # inside the container's resources/
+                  if name.startswith("."):
+                      continue
+                  path = os.path.join(cmdir, name)
+                  if os.path.isfile(path):
+                      add(path)
+
+          if not data:
+              sys.exit(0)
+
+          lines = [
+              "apiVersion: v1",
+              "kind: ConfigMap",
+              "metadata:",
+              "  name: %s" % os.environ["CONFIGMAP_NAME"],
+              "  namespace: %s" % os.environ["CONFIGMAP_NAMESPACE"],
+              "data:",
+          ]
+          for name in sorted(data):
+              body = data[name]
+              # | 保住原文的尾换行，|- 不凭空加一个
+              # 有的解析器要求配置文件以换行结尾，两头都不能乱动
+              # [EN] | keeps the source's trailing newline and |- avoids inventing one; some
+              # parsers require a config file to end with a newline, so neither may be altered
+              lines.append("  %s: %s" % (name, "|" if body.endswith("\n") else "|-"))
+              for line in body.rstrip("\n").split("\n"):
+                  lines.append("    " + line if line else "")
+          with open(out, "w", encoding="utf-8") as fh:
+              fh.write("\n".join(lines) + "\n")
+          print("ConfigMap generated: %d 个文件 | %d file(s) — %s"
+                % (len(data), len(data), " ".join(sorted(data))))
+          PYEOF
+          fi
+
 
       # 把 GitHub Secrets 同步成集群里的 K8s Secret，再由 Deployment 的 secretKeyRef 引用
       # 密钥来源两处：secrets.PIPELINE_SECRETS 的 app 节（优先）与同名的单个 GitHub Secret

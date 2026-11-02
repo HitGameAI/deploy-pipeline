@@ -150,6 +150,48 @@ def check_no_duplicate_keys(yaml_mod):
           "重复的键：\n" + "\n".join(found) if found else "")
 
 
+def check_expression_length(yaml_mod):
+    """含 ${{ }} 的标量不能超过 GitHub 的 21000 字符上限
+
+    这条限制只落在「含至少一个 ${{ }} 的标量」上：GitHub 会把这种标量当模板整体解析
+    不含表达式的标量没有这个上限，所以同样长的 run 体，把插值改成 env: 声明就合法
+
+    越线的表现是 Invalid workflow file / Exceeded max expression length，
+    整个工作流不给跑 —— 而且它报在标量的起始行，看起来像那一行有问题
+    真发生过：渲染那一步本来 138 处插值、21577 字符，往里加一段 ConfigMap 生成就越线
+
+    [EN] The 21000-character cap applies only to a scalar holding at least one ${{ }}, which
+    GitHub parses as a template; a scalar with no expression has no such limit, so the same long
+    run body becomes legal once its interpolations move into env:. Exceeding it rejects the entire
+    workflow with "Exceeded max expression length", reported at the scalar's first line as though
+    that line were at fault. This happened: the render step at 138 interpolations across 21577
+    characters went over when a ConfigMap generator was appended.
+    """
+    section("含表达式的标量不能超 GitHub 的长度上限")
+
+    LIMIT = 21000
+    worst, offenders = (0, "", ""), []
+    for path in workflow_files():
+        doc = parsed_workflow(os.path.basename(path))
+        if doc is None:
+            continue
+        for job_name, job in (doc.get("jobs") or {}).items():
+            for step in job.get("steps") or []:
+                for key, value in (step or {}).items():
+                    if not isinstance(value, str) or "${{" not in value:
+                        continue
+                    where = "%s / %s / %s.%s" % (os.path.basename(path), job_name,
+                                                 step.get("name", "?"), key)
+                    if len(value) > worst[0]:
+                        worst = (len(value), where, value)
+                    if len(value) > LIMIT:
+                        offenders.append("%s: %d 字符" % (where, len(value)))
+
+    check(not offenders, "每个含表达式的标量都在 %d 字符以内（最长 %d，%s）"
+          % (LIMIT, worst[0], worst[1]),
+          "\n".join(offenders) if offenders else "")
+
+
 def check_schema_round_trip(yaml_mod):
     section("配置表：示例能通过自己的校验")
 
@@ -1057,6 +1099,7 @@ def main():
 
     print("流水线自检 | Pipeline self-test")
     check_workflows_parse(yaml)
+    check_expression_length(yaml)
     check_no_duplicate_keys(yaml)
     check_schema_round_trip(yaml)
     check_validate_loop_covers_all_sections(yaml)
