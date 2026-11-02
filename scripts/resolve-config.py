@@ -105,7 +105,18 @@ def yaml_hint(raw, line):
         hit = decl.match(raw[k])
         if hit:
             want = len(hit.group(1)) + 2
-            return ("；上面「%s: |」那一段只缩进了第一行 —— 块标量要求整段都缩进到同一层，"
+            # 提示里只写裸键名，不拼「键: |」
+            #
+            # GitHub 对多行 secret 是逐行打码的，而这份文档里就有一行是「键: |」——
+            # 消息里出现同样的串，整段提示会被打成 ***，于是又看不见了
+            # 实测过：中文那半成了「上面「***」那一段」，英文那半因为只写裸键名反而留着
+            #
+            # [EN] The hint carries the bare key name and never the "key: |" form: GitHub masks a
+            # multi-line secret line by line, and one of this document's lines is exactly
+            # "key: |", so repeating that string gets the whole hint replaced by *** -- measured,
+            # with the Chinese half masked and the English half surviving because it used the
+            # bare name
+            return ("；键「%s」后面那个块标量只缩进了第一行 —— 块标量要求整段都缩进到同一层，"
                     "把它的每一行都缩进 %d 个空格 | the block scalar under \"%s\" has only its "
                     "first line indented; indent every line of the body by %d spaces"
                     % (hit.group(2), want, hit.group(2), want))
@@ -113,9 +124,9 @@ def yaml_hint(raw, line):
         # [EN] An indented key-value line means this is not a block scalar problem
         if raw[k][:1] in (" ", "\t") and ":" in raw[k] and raw[k].split(":", 1)[1].strip():
             key = raw[k].split(":", 1)[0].strip()
-            return ("；这一行没有缩进，往上第一个配置项是「%s: 值」—— 多行值要写成「%s: |」"
-                    "再把内容整体缩进两格 | a multi-line value needs \"%s: |\" with the body "
-                    "indented" % (key, key, key))
+            return ("；这一行没有缩进，往上第一个配置项是键「%s」—— 多行值要在键名后面写一个"
+                    "竖线，再把内容整体缩进两格 | a multi-line value needs a pipe after \"%s\" "
+                    "with the body indented" % (key, key))
     return "；这一行没有缩进，顶层只能是节名 | this line is not indented"
 
 def parse_yaml(text, origin, errors, redact=False):

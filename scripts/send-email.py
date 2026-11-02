@@ -372,6 +372,14 @@ def preview(outdir):
         "<title>邮件模板预览</title><style>" + index_css + "</style></head>"
         "<body><h1>邮件模板预览</h1>"
         "<p>渲染路径与真实发送完全一致，这里看到的就是收件箱里会收到的正文</p>"
+        # 这句写在生成器里而不是事后往产物里补：产物每次重跑都整份覆盖，
+        # 手工加的说明会被静默冲掉，而被冲掉的恰好是那句「不要手工编辑」
+        # [EN] This line lives in the generator rather than being added to the output
+        # afterwards: the output is overwritten wholesale on every run, so a hand-added note
+        # is silently lost, and the note that gets lost is the one saying not to hand-edit
+        "<p style='font-size:13px;color:#8a95a3'>本目录是 "
+        "<code>python3 scripts/send-email.py --preview docs/email-preview</code> "
+        "的生成物，只在 build 分支提交，改模板后重跑覆盖即可，不要手工编辑</p>"
         "<ul>" + cards + "</ul></body></html>",
         encoding="utf-8",
     )
