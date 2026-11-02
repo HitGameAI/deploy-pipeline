@@ -793,9 +793,59 @@ sections:
         input: notification-provider
         var: NOTIFICATION_PROVIDER
         type: enum
-        values: [none, feishu, wecom, telegram, all]
+        values: [none, feishu, wecom, telegram, email, all]
         default: 'all'
         desc: 'all 只发已配置好的渠道，一个都没配就不发也不失败'
+      env_styles:
+        env: NOTIFY_ENV_STYLES
+        input: notify-env-styles
+        var: NOTIFY_ENV_STYLES
+        type: string
+        default: ''
+        desc: '环境标签与配色覆盖：name=标签|主色|底色，多项用逗号分隔；只写要改的，其余用内置值'
+      email_smtp_host:
+        env: EMAIL_SMTP_HOST
+        input: email-smtp-host
+        var: EMAIL_SMTP_HOST
+        type: string
+        default: ''
+        desc: 'SMTP 服务器地址，如 smtp.feishu.cn'
+      email_smtp_port:
+        env: EMAIL_SMTP_PORT
+        input: email-smtp-port
+        var: EMAIL_SMTP_PORT
+        type: port
+        default: '465'
+        desc: 'SMTP 端口；465 走 SSL，587 走 STARTTLS'
+      email_smtp_tls:
+        env: EMAIL_SMTP_TLS
+        input: email-smtp-tls
+        var: EMAIL_SMTP_TLS
+        type: enum
+        values: ['', ssl, starttls, none]
+        default: ''
+        desc: '留空按端口推断：465 → ssl，其余 → starttls'
+      email_from:
+        env: EMAIL_FROM
+        input: email-from
+        var: EMAIL_FROM
+        type: string
+        default: ''
+        desc: '发件地址；留空则用 SMTP 账号'
+      email_from_name:
+        env: EMAIL_FROM_NAME
+        input: email-from-name
+        var: EMAIL_FROM_NAME
+        type: string
+        default: 'CI 流水线'
+        desc: '发件人显示名'
+      email_to:
+        env: EMAIL_TO
+        input: email-to
+        var: EMAIL_TO
+        type: string
+        default: ''
+        desc: '收件人，逗号或分号分隔'
 
   # -------------------- 容器环境变量 | Container environment --------------------
   # 自由键值表：键名就是容器里的环境变量名，值是明文。渲染成 Deployment 的 env 条目。
@@ -865,6 +915,19 @@ secret_sections:
         secret: TELEGRAM_CHAT_ID
         type: secret
         default: ''
+      # 邮件只有账号和密码算密钥；地址、端口、收件人在明文的 notify 节
+      # [EN] Only the account and password are secrets; host, port and recipients are plaintext
+      email_smtp_user:
+        env: EMAIL_SMTP_USER
+        secret: EMAIL_SMTP_USER
+        type: secret
+        default: ''
+      email_smtp_password:
+        env: EMAIL_SMTP_PASSWORD
+        secret: EMAIL_SMTP_PASSWORD
+        type: secret
+        default: ''
+        desc: '多数邮箱要填「授权码」而不是登录密码'
   go:
     desc: '私有模块拉取凭证 | Private module credentials'
     keys:

@@ -1,0 +1,6 @@
+# 本地跑 py_compile 会产生
+__pycache__/
+*.pyc
+
+# send-email.py --preview 的输出目录
+email-preview/

@@ -14,7 +14,10 @@ name: 🔬 Self Test
 # permanently green without ever being verified. This pipeline turns them into real assertions
 on:
   push:
-    branches: [master, main]
+    # build 是预览分支：改模板、改脚本推到这里就能跑出产物看效果，不必先开 PR
+    # [EN] build is the preview branch: pushing template or script changes there produces the
+    # artifact to look at without opening a pull request first
+    branches: [master, main, build]
   pull_request:
   workflow_dispatch:
 
@@ -114,3 +117,65 @@ jobs:
           printf '待编译 %d 个脚本\n' "${#files[@]}"
           python3 -m py_compile "${files[@]}"
           echo "✅ 全部能编译"
+
+  # 邮件模板：渲染出来当产物传上去，评审时点开就能看到收件箱里会收到什么
+  #
+  # 为什么不只做语法检查：模板坏法大多不是语法错 —— 占位符没替换、明细被
+  # 重复注入、深色模式下文字和背景同色，这些都能「正常渲染」出一封难看的邮件
+  # 实测踩过的一次是注释里把 {{DETAIL_ROWS}} 当文档写，于是明细注入了三遍
+  #
+  # 走的是 send-email.py 的 --preview，和真实发送同一条渲染路径，不碰 SMTP
+  #
+  # [EN] The templates are rendered and uploaded as an artifact so a reviewer can see what the
+  # inbox will receive. Syntax checks are not enough: the ways a template breaks are mostly not
+  # syntax errors but unsubstituted placeholders, duplicated rows, or text the same colour as
+  # its dark-mode background, each of which renders a perfectly valid ugly email. One real case
+  # was a comment documenting {{DETAIL_ROWS}} by name, which injected the rows three times.
+  # It runs send-email.py --preview, the same rendering path as a real send, with no SMTP
+  email-templates:
+    name: 📧 Email Templates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 📧 Render Preview
+        run: python3 scripts/send-email.py --preview email-preview
+
+      # 占位符和注释残留必须是硬闸门：留在正文里会直接发到收件人眼前
+      # [EN] Leftover placeholders and comments are a hard gate: they would reach the recipient
+      - name: 🔎 Check Rendered Output
+        run: |
+          fail=0
+          for f in email-preview/*.html; do
+            case "$(basename "$f")" in index.html) continue ;; esac
+            if grep -qE '\{\{[A-Z_]+\}\}' "$f"; then
+              echo "::error file=$f::有未替换的占位符"
+              grep -oE '\{\{[A-Z_]+\}\}' "$f" | sort -u | sed 's/^/    /'
+              fail=1
+            fi
+            if grep -q '<!--' "$f"; then
+              echo "::error file=$f::有残留的 HTML 注释，应在渲染时剥掉"
+              fail=1
+            fi
+            if [ "$(grep -c '<!DOCTYPE' "$f")" != 1 ]; then
+              echo "::error file=$f::DOCTYPE 不是恰好一个，模板可能被重复注入"
+              fail=1
+            fi
+            printf '  %-26s %s\n' "$(basename "$f")" "$(wc -c <"$f" | awk '{printf "%.1f KB", $1/1024}')"
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "✅ 渲染结果干净"
+
+      - name: 📤 Upload Preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: email-preview
+          path: email-preview/
+          retention-days: 14

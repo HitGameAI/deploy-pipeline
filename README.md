@@ -53,7 +53,7 @@
 | 04 | [GitHub App 创建与配置](docs/04-github-app.md) | `APP_ID` 从哪来、要勾哪些权限、常见 403/404 对照 |
 | 05 | [Go 库流水线](docs/05-go-library-pipeline.md) | 三十来个 Go 库共用一条 CI 与上下游联动，要配什么、不用配什么 |
 | 06 | [快速接入与多架构构建](docs/06-quickstart.md) | 复制一份能跑的 `pipeline.yml`、怎么出 arm64 镜像 |
-| 07 | [通知与发布单](docs/07-notifications.md) | 飞书 / 企业微信 / Telegram 通知与 Release Note |
+| 07 | [通知与发布单](docs/07-notifications.md) | 飞书 / 企业微信 / Telegram / 邮件通知与 Release Note |
 | 08 | [K8s 部署架构与模板](docs/08-kubernetes.md) | 部署出来的资源长什么样、12 个模板何时渲染、占位符从哪来 |
 | 09 | [Composite Actions](docs/09-composite-actions.md) | 7 个复合 Action 的入参与出参 |
 | 10 | [公共脚本](docs/10-scripts.md) | `scripts/` 下每个脚本的用法 |

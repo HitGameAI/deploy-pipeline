@@ -113,6 +113,95 @@ env:
 
 > 没选企业微信的 `markdown_v2`：v2 支持表格和代码块，但不支持字体色，也不支持 `<@userid>` 扩展语法，拿不到与飞书卡片一致的状态配色
 
+### 邮件（SMTP）
+
+飞书 / 企业微信 / Telegram 都依赖对应平台：机器人被封、webhook 被轮换、群被解散，通知就断了，而且断了往往没人发现
+邮件不受这些影响，是唯一不依赖第三方平台可用性的渠道，适合作为重要环境的兜底
+
+```yaml
+# 部署通知
+with:
+  notification-provider: 'email'
+secrets:
+  PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}
+```
+
+**配置分两处**：地址、端口、收件人不是敏感信息，放明文的 `notify` 节；只有账号与密码进 secrets
+
+```yaml
+# vars.PIPELINE_CONFIG（或分节变量 NOTIFY_CONFIG）
+notify:
+  email_smtp_host: smtp.feishu.cn
+  email_smtp_port: 465           # 465 走 SSL，587 走 STARTTLS，留空按端口推断
+  email_from_name: CI 流水线      # 发件人显示名
+  email_to: 'team@example.com,ops@example.com'
+```
+
+```yaml
+# secrets.PIPELINE_SECRETS
+notify:
+  email_smtp_user: ci@example.com
+  email_smtp_password: '<授权码>'
+```
+
+> **密码填「授权码」而不是登录密码**：飞书、QQ、163、Gmail 都要求为第三方客户端单独生成一串授权码，填登录密码会报认证失败
+> 脚本在认证失败时会把这条提示一起打出来，不用去翻日志猜
+
+常见邮箱的地址与端口：
+
+| 邮箱 | SMTP 地址 | 端口 | 授权码位置 |
+|------|-----------|------|------------|
+| 飞书邮箱 | `smtp.feishu.cn` | 465（SSL） | 邮箱设置 → 客户端专用密码 |
+| 阿里云邮件推送 | `smtpdm.aliyun.com` | 465（SSL） | 控制台 → 发信地址 → 设置 SMTP 密码 |
+| 腾讯企业邮 | `smtp.exmail.qq.com` | 465（SSL） | 邮箱设置 → 客户端专用密码 |
+| Gmail | `smtp.gmail.com` | 587（STARTTLS） | Google 账号 → 应用专用密码 |
+
+**排版由模板决定**，模板在 `scripts/templates/email/`：
+
+| 文件 | 场景 |
+|------|------|
+| `_base.html` | 共用外壳：状态色条、标题区、页脚、深色模式 |
+| `deployment.html` | 部署 / 回滚，含环境徽章、明细表、失败原因块 |
+| `custom.html` | 自定义通知，正文走 Markdown 子集（PR 通知用这个） |
+
+明细行、失败原因块、按钮这些**要不要出现由 `send-email.py` 判断**，模板只管排版
+条件逻辑不放模板里，是为了不在 HTML 里塞一套 if/each 模板语言
+
+**环境标签与配色可覆盖**，内置 `prod` / `staging` / `test` / `uat` / `dev`，加别的环境名或改配色：
+
+```yaml
+notify:
+  env_styles: 'staging=预发布|7a4bb5|f2ecfa,sea-01=新加坡|0d7d74|e4f4f2'
+```
+
+格式 `环境名=标签|主色|底色`，只写要改的、其余用内置值
+色值可以不带 `#` —— 聚合配置是 YAML，不带引号的 `#` 会被当成注释起点，裸十六进制省掉这个坑
+单项解析不了只告警跳过，不会因为一处手误把整封邮件拦下来
+
+**改模板前先看效果**，不需要 SMTP：
+
+```bash
+python3 scripts/send-email.py --preview email-preview
+open email-preview/index.html
+```
+
+四个场景（部署成功 / 部署失败 / 回滚成功 / PR 通知）各渲染一份 HTML 和一份纯文本回退版，汇总页一次点开看全部
+走的是和真实发送同一条渲染路径，所以看到的就是收件箱里会收到的正文
+
+`self-test.yml` 的 `email-templates` job 在每次 push 和 PR 时做同样的渲染，把结果当产物上传（保留 14 天），并对三类问题硬闸门：
+
+| 检查 | 为什么是硬闸门 |
+|------|----------------|
+| 未替换的 `{{占位符}}` | 会直接出现在收件人眼前 |
+| 残留的 HTML 注释 | 开发文档不该随邮件发出去，也白占体积 |
+| `<!DOCTYPE` 不止一个 | 说明模板被重复注入 |
+
+> 这三条都是实际踩过的：模板注释里把 `{{DETAIL_ROWS}}` 当文档写了两次，而渲染是全量替换，于是明细被注入三遍、正文从 7KB 涨到 38KB
+> 修法是渲染前先剥掉 HTML 注释，顺带也解决了体积 —— Gmail 对超过 102KB 的正文会截断并折叠
+
+**纯文本回退**：邮件按 `multipart/alternative` 发，同时带 HTML 和纯文本两版，纯文本不是从 HTML 剥标签而来，是用同一批数据单独生成的
+另外带 `Auto-Submitted: auto-generated` 和 `X-Auto-Response-Suppress: All`，让收件方的自动回复器和规则知道别回信
+
 ### proto 模块引用升级（update-proto-mod）
 
 proto 仓库 master 更新后，业务仓库一键升级 `go.mod` 中 proto 模块引用并自动提 PR：

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 通用通知脚本 - 支持飞书 / 企业微信 / Telegram
+# 通用通知脚本 - 支持飞书 / 企业微信 / Telegram / 邮件
 
 # shellcheck disable=SC2155
 # 这里大量 local x=$(cmd) 是刻意的，不要拆成两行
@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 # ==================== 环境变量配置 ====================
-NOTIFICATION_PROVIDER="${NOTIFICATION_PROVIDER:-none}"  # feishu | wecom | telegram | all | none
+NOTIFICATION_PROVIDER="${NOTIFICATION_PROVIDER:-none}"  # feishu | wecom | telegram | email | all | none
 NOTIFICATION_TYPE="${NOTIFICATION_TYPE:-deployment}"    # deployment | rollback | custom
 STATUS="${STATUS:-success}"                              # success | failure | warning | info（warning/info 仅 custom 使用）
 CUSTOM_TITLE="${CUSTOM_TITLE:-}"                         # custom 类型：自定义标题
@@ -60,6 +60,21 @@ WECOM_WEBHOOK_URL="${WECOM_WEBHOOK_URL:-}"
 WECOM_WEBHOOK_KEY="${WECOM_WEBHOOK_KEY:-}"
 WECOM_MENTIONED_LIST="${WECOM_MENTIONED_LIST:-}"                 # userid，逗号分隔，内联 <@userid>
 WECOM_MENTIONED_MOBILE_LIST="${WECOM_MENTIONED_MOBILE_LIST:-}"   # 手机号或 @all，逗号分隔，额外发一条 text
+
+# 邮件配置（SMTP）
+# 不受第三方平台限制是邮件的主要价值：机器人被封、webhook 被改、群被解散都不影响它
+# 地址/端口/收件人不是密钥，放明文配置；账号与密码走 secrets
+# [EN] Email's main value is not depending on a third-party platform: a revoked bot, a rotated
+# webhook or a disbanded group does not affect it. Host, port and recipients are not secrets and
+# live in the plaintext config; the account and password come from secrets
+EMAIL_SMTP_HOST="${EMAIL_SMTP_HOST:-}"
+EMAIL_SMTP_PORT="${EMAIL_SMTP_PORT:-465}"
+EMAIL_SMTP_TLS="${EMAIL_SMTP_TLS:-}"              # ssl | starttls | none；留空按端口推断（465 → ssl）
+EMAIL_SMTP_USER="${EMAIL_SMTP_USER:-}"
+EMAIL_SMTP_PASSWORD="${EMAIL_SMTP_PASSWORD:-}"    # 多数邮箱要填「授权码」，不是登录密码
+EMAIL_FROM="${EMAIL_FROM:-}"                      # 留空则用 EMAIL_SMTP_USER
+EMAIL_FROM_NAME="${EMAIL_FROM_NAME:-CI 流水线}"
+EMAIL_TO="${EMAIL_TO:-}"                          # 逗号或分号分隔
 
 # ==================== 函数定义 ====================
 
@@ -684,6 +699,57 @@ ${deployment_info}*Workflow:* [查看详情](${WORKFLOW_URL})
     fi
 }
 
+# 邮件是否已配置：四项齐全才算，少一项就当没配
+# [EN] Email counts as configured only with all four present
+email_configured() {
+    [ -n "${EMAIL_SMTP_HOST}" ] && [ -n "${EMAIL_TO}" ] \
+        && [ -n "${EMAIL_SMTP_USER}" ] && [ -n "${EMAIL_SMTP_PASSWORD}" ]
+}
+
+# 邮件通知：排版和明细由 send-email.py 渲染模板完成
+#
+# 为什么要显式 export：上面那些 VAR="${VAR:-默认值}" 只是 shell 局部变量，
+# 没有 export 的话 python 子进程读到的是调用方原始环境，拿不到这里算出的默认值
+# （EMAIL_SMTP_PORT 的 465、OPERATOR 的 GITHUB_ACTOR 回退都会丢）
+# [EN] Those VAR="${VAR:-default}" assignments create shell variables only. Without an explicit
+# export the Python child sees the caller's original environment and misses every default
+# computed here, such as the 465 port and the GITHUB_ACTOR fallback for OPERATOR
+send_email_notification() {
+    local script="${SCRIPT_DIR}/send-email.py"
+    if [ ! -f "${script}" ]; then
+        log_error "缺少邮件发送脚本 ${script}"
+        return 1
+    fi
+
+    local name
+    for name in NOTIFICATION_TYPE STATUS CUSTOM_TITLE CUSTOM_MESSAGE ENVIRONMENT \
+                NOTIFY_ENV_STYLES \
+                BINARY_NAME VERSION GIT_COMMIT OPERATOR ERROR_MESSAGE WORKFLOW_URL \
+                DEPLOYMENT_TARGET NAMESPACE CONFIG_YAML CONFIGMAP_NAME \
+                HTTP_PORT RPC_PORT DEPLOYMENT_REPLICAS \
+                CPU_REQUEST CPU_LIMIT MEMORY_REQUEST MEMORY_LIMIT \
+                EMAIL_SMTP_HOST EMAIL_SMTP_PORT EMAIL_SMTP_TLS EMAIL_SMTP_USER \
+                EMAIL_SMTP_PASSWORD EMAIL_FROM EMAIL_FROM_NAME EMAIL_TO; do
+        # 用 ${name?} 而不是 ${name}：行为一样（导出名字在 $name 里的那个变量），
+        # 但 shellcheck 的 SC2163 会把后者当成「你其实想导出字面量 name」而告警，
+        # 而 self-test 里 shellcheck 是 --severity=warning 的硬闸门
+        # [EN] ${name?} behaves the same as ${name} here, exporting the variable whose name is
+        # in $name, but silences SC2163, which reads the plain form as a mistake; shellcheck
+        # runs as a hard gate at --severity=warning in self-test
+        export "${name?}"
+    done
+
+    # -I 让 python 忽略当前目录和 PYTHONPATH，避免同名模块被意外加载
+    # [EN] -I keeps Python from loading modules out of the working directory or PYTHONPATH
+    local code=0
+    python3 -I "${script}" || code=$?
+    case "${code}" in
+        0) log_info "邮件通知发送成功"; return 0 ;;
+        2) log_error "邮件配置不全，无法发送"; return 1 ;;
+        *) log_error "邮件通知发送失败"; return 1 ;;
+    esac
+}
+
 # ==================== 主逻辑 ====================
 
 main() {
@@ -715,6 +781,10 @@ main() {
             log_info "发送Telegram通知..."
             send_telegram_notification || exit 1
             ;;
+        email)
+            log_info "发送邮件通知..."
+            send_email_notification || exit 1
+            ;;
         all)
             # all 只发已配置的渠道：未配置的跳过且不计入失败，避免未配置就红 job
             log_info "发送所有已配置渠道的通知..."
@@ -741,6 +811,13 @@ main() {
                 log_warn "Telegram未配置，跳过"
             fi
 
+            if email_configured; then
+                attempted=$((attempted + 1))
+                send_email_notification || { failed=$((failed + 1)); failed_names="${failed_names} 邮件"; }
+            else
+                log_warn "邮件未配置，跳过"
+            fi
+
             if [ ${attempted} -eq 0 ]; then
                 log_warn "没有任何已配置的通知渠道，跳过（不视为失败）"
             elif [ ${failed} -eq ${attempted} ]; then
@@ -757,7 +834,7 @@ main() {
             ;;
         *)
             log_error "未知的通知提供商: ${NOTIFICATION_PROVIDER}"
-            log_error "支持的值: feishu | wecom | telegram | all | none"
+            log_error "支持的值: feishu | wecom | telegram | email | all | none"
             exit 1
             ;;
     esac
