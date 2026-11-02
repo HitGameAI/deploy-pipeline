@@ -35,6 +35,7 @@ DOCKER_NAMESPACE="${DOCKER_NAMESPACE:-}"
 ALLOWED_ENVS="${ALLOWED_ENVS:-}"
 DEPLOY_BRANCHES="${DEPLOY_BRANCHES:-}"
 CONFIG_PATH_TEMPLATE="${CONFIG_PATH_TEMPLATE:-}"
+CONFIG_REPO="${CONFIG_REPO:-}"
 CMD_ARGS_TEMPLATE="${CMD_ARGS_TEMPLATE:-}"
 # 带花括号的默认值不能写进 ${VAR:-默认} —— 默认值里的 } 会被当成展开式的结尾，
 # 于是 "{name}-secrets" 被切成 "{name" + 字面量 "-secrets}"，拼出来的名字是错的
@@ -112,17 +113,36 @@ K8S_CONFIGMAP_NAME=""
 CMD_ARGS=""
 if [ -n "${CONFIG_PATH_TEMPLATE}" ]; then
   K8S_CONFIG_YAML="$(expand "${CONFIG_PATH_TEMPLATE}")"
-  if [ ! -f "${K8S_CONFIG_YAML}" ]; then
-    echo "::error::缺少配置文件 ${K8S_CONFIG_YAML}，无法为 ${DEPLOY_ENV} 生成 ConfigMap | config file not found"
-    exit 1
-  fi
   K8S_CONFIGMAP_NAME="$(expand "${CONFIGMAP_NAME_TEMPLATE}")"
   # 容器启动参数：ConfigMap 挂在 <工作目录>/resources/ 下、文件名不变，
   # 而 Dockerfile 的 WORKDIR 就是工作目录，所以相对路径即可
+  # 只用到文件名，与这份配置来自哪个仓库无关 —— 所以放在「文件是否存在」判断之前算
   # [EN] The ConfigMap mounts under <workdir>/resources/ keeping the file name, and the
-  # Dockerfile's WORKDIR is that workdir, so a relative path works
+  # Dockerfile's WORKDIR is that workdir, so a relative path works. Only the name is used,
+  # regardless of which repository the file comes from, so it is computed before the existence
+  # check below
   [ -n "${CMD_ARGS_TEMPLATE}" ] && CMD_ARGS="$(expand "${CMD_ARGS_TEMPLATE}" "$(basename "${K8S_CONFIG_YAML}")")"
-  echo "配置文件    : ${K8S_CONFIG_YAML} → ConfigMap ${K8S_CONFIGMAP_NAME}"
+
+  if [ -f "${K8S_CONFIG_YAML}" ]; then
+    echo "配置文件    : ${K8S_CONFIG_YAML} → ConfigMap ${K8S_CONFIGMAP_NAME}"
+  elif [ -n "${CONFIG_REPO}" ]; then
+    # 配置搬进中心仓库之后，本仓库没有这份文件是正常的，不该因此失败
+    # 文件名仍然有用：ConfigMap 名与启动参数都从它推出来，容器侧路径与搬之前一样
+    # K8S_CONFIG_YAML 清空，不作为来源传给部署那一步 —— 否则会与配置仓库那份撞名，
+    # 而 ConfigMap 的 data 键名就是文件名，撞名是硬错误
+    #
+    # [EN] Once the config lives in the central repository, its absence here is normal and must
+    # not fail the run. The name is still needed: the ConfigMap name and the container's argument
+    # are derived from it, so the container-side path is unchanged. K8S_CONFIG_YAML is cleared so
+    # it is not passed to the deploy step as a source, which would collide with the copy from the
+    # config repository -- and since a ConfigMap data key is the file name, a collision is fatal
+    echo "配置文件    : <本仓库无 ${K8S_CONFIG_YAML}，由配置仓库 ${CONFIG_REPO} 提供> → ConfigMap ${K8S_CONFIGMAP_NAME}"
+    K8S_CONFIG_YAML=""
+  else
+    echo "::error::缺少配置文件 ${K8S_CONFIG_YAML}，无法为 ${DEPLOY_ENV} 生成 ConfigMap | config file not found"
+    echo "::error::若这份配置已经搬到中心仓库，要同时配上 service.config_repo，否则这里不知道它去哪了"
+    exit 1
+  fi
   echo "启动参数    : ${CMD_ARGS:-<无>}"
 else
   echo "配置文件    : <service.config_path 为空，跳过 ConfigMap>"

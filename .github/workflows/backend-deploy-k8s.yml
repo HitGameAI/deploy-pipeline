@@ -462,11 +462,45 @@ jobs:
         run: |
           set -uo pipefail
 
+          # 明文配置里的 *Env: 声明要在这里补扫，而且与「有没有密文」无关
+          #
+          # setup 侧扫的是**服务仓库**里那份配置 配置搬进配置仓库之后它看不到这些声明，
+          # 不生成 secretKeyRef，容器就拿不到那些环境变量 —— 而服务会带着空值起来，
+          # 表现是运行期认证失败，不是部署失败，排查要翻到服务日志里才看得见
+          #
+          # 口径与 service-vars.sh 第 3 节完全一致：yaml 里以 Env 结尾的配置项，
+          # 它的值是**环境变量的名字**，代码再 os.Getenv 去取
+          #
+          # [EN] The *Env: declarations in the plaintext config are rescanned here regardless of
+          # whether anything is encrypted. The setup side scans the copy in the service
+          # repository, so once the config moved to the config repository it no longer sees these
+          # declarations, emits no secretKeyRef, and the container never receives those variables
+          # -- and the service starts with empty values, which surfaces as a runtime
+          # authentication failure rather than a failed deploy, visible only in the service log.
+          # The rule matches section 3 of service-vars.sh: a yaml setting whose name ends in Env
+          # holds the name of an environment variable that the code resolves with os.Getenv.
+          secrets_json=""
+          names_file="${RUNNER_TEMP}/plain-env-names"
+          : > "${names_file}"
+          while IFS= read -r cfg; do
+            case "$(basename "${cfg}")" in
+              .*) continue ;;
+              *.enc.*) continue ;;
+            esac
+            grep -oE "^[[:space:]]*[A-Za-z]+Env:[[:space:]]*[A-Z_][A-Z0-9_]*" "${cfg}" 2>/dev/null \
+              | awk '{print $NF}' >> "${names_file}" || true
+          done < <(find "${CONFIGMAP_DIR}" -maxdepth 1 -type f | sort)
+          sort -u -o "${names_file}" "${names_file}"
+          plain_count="$(grep -c . "${names_file}" || true)"
+          if [ "${plain_count}" -gt 0 ]; then
+            echo "配置仓库的明文配置里扫出 ${plain_count} 个密钥环境变量："
+            sed 's/^/  /' "${names_file}"
+          fi
+
           mapfile -t enc < <(find "${CONFIGMAP_DIR}" -maxdepth 1 -type f -name '*.enc.*' | sort)
           if [ "${#enc[@]}" -eq 0 ]; then
-            echo "配置目录里没有 *.enc.* 密文，跳过解密"
-            exit 0
-          fi
+            echo "配置目录里没有 *.enc.* 密文，不解密"
+          else
           echo "待解密 ${#enc[@]} 个："
           printf '  %s\n' "${enc[@]##*/}"
 
@@ -491,7 +525,6 @@ jobs:
           chmod +x "${sops_bin}"
 
           export SOPS_AGE_KEY_FILE="${RUNNER_TEMP}/age.key"
-          secrets_json=""
           fail=0
           for f in "${enc[@]}"; do
             base="$(basename "${f}")"
@@ -524,6 +557,7 @@ jobs:
             rm -f "${f}"
           done
           [ "${fail}" -eq 0 ] || exit 1
+          fi
 
           # Secret 名与 setup 侧算出来的那个必须一致，否则 secretKeyRef 指向一个不存在的 Secret。
           # resolve-config 不展开占位符（它只做校验与合并），所以 {name}/{env} 在这里展开
@@ -533,88 +567,112 @@ jobs:
           secret_name="${K8S_SECRET_NAME//\{name\}/${BINARY_NAME}}"
           secret_name="${secret_name//\{env\}/${{ inputs.environment }}}"
 
-          if [ -n "${secrets_json}" ]; then
-            SECRETS_JSON="${secrets_json}" SECRET_NAME="${secret_name}" \
-            python3 -I - <<'MERGE_PY'
+          # MERGE_PY 无条件跑：没有密文时它只负责把明文扫出来的名字补成 secretKeyRef
+          # [EN] Run unconditionally: with no ciphertext it still emits the secretKeyRef entries
+          # for the names scanned out of the plaintext config
+          SECRETS_JSON="${secrets_json}" SECRET_NAME="${secret_name}" \
+          PLAIN_ENV_NAMES_FILE="${names_file}" \
+          python3 -I - <<'MERGE_PY'
           import json
           import os
           import sys
 
-          with open(os.environ["SECRETS_JSON"], encoding="utf-8") as fh:
-              try:
-                  decrypted = json.load(fh)
-              except json.JSONDecodeError as exc:
-                  sys.exit("::error::解开后的 secrets 不是合法映射（%s）" % exc)
+          # 要补出 secretKeyRef 的环境变量名，两个来源：
+          #   1. 明文配置里的 *Env: 声明 —— 只有名字，值在 GitHub Secrets 或 app 节里
+          #   2. 解开的 secrets.enc.yaml —— 键名是变量名，值还要并进业务密钥文件
+          # [EN] Names needing a secretKeyRef come from two places: the *Env: declarations in the
+          # plaintext config, which carry only a name, and the decrypted secrets.enc.yaml, whose
+          # keys are names and whose values must also be merged into the service secrets file
+          names = []
+          plain_file = os.environ.get("PLAIN_ENV_NAMES_FILE") or ""
+          if plain_file and os.path.isfile(plain_file):
+              with open(plain_file, encoding="utf-8") as fh:
+                  for line in fh:
+                      name = line.strip()
+                      if name and name not in names:
+                          names.append(name)
 
-          if not isinstance(decrypted, dict):
-              sys.exit("::error::secrets.enc.yaml 必须是扁平的 KEY: value 映射")
+          flat = {}
+          secrets_json = os.environ.get("SECRETS_JSON") or ""
+          if secrets_json and os.path.isfile(secrets_json):
+              with open(secrets_json, encoding="utf-8") as fh:
+                  try:
+                      decrypted = json.load(fh)
+                  except json.JSONDecodeError as exc:
+                      sys.exit("::error::解开后的 secrets 不是合法映射（%s）" % exc)
 
-          # 嵌套结构当场挡住：环境变量只能是字符串，让它静默变成 "{'a': 1}" 注进容器，
-          # 服务会拿着一个看着像配置的垃圾值跑起来，比在这里失败难查得多
-          # [EN] A nested value is rejected here: an environment variable can only be a string, and
-          # silently injecting "{'a': 1}" would start the service with a plausible-looking garbage
-          # value, far harder to diagnose than failing now
-          flat, bad = {}, []
-          for key, value in decrypted.items():
-              if isinstance(value, (dict, list)):
-                  bad.append(key)
-              elif isinstance(value, bool):
-                  flat[key] = "true" if value else "false"
-              elif value is None:
-                  flat[key] = ""
+              if not isinstance(decrypted, dict):
+                  sys.exit("::error::secrets.enc.yaml 必须是扁平的 KEY: value 映射")
+
+              # 嵌套结构当场挡住：环境变量只能是字符串，让它静默变成 "{'a': 1}" 注进容器，
+              # 服务会拿着一个看着像配置的垃圾值跑起来，比在这里失败难查得多
+              # [EN] A nested value is rejected here: an environment variable can only be a string,
+              # and silently injecting "{'a': 1}" would start the service with a plausible-looking
+              # garbage value, far harder to diagnose than failing now
+              bad = []
+              for key, value in decrypted.items():
+                  if isinstance(value, (dict, list)):
+                      bad.append(key)
+                  elif isinstance(value, bool):
+                      flat[key] = "true" if value else "false"
+                  elif value is None:
+                      flat[key] = ""
+                  else:
+                      flat[key] = str(value)
+              if bad:
+                  sys.exit("::error::这些项的值是嵌套结构，不能当环境变量注入：%s"
+                           % " ".join(sorted(bad)))
+
+              # 解开的值要打码，否则后面任何一步不小心回显就留在日志里
+              # GitHub 按行打码，所以多行值逐行加
+              # [EN] Decrypted values are masked, since GitHub masks line by line and any later
+              # step echoing one would otherwise leave it in the log
+              for value in flat.values():
+                  for line in value.split("\n"):
+                      if len(line) >= 4:
+                          print("::add-mask::%s" % line)
+
+              # 并进 resolve-config 留下的那份业务密钥；没有 app 节时这里自己建一份
+              # [EN] Merged into the file resolve-config left behind, or created here when there
+              # is no app section
+              path = os.environ.get("APP_SECRETS_FILE") or ""
+              existing = {}
+              if path and os.path.isfile(path):
+                  with open(path, encoding="utf-8") as fh:
+                      existing = json.load(fh)
               else:
-                  flat[key] = str(value)
-          if bad:
-              sys.exit("::error::这些项的值是嵌套结构，不能当环境变量注入：%s" % " ".join(sorted(bad)))
+                  path = os.path.join(os.environ.get("RUNNER_TEMP") or "/tmp",
+                                      "pipeline-app-secrets.json")
 
-          # 解开的值要打码，否则后面任何一步不小心回显就留在日志里。
-          # GitHub 按行打码，所以多行值逐行加
-          # [EN] Decrypted values are masked, since GitHub masks line by line and any later step
-          # echoing one would otherwise leave it in the log
-          for value in flat.values():
-              for line in value.split("\n"):
-                  if len(line) >= 4:
-                      print("::add-mask::%s" % line)
+              # 撞名直接失败，不猜哪边该赢：同一个密钥在 PIPELINE_SECRETS 的 app 节和配置仓库
+              # 里各写一份，两边迟早会不一致，而不一致时服务拿到哪个值完全取决于这里的默认，
+              # 排查时根本看不出来
+              # [EN] A clash fails instead of picking a winner: the same secret written both in
+              # the app section and in the config repository will drift, and which value the
+              # service receives would then depend on a default that is invisible while debugging
+              clash = sorted(set(existing) & set(flat))
+              if clash:
+                  sys.exit("::error::这些密钥在 PIPELINE_SECRETS 的 app 节和配置仓库里都有，"
+                           "删掉其中一处：%s" % " ".join(clash))
 
-          # 并进 resolve-config 留下的那份业务密钥；没有 app 节时这里自己建一份
-          # [EN] Merged into the file resolve-config left behind, or created here when there is no
-          # app section
-          path = os.environ.get("APP_SECRETS_FILE") or ""
-          existing = {}
-          if path and os.path.isfile(path):
-              with open(path, encoding="utf-8") as fh:
-                  existing = json.load(fh)
-          else:
-              path = os.path.join(os.environ.get("RUNNER_TEMP") or "/tmp",
-                                  "pipeline-app-secrets.json")
+              existing.update(flat)
+              old = os.umask(0o077)
+              try:
+                  with open(path, "w", encoding="utf-8") as fh:
+                      json.dump(existing, fh)
+              finally:
+                  os.umask(old)
+              os.chmod(path, 0o600)
 
-          # 撞名直接失败，不猜哪边该赢：同一个密钥在 PIPELINE_SECRETS 的 app 节和配置仓库
-          # 里各写一份，两边迟早会不一致，而不一致时服务拿到哪个值完全取决于这里的默认，
-          # 排查时根本看不出来
-          # [EN] A clash fails instead of picking a winner: the same secret written both in the app
-          # section and in the config repository will drift, and which value the service receives
-          # would then depend on a default that is invisible while debugging
-          clash = sorted(set(existing) & set(flat))
-          if clash:
-              sys.exit("::error::这些密钥在 PIPELINE_SECRETS 的 app 节和配置仓库里都有，"
-                       "删掉其中一处：%s" % " ".join(clash))
+              for key in sorted(flat):
+                  if key not in names:
+                      names.append(key)
 
-          existing.update(flat)
-          old = os.umask(0o077)
-          try:
-              with open(path, "w", encoding="utf-8") as fh:
-                  json.dump(existing, fh)
-          finally:
-              os.umask(old)
-          os.chmod(path, 0o600)
+          if not names:
+              sys.exit(0)
 
-          # setup 侧扫的是服务仓库里那份配置，配置搬到配置仓库之后它扫不到这些声明，
-          # 不补出 secretKeyRef，容器就拿不到这些环境变量 —— 这一段是整条链路的闭合处
-          # [EN] The setup side scans the config file in the service repository; once the config
-          # moved to the config repository those declarations are invisible to it, no secretKeyRef
-          # is emitted and the container never receives the variables. This closes that gap
           entries = []
-          for key in sorted(flat):
+          for key in names:
               entries.append("- name: %s\n  valueFrom:\n    secretKeyRef:\n      name: %s\n"
                              "      key: %s\n      optional: true"
                              % (key, os.environ["SECRET_NAME"], key))
@@ -625,6 +683,7 @@ jobs:
           print("配置仓库补出 %d 个密钥环境变量 → Secret %s"
                 % (len(entries), os.environ["SECRET_NAME"]), file=sys.stderr)
           MERGE_PY
+          if [ -n "${secrets_json}" ]; then
             echo "PIPELINE_APP_SECRETS_FILE=${APP_SECRETS_FILE:-${RUNNER_TEMP}/pipeline-app-secrets.json}" >> "$GITHUB_ENV"
           fi
 

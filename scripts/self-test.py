@@ -962,6 +962,61 @@ def _run_merge_py_checks(work):
     r, _genv, _app = run_merge({"FLAG": True, "NUM": 3, "EMPTY": None})
     check(r.returncode == 0, "bool / 数字 / 空值转成环境变量能接受的字符串", r.stdout[-200:])
 
+    # 只有明文配置扫出来的名字（没有任何密文）：也要补出 secretKeyRef
+    #
+    # 这是配置搬进中心仓库后最常见的形态：配置是明文的，密钥值在 GitHub Secrets 里，
+    # 配置里只写变量名 setup 侧看不到这份文件，不补的话这些变量根本不会注进容器
+    # [EN] The most common shape after the migration: the config is plaintext, the values live in
+    # GitHub Secrets and the config only names the variables. The setup side cannot see this file,
+    # so without the rescan those variables never reach the container
+    genv = os.path.join(work, "github-env-plain")
+    io.open(genv, "w", encoding="utf-8").close()
+    nf = os.path.join(work, "plain-names")
+    with io.open(nf, "w", encoding="utf-8") as fh:
+        fh.write("DEMO_SERVICE_AUTH_SECRET\nDEMO_JWT_ACCESS_SECRET\n")
+    env = dict(os.environ, SECRETS_JSON="", SECRET_NAME="demo-gateway-secrets",
+               APP_SECRETS_FILE="", GITHUB_ENV=genv, RUNNER_TEMP=work,
+               PLAIN_ENV_NAMES_FILE=nf)
+    r = subprocess.run([sys.executable, "-I", "-"], input=body, env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True)
+    written = io.open(genv, encoding="utf-8").read()
+    check(r.returncode == 0 and "key: DEMO_SERVICE_AUTH_SECRET" in written
+          and "key: DEMO_JWT_ACCESS_SECRET" in written,
+          "没有密文时，明文里的 *Env: 名字也补成 secretKeyRef", (r.stdout + written)[-300:])
+
+    # 两个来源都有：按名字取并集，不能出现两条同名
+    # [EN] Both sources present: the union by name, with no duplicate entry
+    sj = os.path.join(work, "both.json")
+    with io.open(sj, "w", encoding="utf-8") as fh:
+        json.dump({"DEMO_JWT_ACCESS_SECRET": "v", "ONLY_IN_CIPHER": "v2"}, fh)
+    genv = os.path.join(work, "github-env-both")
+    io.open(genv, "w", encoding="utf-8").close()
+    env = dict(env, SECRETS_JSON=sj, GITHUB_ENV=genv,
+               APP_SECRETS_FILE=os.path.join(work, "both-app.json"))
+    r = subprocess.run([sys.executable, "-I", "-"], input=body, env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True)
+    written = io.open(genv, encoding="utf-8").read()
+    got = [l[len("- name: "):] for l in written.split("\n") if l.startswith("- name: ")]
+    check(r.returncode == 0 and sorted(got) == sorted(set(got))
+          and set(got) == {"DEMO_SERVICE_AUTH_SECRET", "DEMO_JWT_ACCESS_SECRET",
+                           "ONLY_IN_CIPHER"},
+          "两个来源取并集，同名只出一条", got)
+
+    # 两边都没有：什么都不写，而不是写一个空块
+    # [EN] Neither source: nothing is written, rather than an empty block
+    genv = os.path.join(work, "github-env-none")
+    io.open(genv, "w", encoding="utf-8").close()
+    r = subprocess.run([sys.executable, "-I", "-"], input=body,
+                       env=dict(env, SECRETS_JSON="", PLAIN_ENV_NAMES_FILE="",
+                                GITHUB_ENV=genv),
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       universal_newlines=True)
+    check(r.returncode == 0 and io.open(genv, encoding="utf-8").read() == "",
+          "两个来源都空时不往 GITHUB_ENV 写东西",
+          io.open(genv, encoding="utf-8").read()[:120])
+
 
 def _run_dedup_py_checks(work):
     """两份 env 块合并：按名字去重，且结果稳定。"""
@@ -1089,6 +1144,85 @@ def _check_projected_volume(yaml_mod):
               "%s时每个来源都是 optional" % label, sources)
 
 
+def check_config_moved_to_repo(yaml_mod):
+    """配置搬进中心仓库之后，启动参数、ConfigMap 名与密钥名单都还得在
+
+    这三件事原先全绑在「服务仓库里那份配置文件存在」上，所以搬家有两个陷阱：
+      - 保持 service.config_path 不变 → 文件还得留在服务仓库 → 与配置仓库那份撞名
+      - 把 config_path 配成空 → ConfigMap 名没了，容器启动参数 -f resources/… 也没了
+    两条路都走不通，而第二条还特别阴：部署是绿的，服务起来却读不到配置
+
+    [EN] Those three things used to be gated on the config file existing in the service
+    repository, which left migration with two traps: keeping service.config_path means the file
+    must stay and then collides with the copy in the config repository, while emptying it drops
+    both the ConfigMap name and the container's -f resources/… argument. The second is the nasty
+    one: the deploy goes green and the service comes up unable to read its config.
+    """
+    section("配置搬进中心仓库之后仍然要能部署")
+
+    sv = os.path.join(ROOT, "scripts", "service-vars.sh")
+    if not check(os.path.isfile(sv), "service-vars.sh 在"):
+        return
+
+    work = tempfile.mkdtemp(prefix="pipeline-moved-")
+    try:
+        base = {
+            "GITHUB_REPOSITORY": "example-org/demo-gateway",
+            "GITHUB_REF_NAME": "dev",
+            "SERVICE_ENVIRONMENT": "dev",
+            "BINARY_NAME": "demo-gateway",
+            "CONFIG_PATH_TEMPLATE": "config/config.{env}.yaml",
+            "CMD_ARGS_TEMPLATE": "-f resources/{configfile}",
+        }
+
+        # 1. 配了 config_repo、服务仓库里没有那份文件：正常路径
+        out = os.path.join(work, "moved.out")
+        env = dict(base, CONFIG_REPO="example-org/service-configs", GITHUB_OUTPUT=out)
+        r = run(["bash", sv], env=env)
+        if not check(r.returncode == 0, "本仓库没有配置文件但配了 config_repo 时不失败",
+                     (r.stdout + r.stderr)[-500:]):
+            return
+        got = dict(l.split("=", 1) for l in io.open(out, encoding="utf-8").read().split("\n")
+                   if "=" in l)
+        check(got.get("cmd-args") == "-f resources/config.dev.yaml",
+              "容器启动参数仍然按文件名算出来", got.get("cmd-args"))
+        check(got.get("k8s-configmap-name") == "demo-gateway-config-dev",
+              "ConfigMap 名仍然算得出来", got.get("k8s-configmap-name"))
+        # 这一项必须为空：非空就会与配置仓库那份同名文件撞上，而撞名是硬错误
+        # [EN] Must be empty, or it collides with the same-named file from the config repository
+        check(got.get("k8s-config-yaml") == "",
+              "不把本仓库那个不存在的路径当成 ConfigMap 来源", got.get("k8s-config-yaml"))
+
+        # 2. 没配 config_repo：这才是真缺文件，要失败并说清楚
+        out2 = os.path.join(work, "missing.out")
+        r = run(["bash", sv], env=dict(base, GITHUB_OUTPUT=out2))
+        text = r.stdout + r.stderr
+        check(r.returncode != 0 and "缺少配置文件" in text,
+              "没配 config_repo 而文件又不在时仍然失败", text[-300:])
+        check("service.config_repo" in text,
+              "报错里点出 service.config_repo 这条出路", text[-300:])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    # 3. 补扫 *Env: 的口径必须与 service-vars.sh 一致
+    #
+    # 两边一旦写法不同，就会出现「服务仓库里认得、配置仓库里不认」这种只在搬家后才暴露的
+    # 差异，而表现是某个环境变量没注进去、服务带着空值起来
+    # [EN] The two must use the same rule, or a declaration recognized in the service repository
+    # is silently ignored in the config repository -- visible only after the migration, as one
+    # variable missing and the service running with an empty value
+    sv_text = io.open(sv, encoding="utf-8").read()
+    deploy = io.open(os.path.join(WF_DIR, "backend-deploy-k8s.yml"), encoding="utf-8").read()
+    # 比字面子串，不比手写转义的正则：这段本身就全是方括号，转义一写错，
+    # 检查就变成永远绿的
+    # [EN] Compared as a literal substring rather than a hand-escaped regex: the expression is all
+    # brackets, and one escaping slip turns this check permanently green
+    needle = "Env:[[:space:]]*[A-Z_][A-Z0-9_]*"
+    check(needle in sv_text and needle in deploy,
+          "部署侧补扫 *Env: 用的正则与 service-vars.sh 逐字一致",
+          "service-vars.sh %s / 部署工作流 %s" % (needle in sv_text, needle in deploy))
+
+
 def main():
     try:
         import yaml
@@ -1108,6 +1242,7 @@ def main():
     check_config_page(yaml)
     check_service_config_repo(yaml)
     check_config_encryption(yaml)
+    check_config_moved_to_repo(yaml)
     check_docs(yaml)
     check_templates(yaml)
 
