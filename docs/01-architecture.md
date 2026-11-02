@@ -58,6 +58,44 @@ deploy-pipeline/
 └── README.md                    # 项目文档
 ```
 
+## 🔭 一次后端部署的全过程
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DEV as 开发者
+    participant CALL as 业务仓库 pipeline.yml
+    participant SETUP as backend-setup
+    participant BIN as backend-build-binary
+    participant IMG as backend-build-docker
+    participant DEP as backend-deploy-k8s
+    participant CFG as 配置仓库 service-configs
+    participant K8S as 集群
+    participant NTF as notify
+
+    DEV->>CALL: push 到 dev 或 staging
+    CALL->>SETUP: uses backend-setup，secrets inherit
+    Note over SETUP: resolve-config 校验并合并 PIPELINE_CONFIG<br/>service-vars.sh 算出 22 个 output
+    SETUP-->>CALL: binary-name / image-name / cmd-args / extra-env-block 等
+    CALL->>BIN: 传 setup 的 outputs
+    BIN-->>CALL: 二进制 artifact
+    CALL->>IMG: 二进制 + cmd-args
+    Note over IMG: 生成 Dockerfile：WORKDIR 取 kube.run_workdir<br/>CMD 带上 -f resources 下的配置文件名
+    IMG-->>CALL: 镜像已推送
+    Note over CALL,DEP: image-name 带到秒的时间戳，下游只能原样传<br/>重算会导致构建与部署指向不同的 tag
+    CALL->>DEP: image-name + extra-env-block
+    DEP->>CFG: 用 App token sparse clone 服务与环境那一层
+    CFG-->>DEP: 明文配置与 enc 密文
+    Note over DEP: 密文用 sops 加 age 解开<br/>明文进 ConfigMap，解开的进 Secret
+    DEP->>K8S: apply ConfigMap / Secret / Deployment / Service / Ingress
+    K8S-->>DEP: rollout status
+    DEP-->>CALL: 部署结果
+    CALL->>NTF: 成功或失败
+    NTF->>DEV: 飞书 / 企微 / Telegram / 邮件
+```
+
+每一步的细节见 [工作流列表与详细说明](02-workflows.md)
+
 ## 🔄 工作流脚本引用机制
 
 公共 workflow 通过 `actions/checkout` 额外检出本仓库来获取脚本：

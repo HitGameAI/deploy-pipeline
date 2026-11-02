@@ -1324,6 +1324,96 @@ def check_workdir_env(yaml_mod):
           "%s vs %s" % (envs.get("APP_WORKDIR"), envs.get("APP_DATA_DIR")))
 
 
+MERMAID_TYPES = ("sequenceDiagram", "flowchart", "graph", "classDiagram", "stateDiagram",
+                 "erDiagram", "gantt", "pie", "journey", "gitGraph", "mindmap", "timeline")
+
+
+def mermaid_blocks(text):
+    """取出每个 ```mermaid 块：(起始行, [(行号, 正文)] 或 None 表示没闭合)"""
+    out, cur = [], None
+    for n, line in enumerate(text.split("\n"), 1):
+        if line.strip() == "```mermaid":
+            cur = [n, []]
+            continue
+        if cur is not None and line.strip() == "```":
+            out.append((cur[0], cur[1]))
+            cur = None
+            continue
+        if cur is not None:
+            cur[1].append((n, line))
+    if cur is not None:
+        out.append((cur[0], None))
+    return out
+
+
+def check_mermaid(_yaml_mod):
+    """文档里的 mermaid 图：本地渲染不了，但致命写法可以静态查出来
+
+    这几类错的共同点是**图照样显示**，只是显示成错的东西，所以肉眼 review 容易放过：
+      围栏没闭合   后面整篇文档都被吞进代码块
+      图类型打错   mermaid 直接报 parse error，页面上是一块红字
+      标签里有角括号  被当 HTML 标签吃掉，文字凭空消失（<br/> 例外）
+      参与者没声明  mermaid 会自动新建一条泳道，图上多出一列没人认识的东西
+
+    [EN] Diagrams cannot be rendered here, but the fatal mistakes are statically detectable. What
+    they share is that the diagram still renders -- just wrong -- so review tends to miss them: an
+    unclosed fence swallows the rest of the document, a misspelled type renders as a parse error,
+    angle brackets are eaten as HTML and the text vanishes, and an undeclared participant silently
+    gets its own lane.
+    """
+    section("文档里的 mermaid 图")
+
+    docs_dir = os.path.join(ROOT, "docs")
+    problems, total = [], 0
+    for name in sorted(os.listdir(docs_dir)):
+        if not name.endswith(".md"):
+            continue
+        text = io.open(os.path.join(docs_dir, name), encoding="utf-8").read()
+        for start, body in mermaid_blocks(text):
+            total += 1
+            if body is None:
+                problems.append("%s:%d 代码围栏没闭合" % (name, start))
+                continue
+            first = next((l.strip() for _n, l in body if l.strip()), "")
+            head = first.split()[0] if first.split() else ""
+            # 比第一个 token，不用 startswith —— sequenceDiagramm 这种打错的
+            # 用 startswith 会被判成合法（它确实以 sequenceDiagram 开头）
+            # [EN] The first token is compared rather than a startswith, which would accept a
+            # misspelling such as sequenceDiagramm
+            if not any(head == ty or head.startswith(ty + "-") for ty in MERMAID_TYPES):
+                problems.append("%s:%d 第一行不是已知图类型：%r" % (name, start, first[:40]))
+                continue
+            for n, line in body:
+                stripped = re.sub(r"</?br\s*/?>", "", line)
+                if ("<" in stripped or ">" in stripped) and not re.search(
+                        r"-->|->>|-->>|--x|-x|==>", stripped):
+                    problems.append("%s:%d 标签里有角括号，会被当 HTML：%s"
+                                    % (name, n, line.strip()[:50]))
+            if head == "sequenceDiagram":
+                declared, used = set(), set()
+                for _n, line in body:
+                    m = re.match(r"\s*(?:participant|actor)\s+(\S+)", line)
+                    if m:
+                        declared.add(m.group(1))
+                for _n, line in body:
+                    m = re.match(r"\s*([A-Za-z0-9_]+)\s*(?:-->>|->>|-->|->|--x|-x)[+-]?"
+                                 r"\s*([A-Za-z0-9_]+)\s*:", line)
+                    if m:
+                        used.update(m.groups())
+                    m = re.match(r"\s*Note\s+(?:over|left of|right of)\s+"
+                                 r"([A-Za-z0-9_,\s]+?)\s*:", line)
+                    if m:
+                        used.update(x.strip() for x in m.group(1).split(",") if x.strip())
+                unknown = sorted(used - declared)
+                if unknown:
+                    problems.append("%s:%d 用到未声明的参与者：%s"
+                                    % (name, start, " ".join(unknown)))
+
+    check(total > 0, "docs 里有 mermaid 图（%d 张）" % total)
+    check(not problems, "每张图都通过静态检查",
+          "\n".join(problems) if problems else "")
+
+
 def main():
     try:
         import yaml
@@ -1345,6 +1435,7 @@ def main():
     check_config_encryption(yaml)
     check_config_moved_to_repo(yaml)
     check_docs(yaml)
+    check_mermaid(yaml)
     check_templates(yaml)
     check_workdir_env(yaml)
 

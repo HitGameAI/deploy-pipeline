@@ -47,6 +47,20 @@
 > false both mean "not provided", so a caller that passes nothing falls through to the variables
 > and the defaults exactly as before.
 
+配置是怎么解析出来的:
+
+```mermaid
+flowchart TD
+    A["vars.PIPELINE_CONFIG<br/>一份聚合 YAML"] --> R
+    B["secrets.PIPELINE_SECRETS<br/>一份聚合 YAML"] --> R
+    C["workflow input<br/>只用来传上游算出的运行时值"] --> R
+    D["workflow 自己的 defaults"] --> R
+    E["schema.yaml 的默认值"] --> R
+    R["resolve-config.py<br/>逐项校验，按上面的优先级合并"]
+    R --> F["GITHUB_ENV<br/>明文配置与大部分密钥"]
+    R --> G["RUNNER_TEMP 下权限 0600 的文件<br/>app 节的业务密钥，不进 GITHUB_ENV"]
+```
+
 ### 示例
 
 `vars.PIPELINE_CONFIG`（仓库级基线）：
@@ -432,6 +446,24 @@ data 键名是扁平的文件名,子目录里的文件一进来就只剩 basenam
 
 文件内容原样进去,不经任何拼接 所以这里**不存在块标量缩进那一类问题**:文件就是文件
 
+拉取与分流的全过程:
+
+```mermaid
+flowchart TD
+    S{"service.config_repo 配了吗"} -->|没配| X["只用服务仓库自己那份配置"]
+    S -->|配了| T["用 go.app_id 换一个跨仓库 App token"]
+    T --> U["sparse clone 只取 服务 与 环境 那一层目录"]
+    U --> V{"文件名里带 .enc. 吗"}
+    V -->|不带| W["明文，直接进 ConfigMap"]
+    V -->|带| Y["sops 加 age 解密<br/>私钥取自 config.age_key"]
+    Y --> Z{"解开后的名字是 secrets.yaml 吗"}
+    Z -->|是| AA["扁平的 KEY 冒号 value<br/>进业务 Secret，当环境变量注入"]
+    Z -->|否| AB["按文件挂载<br/>进一个后缀 files 的 Secret"]
+    W --> AC["projected volume 挂到容器的 resources 目录"]
+    AB --> AC
+    AC --> AD["容器侧路径与文件名不变<br/>服务不需要知道哪份是解密来的"]
+```
+
 #### 凭据:必须用 GitHub App,不能靠 GITHUB_TOKEN
 
 这一条踩过就知道难查 复用工作流里 `GITHUB_TOKEN` 的作用域是**调用方仓库**,对配置仓库
@@ -527,6 +559,32 @@ DEMO_SERVICE_AUTH_GATEWAY_TO_API_SECRET: ...
 同一个密钥在 `PIPELINE_SECRETS` 的 `app` 节和 `secrets.enc.yaml` 里各写一份时**直接报错**,
 不猜哪边该赢:两边迟早会不一致,而不一致时服务拿到哪个值完全取决于一个看不见的默认,
 排查时根本看不出来
+
+两条路各扫一半,最后合起来:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SRC as 服务仓库的 Go 源码
+    participant YML as 配置文件（在配置仓库）
+    participant SETUP as backend-setup
+    participant DEP as backend-deploy-k8s
+    participant SEC as 集群里的 Secret
+    participant POD as 容器
+
+    SETUP->>SRC: 扫 internal 下的 env 等号形式的 struct tag
+    SRC-->>SETUP: 环境变量名清单
+    SETUP-->>DEP: extra-env-block，已经是 secretKeyRef 条目
+    DEP->>YML: 扫配置里以 Env 结尾的配置项
+    YML-->>DEP: 环境变量名清单
+    DEP->>YML: 解密 secrets.enc.yaml，取它的键名
+    YML-->>DEP: 环境变量名与值
+    Note over DEP: 两份按名字取并集去重<br/>结果写进 GITHUB_ENV 的 MERGED_ENV_BLOCK
+    DEP->>SEC: 按合并后的名单建 Secret<br/>值来自 app 节、同名单个 secret 或解密结果
+    DEP->>POD: Deployment 的 env 用 secretKeyRef 指向这个 Secret
+    POD->>SEC: 启动时取值
+    Note over SETUP,DEP: 少了任一侧，被漏掉的变量不会报错<br/>服务会带着空值起来，错在运行期不在部署期
+```
 
 `secrets.enc.yaml` 还顺手补上一个洞:[service-vars.sh](#service-varssh) 扫的是**服务仓库里**
 那份配置文件,配置搬进配置仓库之后它扫不到那些 `*Env:` 声明,不生成 `secretKeyRef`,
