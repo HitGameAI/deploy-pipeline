@@ -122,11 +122,53 @@ if [ "${#targets[@]}" -eq 0 ]; then
   exit 1
 fi
 
+# 两份有意不同的文件：不同步，也不当成「漏了」
+#
+# 这两份副本只有「自引用的组织前缀」该不同 —— 曾经是这样 现在多了一条：
+# 一份保留旧式单个 vars / secrets 这套兼容入口，另一份已经砍掉、只认聚合配置
+# 下面这几个文件正是承载这个差异的地方
+#
+# 为什么必须显式列出来：整份覆盖会把兼容层一起抹掉，而每一步都是成功的 ——
+# 真发生过一次，一次同步删掉了 schema 里 116 个旧键名、resolve-config 的旧解析层
+# 和 action 的 config-file 入参，--check 的输出里只看到「~ 已更新」三个字
+#
+# 代价是这几个文件以后要手工把对应改动搬到两边，脚本不再替你做
+#
+# [EN] Files the two copies differ in on purpose: not synced, and not reported as missing. The
+# copies were once identical apart from the organization prefix in their self-references; now one
+# keeps the legacy per-key vars/secrets entry points while the other recognizes only the
+# aggregate document, and the files below are where that difference lives. They must be listed
+# explicitly because a wholesale copy would erase the compatibility layer with every step
+# reporting success -- which happened: one sync removed 116 legacy key names from the schema, the
+# legacy resolution layers from resolve-config and the config-file input from the action, and
+# --check showed nothing but "~ updated". The cost is that changes to these files must be carried
+# to both copies by hand.
+KEEP_DIVERGENT=(
+  "scripts/config/schema.yaml"
+  "scripts/resolve-config.py"
+  ".github/actions/resolve-config/action.yml"
+  "scripts/self-test.py"
+  "docs/03-configuration.md"
+)
+
+is_divergent() {
+  local rel="$1" keep
+  for keep in "${KEEP_DIVERGENT[@]}"; do
+    [ "${rel}" = "${keep}" ] && return 0
+  done
+  return 1
+}
+
 changed=0
 added=0
+skipped=()
 for rel in "${targets[@]}"; do
   src_file="${SRC}/${rel}"
   [ -f "${src_file}" ] || continue
+  if is_divergent "${rel}"; then
+    skipped+=("${rel}")
+    continue
+  fi
   dest_file="${DEST}/${rel}"
 
   # 只对文本文件换前缀，其它按字节复制
@@ -162,6 +204,12 @@ done
 echo ""
 echo "📊 新增 ${added} 个，更新 ${changed} 个"
 echo ""
+
+if [ "${#skipped[@]}" -gt 0 ]; then
+  echo ""
+  echo "⏭️  已跳过 ${#skipped[@]} 个（两份有意不同，见脚本顶部 KEEP_DIVERGENT）:"
+  printf '   %s\n' "${skipped[@]}"
+fi
 
 # 对面多出来的文件：默认只列出来，--force 才删
 # [EN] Files only on the other side are listed by default and deleted only under --force
