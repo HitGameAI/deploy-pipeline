@@ -135,6 +135,11 @@ white-space:pre;tab-size:2}
 .cnt b.bad{color:var(--bad)}
 .hint{font-size:12px;color:var(--dim);padding-top:9px}
 code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:12px}
+details.imp{margin-top:11px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+details.imp summary{padding:8px 12px;cursor:pointer;font-size:13px;color:var(--accent)}
+details.imp textarea{min-height:120px;margin:0 12px;width:calc(100% - 24px)}
+details.imp .bar{padding:9px 12px 0}
+details.imp .hint{padding:0 12px 10px}
 """
 
 JS = r"""
@@ -244,6 +249,85 @@ function refresh(){
   }
 }
 
+/* 导入已有文档：解析成 {路径: 值} 再反填进表单
+   只认这份 schema 产出的形状 —— 两层嵌套的键值表、块标量、普通标量
+   刻意不做通用 YAML 解析器：那是个大坑，而且认得太多反而会把不该接受的东西悄悄吃掉
+   认不出来的行会原样报出来，让人自己看，而不是猜 */
+function parseDoc(text){
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const flat = {}, unknown = [];
+  const stack = [];                      /* [{indent, key}] */
+  let i = 0;
+  while (i < lines.length){
+    const line = lines[i];
+    if (!line.trim() || line.trim().startsWith('#')){ i++; continue; }
+    const indent = line.length - line.trimStart().length;
+    const m = line.match(/^\s*([\w.\-]+):\s*(.*)$/);
+    if (!m){ unknown.push(`第 ${i+1} 行：${line.trim().slice(0,60)}`); i++; continue; }
+    const [, key, rawRest] = m;
+    const rest = rawRest.replace(/\s+#.*$/, '').trim();
+    while (stack.length && stack.at(-1).indent >= indent) stack.pop();
+    const path = [...stack.map(x => x.key), key].join('.');
+    if (/^[|>][-+]?$/.test(rest)){
+      /* 块标量：收集所有缩进更深的行，按第一行的缩进统一剥掉 */
+      const body = [];
+      let j = i + 1, base = null;
+      while (j < lines.length){
+        const nxt = lines[j];
+        if (!nxt.trim()){ body.push(''); j++; continue; }
+        const ind = nxt.length - nxt.trimStart().length;
+        if (ind <= indent) break;
+        if (base === null) base = ind;
+        body.push(nxt.slice(base));
+        j++;
+      }
+      while (body.length && body.at(-1) === '') body.pop();
+      flat[path] = body.join('\n') + (rest.includes('-') ? '' : '\n');
+      i = j; continue;
+    }
+    if (rest === ''){ stack.push({indent, key}); i++; continue; }
+    let v = rest;
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
+      v = v.slice(1, -1);
+    flat[path] = v;
+    i++;
+  }
+  return {flat, unknown};
+}
+
+function applyDoc(bucket, text){
+  const {flat, unknown} = parseDoc(text);
+  const known = new Set(), free = {};
+  for (const sec of MODEL[bucket]){
+    if (sec.free_form){ free[sec.name] = true; continue; }
+    for (const spec of sec.keys) known.add(`${sec.name}.${spec.path}`);
+  }
+  const missed = [];
+  state.free[bucket] = {};
+  for (const [path, value] of Object.entries(flat)){
+    if (known.has(path)){
+      state[bucket][path] = value;
+      const el = document.getElementById(path);
+      if (el) el.value = value;
+      continue;
+    }
+    const head = path.split('.')[0];
+    if (free[head]){
+      const name = path.slice(head.length + 1);
+      (state.free[bucket][head] = state.free[bucket][head] || []).push([name, value]);
+      continue;
+    }
+    missed.push(path);
+  }
+  remount(bucket);
+  const note = document.getElementById('imp-' + bucket);
+  const bits = [`认下 ${Object.keys(flat).length - missed.length} 项`];
+  if (missed.length) bits.push(`配置表里没有的 ${missed.length} 项：${missed.join(' ')}`);
+  if (unknown.length) bits.push(`没看懂的行：${unknown.join('；')}`);
+  note.textContent = bits.join('　·　');
+  refresh();
+}
+
 function field(bucket, sec, spec){
   const id = `${sec.name}.${spec.path}`;
   const row = document.createElement('div'); row.className = 'row';
@@ -321,9 +405,14 @@ function freeRows(bucket, sec){
   return box;
 }
 
-function mount(){
-  for (const bucket of ['plain','secret']){
-    const host = document.getElementById('form-' + bucket);
+function remount(bucket){
+  const host = document.getElementById('form-' + bucket);
+  host.innerHTML = '';
+  buildForm(bucket, host);
+}
+
+function buildForm(bucket, host){
+  {
     for (const sec of MODEL[bucket]){
       const fs = document.createElement('fieldset');
       const lg = document.createElement('legend');
@@ -339,6 +428,25 @@ function mount(){
       host.appendChild(fs);
     }
   }
+}
+
+function mount(){
+  for (const bucket of ['plain','secret']){
+    buildForm(bucket, document.getElementById('form-' + bucket));
+  }
+  document.querySelectorAll('[data-import]').forEach(b => b.addEventListener('click', () => {
+    const bucket = b.dataset.import;
+    const ta = document.getElementById('imp-box-' + bucket);
+    if (!ta.value.trim()){ document.getElementById('imp-' + bucket).textContent = '先把 YAML 粘进来'; return; }
+    applyDoc(bucket, ta.value);
+  }));
+  document.querySelectorAll('[data-impfile]').forEach(inp => inp.addEventListener('change', () => {
+    const f = inp.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { document.getElementById('imp-box-' + inp.dataset.impfile).value = r.result;
+                       applyDoc(inp.dataset.impfile, r.result); };
+    r.readAsText(f);
+  }));
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
     TAB = t.dataset.tab;
     document.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-selected', x === t));
@@ -413,6 +521,15 @@ PANE = """
     <div class="err" id="errs-%(bucket)s"></div>
     <div class="hint">写进仓库：<code id="cmd-%(bucket)s"></code></div>
     <div class="hint">%(note)s</div>
+    <details class="imp">
+      <summary>导入已有文档，反填进左边的表单</summary>
+      <textarea id="imp-box-%(bucket)s" placeholder="把现有的 %(title)s 整份粘进来"></textarea>
+      <div class="bar">
+        <button class="primary" data-import="%(bucket)s">解析并反填</button>
+        <input type="file" data-impfile="%(bucket)s" class="file">
+      </div>
+      <div class="hint" id="imp-%(bucket)s"></div>
+    </details>
   </div>
 </div>
 """
