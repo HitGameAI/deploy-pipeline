@@ -457,27 +457,45 @@ age 的**公钥**写进配置仓库的 `.sops.yaml`,谁都能加密;**私钥**�
 一次性准备(本机):
 
 ```bash
-# 1. 生成一对 age 密钥
-age-keygen -o age.key          # 标准输出里那行 public key 是公钥，文件内容是私钥
+# 0. 本机装对平台的 sops：下面流水线用的是 linux.amd64 资产，macOS 上跑不起来
+#    （踩过：/usr/local/bin/sops 放了个 Linux 二进制，报 exec format error）
+brew install sops age
 
-# 2. 配置仓库根目录放 .sops.yaml，填公钥
+# 1. 生成一对 age 密钥
+age-keygen -o ~/.config/sops/age/keys.txt
+chmod 600 ~/.config/sops/age/keys.txt
+
+# 2. 让 sops 找得到私钥：macOS 上它默认找
+#    ~/Library/Application Support/sops/age/keys.txt，放在 ~/.config 下就得显式指定
+export SOPS_AGE_KEY_FILE="$HOME/.config/sops/age/keys.txt"
+
+# 3. 配置仓库根目录放 .sops.yaml，填公钥（age-keygen 打到标准输出那行）
 cat > .sops.yaml <<'EOF'
 creation_rules:
   - path_regex: \.enc\.(yaml|yml|json)$
-    age: age1...            # 上一步的 public key
+    age: age1...
 EOF
 
-# 3. 私钥全文填进 PIPELINE_SECRETS 的 config.age_key，本机那份删掉
+# 4. 私钥全文填进 PIPELINE_SECRETS 的 config.age_key
 ```
 
 日常加密(本机):
 
 ```bash
-sops --encrypt config.yaml  > demo-gateway/dev/config.enc.yaml
-sops --encrypt secrets.yaml > demo-gateway/dev/secrets.enc.yaml
+# 新建密文：先写成目标文件名，再就地加密
+#
+# creation_rules 按「输入文件的路径」匹配，所以
+#   sops --encrypt secrets.yaml > x.enc.yaml
+# 会报 no matching creation rules found —— 输入那个名字不带 .enc.
+cp secrets.yaml demo-gateway/dev/secrets.enc.yaml
+sops --encrypt --in-place demo-gateway/dev/secrets.enc.yaml
+
+# 或者显式指定按哪个文件名套规则
+sops --encrypt --filename-override demo-gateway/dev/config.dev.enc.yaml config.yaml \
+  > demo-gateway/dev/config.dev.enc.yaml
 
 # 改已有的密文：直接编辑，存盘时就地重新加密，不用先解再加
-sops demo-gateway/dev/config.enc.yaml
+sops demo-gateway/dev/config.dev.enc.yaml
 ```
 
 只有文件名里带 `.enc.` 的才会被解密 解开后摘掉 `.enc.` 这一节,其余不动:

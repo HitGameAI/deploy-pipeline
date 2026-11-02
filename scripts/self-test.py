@@ -814,6 +814,25 @@ def check_config_encryption(yaml_mod):
               "%s 读的是合并后的 env 块" % step,
               "仍在读 inputs.extra-env-block" if "inputs.extra-env-block" in chunk else "")
 
+    # 文档里的 sops 加密命令必须是真能跑的那种
+    #
+    # creation_rules 按「输入文件的路径」匹配，所以
+    #   sops --encrypt secrets.yaml > x.enc.yaml
+    # 会报 no matching creation rules found 写错这一条的代价是每个照着抄的人都卡在
+    # 同一个地方，而那句报错里完全看不出问题出在文档
+    # [EN] The documented sops command must actually run: creation_rules match the path of the
+    # input file, so redirecting a non-.enc. input into an .enc. file fails with "no matching
+    # creation rules found", and everyone copying the line hits the same wall while the error
+    # says nothing about the documentation being wrong
+    cfg_doc = io.open(os.path.join(ROOT, "docs", "03-configuration.md"), encoding="utf-8").read()
+    bad = [l.strip() for l in cfg_doc.split("\n")
+           if l.strip().startswith("sops --encrypt")
+           and ">" in l
+           and "--filename-override" not in l
+           and "--in-place" not in l]
+    check(not bad, "文档里的 sops --encrypt 命令不会撞上 creation_rules",
+          "\n".join(bad) if bad else "")
+
     _check_projected_volume(yaml_mod)
 
 
