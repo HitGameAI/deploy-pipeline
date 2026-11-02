@@ -557,6 +557,22 @@ jobs:
             rm -f "${f}"
           done
           [ "${fail}" -eq 0 ] || exit 1
+
+          # 解开的配置文件也要扫 *Env: —— 它们落在 config-plain 下，不在 CONFIGMAP_DIR 里，
+          # 上面那一轮（跳过 *.enc.*）看不到它们
+          # 整份加密的配置里一样可以写 *Env: 声明，漏扫的表现和明文那边一样：
+          # secretKeyRef 不生成，容器拿不到那个变量，而服务是带着空值起来的
+          # [EN] The decrypted config files must be scanned as well: they land under config-plain
+          # rather than CONFIGMAP_DIR, so the pass above, which skips *.enc.*, cannot see them. A
+          # fully encrypted config may declare *Env: just the same, and missing it has the same
+          # consequence -- no secretKeyRef, no variable, and a service that starts with an empty
+          # value
+          while IFS= read -r cfg; do
+            [ "$(basename "${cfg}")" = "secrets.json" ] && continue
+            grep -oE "^[[:space:]]*[A-Za-z]+Env:[[:space:]]*[A-Z_][A-Z0-9_]*" "${cfg}" 2>/dev/null \
+              | awk '{print $NF}' >> "${names_file}" || true
+          done < <(find "${RUNNER_TEMP}/config-plain" -maxdepth 1 -type f | sort)
+          sort -u -o "${names_file}" "${names_file}"
           fi
 
           # Secret 名与 setup 侧算出来的那个必须一致，否则 secretKeyRef 指向一个不存在的 Secret。

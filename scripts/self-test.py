@@ -1222,6 +1222,17 @@ def check_config_moved_to_repo(yaml_mod):
           "部署侧补扫 *Env: 用的正则与 service-vars.sh 逐字一致",
           "service-vars.sh %s / 部署工作流 %s" % (needle in sv_text, needle in deploy))
 
+    # 明文与「解开之后」两轮都要扫
+    #
+    # 明文那轮跳过 *.enc.*，解开的文件又落在 config-plain 下，所以少了第二轮，
+    # 整份加密的配置里的 *Env: 声明就没人看 —— 和搬家前漏扫是同一个后果
+    # [EN] The plaintext pass skips *.enc.* and the decrypted files land under config-plain, so
+    # without the second pass the *Env: declarations inside a fully encrypted config go unseen,
+    # with the same consequence as missing them before the migration
+    check(deploy.count(needle) >= 2 and 'find "${RUNNER_TEMP}/config-plain"' in deploy,
+          "明文与解密后各扫一轮 *Env:",
+          "正则出现 %d 次" % deploy.count(needle))
+
 
 def main():
     try:
