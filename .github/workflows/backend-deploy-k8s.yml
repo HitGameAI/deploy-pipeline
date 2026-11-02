@@ -389,6 +389,46 @@ jobs:
           private-key: ${{ env.APP_PRIVATE_KEY }}
           owner: ${{ env.CONFIG_REPO_OWNER }}
           repositories: ${{ env.CONFIG_REPO_NAME }}
+      # 换不到 App token 时给一句能直接动手的提示
+      #
+      # create-github-app-token 失败时只抛一个裸 404（GET /repos/<owner>/<repo>/installation），
+      # 从里面看不出要去哪里修 而原因几乎总是同一个：这个 App 没装到配置仓库上
+      # GitHub 对「App 没覆盖该仓库」返回 404 而不是 403（不泄漏仓库是否存在），
+      # 所以它读起来像仓库名写错了 —— 下面那步 checkout 的提示本来写了这一条，
+      # 但 mint 这一步先挂，那句提示根本来不及打出来
+      #
+      # [EN] An actionable hint when the App token cannot be minted. create-github-app-token fails
+      # with a bare 404 from GET /repos/<owner>/<repo>/installation, which says nothing about
+      # where to fix it, while the cause is almost always the same: the App is not installed on
+      # the config repository. GitHub answers 404 rather than 403 for a repository the App does
+      # not cover, so it reads like a wrong name. The checkout step below carries this hint
+      # already, but minting fails first and that hint never prints.
+      - name: 🧭 换不到 token 时怎么修
+        if: ${{ failure() && steps.config-token.outcome == 'failure' }}
+        run: |
+          echo "::error::换不到访问 ${CONFIG_REPO} 的 App token" >&2
+          echo "::error::几乎一定是这个 GitHub App 没装到 ${CONFIG_REPO} 上 —— 不是仓库名写错" >&2
+          echo "::error::修法：GitHub App 设置页 → Install App → 把 ${CONFIG_REPO_NAME} 加进仓库清单" >&2
+          echo "::error::注意要装的是 PIPELINE_SECRETS 里 go.app_id 那个 App，不是别的" >&2
+          {
+            echo "## 🧭 换不到配置仓库的 App token"
+            echo ""
+            echo "报错是 \`GET /repos/${CONFIG_REPO}/installation\` 返回 404"
+            echo ""
+            echo "GitHub 对「App 没覆盖该仓库」返回 **404 而不是 403**，"
+            echo "所以这个报错读起来像仓库不存在 —— 但 \`${CONFIG_REPO}\` 是存在的，"
+            echo "只是这个 App 看不到它"
+            echo ""
+            echo "### 修法"
+            echo ""
+            echo "1. 打开 \`go.app_id\` 对应那个 GitHub App 的设置页"
+            echo "2. Install App → 选 \`${CONFIG_REPO_OWNER}\`"
+            echo "3. Repository access 里把 \`${CONFIG_REPO_NAME}\` 加进去"
+            echo ""
+            echo "> 装的必须是同一个 App 换个 App 装上去也不行 ——"
+            echo "> 流水线用的是 \`go.app_id\` / \`go.app_private_key\` 这一对"
+          } >> "$GITHUB_STEP_SUMMARY"
+
 
       - name: 📥 Fetch Service Config
         if: ${{ env.CONFIG_REPO != '' }}

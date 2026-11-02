@@ -898,6 +898,23 @@ def check_config_encryption(yaml_mod):
     check("$GITHUB_STEP_SUMMARY" in deploy and "配置仓库里有未加密的密钥文件" in deploy,
           "未加密时往 job summary 写一段，便于通知里看到")
 
+    # 换不到 token 时必须有一步把原因说出来
+    #
+    # create-github-app-token 只抛 GET /repos/<owner>/<repo>/installation 的裸 404，
+    # 而下面 checkout 那步虽然写了「App 没装」的提示，mint 先挂，那句话永远打不出来
+    # 这一步要用 if: failure() 才会执行，而且要点名是哪个仓库
+    # [EN] A step must state the cause when minting fails: the action throws only a bare 404 and
+    # the checkout step's hint never prints because minting fails first. It needs if: failure()
+    # to run at all, and must name the repository
+    chunk = deploy.split("- name: 🔑 Mint Token For Config Repo", 1)[1]
+    chunk = chunk.split("- name: 📥 Fetch Service Config", 1)[0]
+    check("failure()" in chunk and "steps.config-token.outcome == 'failure'" in chunk,
+          "换不到 token 时有一步 if: failure() 兜住", chunk[-200:] if "failure()" not in chunk else "")
+    check("没装到" in chunk and "${CONFIG_REPO}" in chunk,
+          "提示点名了配置仓库，并说清是 App 没装而不是仓库名错")
+    check("404 而不是 403" in deploy,
+          "解释了 GitHub 为什么返回 404 —— 否则这个报错读起来像仓库不存在")
+
     _check_projected_volume(yaml_mod)
 
 
