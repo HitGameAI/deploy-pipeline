@@ -88,69 +88,77 @@ def embed(obj):
 
 CSS = """
 :root{--bg:#f6f7f9;--card:#fff;--line:#e3e7ec;--ink:#1b2027;--dim:#5b6673;
---accent:#1f5f8b;--bad:#b3261e;--ok:#146c43;--code:#f2f4f7}
+--accent:#1f5f8b;--bad:#b3261e;--ok:#146c43;--code:#f2f4f7;--warnbg:#fff8e6;--warnline:#c98a00}
 @media(prefers-color-scheme:dark){:root{--bg:#15181c;--card:#1d2127;--line:#2f353d;
---ink:#e4e8ed;--dim:#9aa5b2;--accent:#6fb3e0;--bad:#f2b8b5;--ok:#7ddba6;--code:#23282f}}
+--ink:#e4e8ed;--dim:#9aa5b2;--accent:#6fb3e0;--bad:#f2b8b5;--ok:#7ddba6;--code:#23282f;
+--warnbg:#2a2418;--warnline:#d9a21b}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
 font:15px/1.65 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif}
-header{padding:22px 28px 14px;border-bottom:1px solid var(--line);background:var(--card)}
-h1{margin:0 0 6px;font-size:19px}
+header{padding:18px 24px 12px;border-bottom:1px solid var(--line);background:var(--card)}
+h1{margin:0 0 5px;font-size:18px}
 .sub{color:var(--dim);font-size:13px}
-.warn{margin:14px 28px 0;padding:11px 14px;border-left:3px solid var(--ok);
+.warn{margin:12px 24px 0;padding:10px 13px;border-left:3px solid var(--ok);
 background:var(--card);border-radius:0 6px 6px 0;font-size:13px;color:var(--dim)}
 .warn b{color:var(--ink)}
-.wrap{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:18px 28px 40px;align-items:start}
+.wrap{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px 24px 40px;align-items:start}
 @media(max-width:1100px){.wrap{grid-template-columns:1fr}}
-.tabs{display:flex;gap:6px;padding:14px 28px 0}
-.tab{padding:7px 15px;border:1px solid var(--line);border-radius:7px;background:var(--card);
-cursor:pointer;font-size:14px;color:var(--dim)}
-.tab[aria-selected=true]{color:var(--ink);border-color:var(--accent);font-weight:600}
-fieldset{border:1px solid var(--line);border-radius:9px;margin:0 0 14px;padding:8px 14px 14px;
+.col{min-width:0}
+.bar{display:flex;align-items:center;gap:9px;padding:7px 12px;border:1px solid var(--line);
+border-bottom:0;border-radius:9px 9px 0 0;background:var(--card);font-size:13px}
+.bar .grow{flex:1}
+.bar strong{font-size:13px}
+.panel{border:1px solid var(--line);border-radius:0 0 9px 9px;background:var(--card);
+padding:12px;margin-bottom:14px}
+button{padding:5px 11px;border:1px solid var(--line);border-radius:6px;background:var(--bg);
+color:var(--ink);cursor:pointer;font-size:12px}
+button:hover:not(:disabled){border-color:var(--accent)}
+button:disabled{opacity:.45;cursor:default}
+#src{width:100%;min-height:340px;resize:vertical;border:1px solid var(--line);border-radius:0 0 9px 9px;
+background:var(--card);color:var(--ink);padding:11px 13px;
+font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+#src:focus{outline:2px solid var(--accent);outline-offset:-2px}
+pre{margin:0;padding:11px 13px;background:var(--code);border-radius:7px;overflow:auto;
+max-height:260px;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;
+word-break:break-all}
+section{border:1px solid var(--line);border-radius:9px;margin:0 0 12px;padding:9px 13px 13px;
 background:var(--card)}
-legend{padding:0 7px;font-weight:600;font-size:14px}
-legend small{font-weight:400;color:var(--dim);margin-left:7px}
-.row{display:grid;grid-template-columns:minmax(150px,230px) 1fr;gap:10px;align-items:start;
-padding:7px 0;border-top:1px dashed var(--line)}
+section h3{margin:0 0 4px;font-size:14px}
+section h3 small{font-weight:400;color:var(--dim);margin-left:7px;font-size:12px}
+.row{padding:8px 0;border-top:1px dashed var(--line)}
 .row:first-of-type{border-top:0}
-label{font-size:13px;word-break:break-all}
-label em{display:block;color:var(--dim);font-style:normal;font-size:12px;padding-top:2px}
+.row.bad{background:color-mix(in srgb,var(--bad) 7%,transparent);border-radius:6px;
+padding-left:8px;padding-right:8px}
+.lab{display:flex;align-items:center;gap:7px;margin-bottom:5px;flex-wrap:wrap}
+.lab code{font-size:13px}
+.lab b{font-weight:600;font-size:11px;padding:1px 6px;border-radius:10px;letter-spacing:.3px}
+.b-plain{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.b-secret{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
+.b-free{background:var(--code);color:var(--dim)}
+.b-unknown{background:var(--warnbg);color:var(--warnline)}
+.del{margin-left:auto;padding:1px 7px;line-height:1.5;color:var(--dim)}
 input,select,textarea{width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:6px;
 background:var(--bg);color:var(--ink);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
-textarea{min-height:88px;resize:vertical}
-input:focus,select,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+textarea{resize:vertical}
+.sw{display:inline-flex;align-items:center;gap:8px;font:13px/1.5 ui-monospace,Menlo,monospace}
+.sw input{width:auto}
+.hint{color:var(--dim);font-size:12px;padding-top:3px}
 .err{color:var(--bad);font-size:12px;padding-top:3px}
-.file{font-size:12px;color:var(--dim);padding-top:4px}
-.kv{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;padding-bottom:6px}
-button{padding:6px 13px;border:1px solid var(--line);border-radius:6px;background:var(--card);
-color:var(--ink);cursor:pointer;font-size:13px}
-button.primary{border-color:var(--accent);color:var(--accent);font-weight:600}
-.out{position:sticky;top:18px}
-pre{margin:0;padding:13px;background:var(--code);border:1px solid var(--line);border-radius:9px;
-overflow:auto;max-height:52vh;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
-white-space:pre;tab-size:2}
-.bar{display:flex;gap:8px;align-items:center;padding:0 0 9px;flex-wrap:wrap}
-.bar .grow{flex:1}
-.cnt{font-size:12px;color:var(--dim)}
-.cnt b.bad{color:var(--bad)}
-.hint{font-size:12px;color:var(--dim);padding-top:9px}
-code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:12px}
-details.imp{margin-top:11px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
-details.imp summary{padding:8px 12px;cursor:pointer;font-size:13px;color:var(--accent)}
-details.imp textarea{min-height:120px;margin:0 12px;width:calc(100% - 24px)}
-details.imp .bar{padding:9px 12px 0}
-details.imp .hint{padding:0 12px 10px}
+.bad{color:var(--bad)}
+.empty{color:var(--dim);font-size:13px;padding:26px 14px;border:1px dashed var(--line);
+border-radius:9px;background:var(--card);line-height:1.9}
+#addable{margin-top:4px}
+#addable summary{cursor:pointer;font-size:13px;color:var(--dim);padding:7px 0}
+.adds{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0 2px}
+.add{display:inline-flex;align-items:center;gap:6px;font:12px/1.5 ui-monospace,Menlo,monospace}
+.add span{font-size:10px;padding:1px 5px;border-radius:9px}
+#unknown{margin-top:10px;font-size:13px;color:var(--dim)}
+#unknown pre{margin-top:6px;max-height:140px}
+code{background:var(--code);padding:1px 5px;border-radius:4px;
+font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
 """
 
 JS = r"""
-const MODEL = JSON.parse(document.getElementById('schema').textContent);
-const BOOL_TRUE = ['true','yes','on','1'], BOOL_FALSE = ['false','no','off','0'];
-const QTY = /^\d+(\.\d+)?(m|Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$/;
-let TAB = 'plain';
-const state = {plain:{}, secret:{}, free:{plain:{}, secret:{}}};
-
-/* 校验规则逐条对着 resolve-config.py 的 validate() 写
-   页面说通过而 CI 说不通过，比页面不校验更糟：人会信页面 */
 function check(spec, raw){
   const v = (raw ?? '').trim();
   if (spec.type === 'secret' || spec.type === 'string' || spec.type === 'csv') return '';
@@ -215,44 +223,6 @@ function render(tree, indent = 0){
   return out;
 }
 
-function build(bucket){
-  const flat = [], errs = [];
-  for (const sec of MODEL[bucket]){
-    if (sec.free_form){
-      const rows = state.free[bucket][sec.name] || [];
-      for (const [k, v] of rows) if (k.trim()) flat.push([`${sec.name}.${k.trim()}`, v]);
-      continue;
-    }
-    for (const spec of sec.keys){
-      const id = `${sec.name}.${spec.path}`;
-      const raw = state[bucket][id];
-      if (raw == null || raw === '') continue;        /* 没填的不写进文档，保持最小 */
-      const e = check(spec, raw);
-      if (e) errs.push(`${id}: ${e}`);
-      flat.push([id, raw]);
-    }
-  }
-  return {text: render(nest(flat)), errs, count: flat.length};
-}
-
-function refresh(){
-  for (const bucket of ['plain','secret']){
-    const {text, errs, count} = build(bucket);
-    const name = bucket === 'plain' ? 'PIPELINE_CONFIG' : 'PIPELINE_SECRETS';
-    document.getElementById('out-' + bucket).textContent = text || '# 还没填任何项\n';
-    const c = document.getElementById('cnt-' + bucket);
-    c.innerHTML = `${count} 项` + (errs.length ? ` · <b class="bad">${errs.length} 处不合法</b>` : ' · 校验通过');
-    document.getElementById('errs-' + bucket).textContent = errs.join('\n');
-    document.getElementById('cmd-' + bucket).textContent = bucket === 'plain'
-      ? `gh variable set ${name} --repo <owner/repo> < config.yaml`
-      : `gh secret set ${name} --repo <owner/repo> --env <环境> < secrets.yaml`;
-  }
-}
-
-/* 导入已有文档：解析成 {路径: 值} 再反填进表单
-   只认这份 schema 产出的形状 —— 两层嵌套的键值表、块标量、普通标量
-   刻意不做通用 YAML 解析器：那是个大坑，而且认得太多反而会把不该接受的东西悄悄吃掉
-   认不出来的行会原样报出来，让人自己看，而不是猜 */
 function parseDoc(text){
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   const flat = {}, unknown = [];
@@ -293,184 +263,229 @@ function parseDoc(text){
     i++;
   }
   return {flat, unknown};
-}
+}const MODEL = JSON.parse(document.getElementById('schema').textContent);
+const BOOL_TRUE = ['true','yes','on','1'], BOOL_FALSE = ['false','no','off','0'];
+const QTY = /^\d+(\.\d+)?(m|Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$/;
 
-function applyDoc(bucket, text){
-  const {flat, unknown} = parseDoc(text);
-  const known = new Set(), free = {};
+/* 一次把 schema 摊平成查表：路径 → 它属于哪份文档、它的类型与校验规则
+   节名在两份文档里会重复（kube / docker / notify 都既有明文键也有密钥键），
+   所以能判定归属的只有**整条路径**，不是节名 —— 这正是人最容易填错的地方：
+   把 kube.kubeconfig 写进 PIPELINE_CONFIG，流水线读不到，而且不会报错
+   [EN] The schema is flattened once into a lookup. Section names repeat across the two documents
+   (kube, docker and notify each hold both plaintext and secret keys), so only the full path
+   decides which document a key belongs to -- which is exactly what people get wrong, putting
+   kube.kubeconfig into PIPELINE_CONFIG where the pipeline cannot see it and nothing complains. */
+const INDEX = {}, FREE = {}, SECTION = {};
+for (const bucket of ['plain','secret']){
   for (const sec of MODEL[bucket]){
-    if (sec.free_form){ free[sec.name] = true; continue; }
-    for (const spec of sec.keys) known.add(`${sec.name}.${spec.path}`);
+    SECTION[bucket + ':' + sec.name] = sec;
+    if (sec.free_form){ FREE[sec.name] = {bucket, sec}; continue; }
+    for (const spec of sec.keys) INDEX[sec.name + '.' + spec.path] = {bucket, sec, spec};
   }
-  const missed = [];
-  state.free[bucket] = {};
-  for (const [path, value] of Object.entries(flat)){
-    if (known.has(path)){
-      state[bucket][path] = value;
-      const el = document.getElementById(path);
-      if (el) el.value = value;
-      continue;
-    }
-    const head = path.split('.')[0];
-    if (free[head]){
-      const name = path.slice(head.length + 1);
-      (state.free[bucket][head] = state.free[bucket][head] || []).push([name, value]);
-      continue;
-    }
-    missed.push(path);
-  }
-  remount(bucket);
-  const note = document.getElementById('imp-' + bucket);
-  const bits = [`认下 ${Object.keys(flat).length - missed.length} 项`];
-  if (missed.length) bits.push(`配置表里没有的 ${missed.length} 项：${missed.join(' ')}`);
-  if (unknown.length) bits.push(`没看懂的行：${unknown.join('；')}`);
-  note.textContent = bits.join('　·　');
-  refresh();
 }
 
-function field(bucket, sec, spec){
-  const id = `${sec.name}.${spec.path}`;
-  const row = document.createElement('div'); row.className = 'row';
-  const lab = document.createElement('label'); lab.setAttribute('for', id);
-  lab.innerHTML = `<code>${spec.path}</code>` +
-    (spec.desc ? `<em>${spec.desc}</em>` : '') +
-    `<em>${spec.type}${spec.default ? ' · 默认 ' + spec.default : ''}</em>`;
-  const box = document.createElement('div');
-  let input;
-  if (spec.type === 'enum' || spec.type === 'bool'){
-    input = document.createElement('select');
-    const opts = spec.type === 'bool' ? ['', 'true', 'false'] : ['', ...spec.values];
-    for (const o of opts){
-      const el = document.createElement('option');
-      el.value = o; el.textContent = o === '' ? '（不设置，用默认值）' : o;
-      input.appendChild(el);
-    }
-  } else if (spec.multiline){
-    input = document.createElement('textarea');
-    input.placeholder = '整段粘贴进来即可，缩进由页面处理';
-  } else {
-    input = document.createElement('input');
-    input.type = 'text';
-    input.placeholder = spec.default ? `默认 ${spec.default}` : '';
+let DOC = {};          /* 路径 → 值，顺序就是粘贴进来的顺序 */
+let UNKNOWN = [];
+let WRITING = false;   /* 回写 textarea 时不要再去解析它，否则光标会被打断 */
+
+function classify(path){
+  if (INDEX[path]) return INDEX[path];
+  const sec = path.split('.')[0];
+  if (FREE[sec]) return {bucket: FREE[sec].bucket, sec: FREE[sec].sec, spec: null, free: true};
+  return null;
+}
+
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ============ 右边：YAML 是唯一的事实来源 ============ */
+
+function readSource(){
+  const r = parseDoc(document.getElementById('src').value);
+  DOC = r.flat;
+  UNKNOWN = r.unknown;
+  renderForm();
+  renderOutputs();
+}
+
+function writeSource(){
+  const pairs = Object.keys(DOC).map(p => [p, DOC[p]]);
+  WRITING = true;
+  document.getElementById('src').value = pairs.length ? render(nest(pairs)) : '';
+  WRITING = false;
+  renderOutputs();
+}
+
+/* ============ 左边：按 DOC 里实际有什么来摆 ============ */
+
+function control(path, info){
+  const v = DOC[path];
+  const spec = info && info.spec;
+  const multi = String(v).includes('\n') || (spec && spec.multiline);
+  if (multi){
+    return `<textarea data-path="${esc(path)}" rows="${Math.min(14, String(v).split('\n').length + 1)}">${esc(v)}</textarea>`;
   }
-  input.id = id;
-  input.addEventListener('input', () => {
-    state[bucket][id] = input.value;
-    err.textContent = check(spec, input.value);
-    refresh();
-  });
-  box.appendChild(input);
-  if (spec.multiline){
-    const pick = document.createElement('input');
-    pick.type = 'file'; pick.className = 'file';
-    /* 本地读取，不上传：FileReader 全程在页面里 */
-    pick.addEventListener('change', () => {
-      const f = pick.files[0]; if (!f) return;
-      const r = new FileReader();
-      r.onload = () => { input.value = r.result; state[bucket][id] = r.result; refresh(); };
-      r.readAsText(f);
-    });
-    box.appendChild(pick);
+  if (spec && spec.type === 'bool'){
+    const on = BOOL_TRUE.includes(String(v).toLowerCase());
+    return `<label class="sw"><input type="checkbox" data-path="${esc(path)}"${on ? ' checked' : ''}><span>${on ? 'true' : 'false'}</span></label>`;
   }
-  const err = document.createElement('div'); err.className = 'err';
-  box.appendChild(err);
-  row.append(lab, box);
-  return row;
+  if (spec && spec.values && spec.values.length){
+    const opts = spec.values.map(o => `<option${String(v) === o ? ' selected' : ''}>${esc(o)}</option>`).join('');
+    return `<select data-path="${esc(path)}">${opts}</select>`;
+  }
+  return `<input type="text" data-path="${esc(path)}" value="${esc(v)}">`;
 }
 
-function freeRows(bucket, sec){
-  const box = document.createElement('div');
-  state.free[bucket][sec.name] = state.free[bucket][sec.name] || [];
-  const rows = state.free[bucket][sec.name];
-  const list = document.createElement('div');
-  const draw = () => {
-    list.innerHTML = '';
-    rows.forEach((pair, i) => {
-      const line = document.createElement('div'); line.className = 'kv';
-      const k = document.createElement('input'); k.placeholder = '变量名（大写）'; k.value = pair[0];
-      const v = document.createElement('input'); v.placeholder = '值'; v.value = pair[1];
-      k.addEventListener('input', () => { pair[0] = k.value; refresh(); });
-      v.addEventListener('input', () => { pair[1] = v.value; refresh(); });
-      const del = document.createElement('button'); del.textContent = '删';
-      del.addEventListener('click', () => { rows.splice(i, 1); draw(); refresh(); });
-      line.append(k, v, del);
-      list.appendChild(line);
-    });
-  };
-  const add = document.createElement('button');
-  add.textContent = '+ 加一项'; add.className = 'primary';
-  add.addEventListener('click', () => { rows.push(['', '']); draw(); refresh(); });
-  draw();
-  box.append(list, add);
-  return box;
-}
-
-function remount(bucket){
-  const host = document.getElementById('form-' + bucket);
-  host.innerHTML = '';
-  buildForm(bucket, host);
-}
-
-function buildForm(bucket, host){
-  {
-    for (const sec of MODEL[bucket]){
-      const fs = document.createElement('fieldset');
-      const lg = document.createElement('legend');
-      lg.innerHTML = `${sec.name}<small>${sec.desc || ''}</small>`;
-      fs.appendChild(lg);
-      if (sec.free_form){
-        const note = document.createElement('div'); note.className = 'hint';
-        note.textContent = '自由键值表：键名就是容器里的环境变量名';
-        fs.append(note, freeRows(bucket, sec));
-      } else {
-        for (const spec of sec.keys) fs.appendChild(field(bucket, sec, spec));
+function renderForm(){
+  const host = document.getElementById('form');
+  const paths = Object.keys(DOC);
+  if (!paths.length){
+    host.innerHTML = `<div class="empty">右边贴一份 <code>PIPELINE_CONFIG</code> 或
+      <code>PIPELINE_SECRETS</code> 的 YAML，这里就按它的内容自动摆出表单<br>
+      两份混在一起贴也行 —— 每一项属于哪份文档由 schema 判定，下面会逐项标出来</div>`;
+    return;
+  }
+  /* 按节分组，但节的先后顺序跟着粘贴顺序走，不按 schema 的顺序重排 ——
+     人对着自己贴进来的那份找东西，重排反而让人找不到
+     [EN] Grouped by section in paste order rather than schema order: people look for a key where
+     they typed it, and reordering makes it harder to find */
+  const groups = [], seen = {};
+  for (const p of paths){
+    const sec = p.split('.')[0];
+    if (!seen[sec]){ seen[sec] = []; groups.push([sec, seen[sec]]); }
+    seen[sec].push(p);
+  }
+  let html = '', nerr = 0;
+  for (const [sec, items] of groups){
+    const any = classify(items[0]);
+    const desc = any && any.sec ? any.sec.desc : '';
+    html += `<section><h3>${esc(sec)}${desc ? `<small>${esc(desc)}</small>` : ''}</h3>`;
+    for (const p of items){
+      const info = classify(p);
+      const key = p.slice(sec.length + 1);
+      let badge, err = '';
+      if (!info) badge = '<b class="b-unknown">未知键</b>';
+      else if (info.free) badge = `<b class="b-${info.bucket}">${info.bucket === 'plain' ? '明文' : '密钥'}</b><b class="b-free">自由键</b>`;
+      else {
+        badge = `<b class="b-${info.bucket}">${info.bucket === 'plain' ? '明文' : '密钥'}</b>`;
+        const e = check(info.spec, DOC[p]);
+        if (e){ err = `<div class="err">${esc(e)}</div>`; nerr++; }
       }
-      host.appendChild(fs);
+      const spec = info && info.spec;
+      html += `<div class="row${err ? ' bad' : ''}">
+        <div class="lab"><code>${esc(key)}</code>${badge}
+          <button class="del" data-del="${esc(p)}" title="从文档里删掉">✕</button></div>
+        ${control(p, info)}
+        ${spec && spec.desc ? `<div class="hint">${esc(spec.desc)}</div>` : ''}
+        ${spec && spec.default ? `<div class="hint">默认 <code>${esc(spec.default)}</code></div>` : ''}
+        ${!info ? '<div class="hint">schema 里没有这个键 —— 要么写错了，要么 schema 该加上它</div>' : ''}
+        ${err}
+      </div>`;
     }
+    html += '</section>';
   }
+  host.innerHTML = html;
+  document.getElementById('nerr').innerHTML = nerr
+    ? `<b class="bad">${nerr} 处不合法</b>` : (paths.length ? '校验通过' : '');
+  renderAddable();
 }
+
+/* schema 里有、这份文档里没有的 —— 折叠放在底下，点一下按默认值加进去
+   不默认展开：这页面的用处是改手上那份，不是把 116 个键全填一遍
+   [EN] Keys the schema defines but this document lacks, collapsed and added with their default on
+   click. Not expanded by default: the page exists to edit the document in hand, not to fill in all
+   116 keys */
+function renderAddable(){
+  const miss = [];
+  for (const path in INDEX) if (!(path in DOC)) miss.push(path);
+  const host = document.getElementById('addable');
+  if (!miss.length){ host.innerHTML = ''; return; }
+  const items = miss.map(p => {
+    const i = INDEX[p];
+    return `<button data-add="${esc(p)}" class="add"><span class="b-${i.bucket}">${i.bucket === 'plain' ? '明文' : '密钥'}</span>${esc(p)}</button>`;
+  }).join('');
+  host.innerHTML = `<details><summary>还没填的 ${miss.length} 项（点一下按默认值加进来）</summary>
+    <div class="adds">${items}</div></details>`;
+}
+
+/* ============ 两份输出：按每个键的归属拆开 ============ */
+
+function renderOutputs(){
+  for (const bucket of ['plain','secret']){
+    const pairs = [];
+    for (const p in DOC){
+      const info = classify(p);
+      if (info && info.bucket === bucket) pairs.push([p, DOC[p]]);
+    }
+    const text = pairs.length ? render(nest(pairs)) : '';
+    document.getElementById('out-' + bucket).textContent = text || '# 这份文档里没有属于它的项\n';
+    document.getElementById('cnt-' + bucket).textContent = pairs.length + ' 项';
+    document.getElementById('copy-' + bucket).disabled = !pairs.length;
+  }
+  const u = document.getElementById('unknown');
+  u.innerHTML = UNKNOWN.length
+    ? `<b class="bad">${UNKNOWN.length} 行没认出来</b>（原样列出，自己看）<pre>${esc(UNKNOWN.join('\n'))}</pre>`
+    : '';
+}
+
+/* ============ 事件 ============ */
 
 function mount(){
+  const src = document.getElementById('src');
+  src.addEventListener('input', () => { if (!WRITING) readSource(); });
+
+  document.getElementById('form').addEventListener('input', ev => {
+    const el = ev.target.closest('[data-path]');
+    if (!el) return;
+    const path = el.getAttribute('data-path');
+    DOC[path] = el.type === 'checkbox' ? String(el.checked) : el.value;
+    if (el.type === 'checkbox') el.parentNode.querySelector('span').textContent = String(el.checked);
+    /* 只回写右边并重算校验，不重建左边的 DOM —— 否则正在打字的输入框会被换掉
+       [EN] Only the right pane is rewritten; the left DOM stays so the field being typed into is
+       not replaced under the cursor */
+    writeSource();
+    const info = classify(path);
+    const row = el.closest('.row');
+    if (info && info.spec && row){
+      const e = check(info.spec, DOC[path]);
+      row.classList.toggle('bad', !!e);
+      let node = row.querySelector('.err');
+      if (e && !node){ node = document.createElement('div'); node.className = 'err'; row.appendChild(node); }
+      if (node) node.textContent = e || '';
+      if (!e && node) node.remove();
+    }
+    const nerr = document.querySelectorAll('#form .row.bad').length;
+    document.getElementById('nerr').innerHTML = nerr ? `<b class="bad">${nerr} 处不合法</b>` : '校验通过';
+  });
+
+  document.getElementById('form').addEventListener('click', ev => {
+    const d = ev.target.closest('[data-del]');
+    if (!d) return;
+    delete DOC[d.getAttribute('data-del')];
+    writeSource();
+    renderForm();
+  });
+
+  document.getElementById('addable').addEventListener('click', ev => {
+    const a = ev.target.closest('[data-add]');
+    if (!a) return;
+    const p = a.getAttribute('data-add');
+    DOC[p] = INDEX[p].spec.default || '';
+    writeSource();
+    renderForm();
+  });
+
   for (const bucket of ['plain','secret']){
-    buildForm(bucket, document.getElementById('form-' + bucket));
+    document.getElementById('copy-' + bucket).addEventListener('click', async ev => {
+      const text = document.getElementById('out-' + bucket).textContent;
+      try { await navigator.clipboard.writeText(text); ev.target.textContent = '已复制'; }
+      catch (e) { ev.target.textContent = '复制失败，手动选'; }
+      setTimeout(() => { ev.target.textContent = '复制'; }, 1500);
+    });
   }
-  document.querySelectorAll('[data-import]').forEach(b => b.addEventListener('click', () => {
-    const bucket = b.dataset.import;
-    const ta = document.getElementById('imp-box-' + bucket);
-    if (!ta.value.trim()){ document.getElementById('imp-' + bucket).textContent = '先把 YAML 粘进来'; return; }
-    applyDoc(bucket, ta.value);
-  }));
-  document.querySelectorAll('[data-impfile]').forEach(inp => inp.addEventListener('change', () => {
-    const f = inp.files[0]; if (!f) return;
-    const r = new FileReader();
-    r.onload = () => { document.getElementById('imp-box-' + inp.dataset.impfile).value = r.result;
-                       applyDoc(inp.dataset.impfile, r.result); };
-    r.readAsText(f);
-  }));
-  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
-    TAB = t.dataset.tab;
-    document.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-selected', x === t));
-    document.querySelectorAll('[data-pane]').forEach(p =>
-      p.hidden = p.dataset.pane !== TAB);
-  }));
-  document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', async () => {
-    const text = document.getElementById('out-' + b.dataset.copy).textContent;
-    try { await navigator.clipboard.writeText(text); b.textContent = '已复制'; }
-    catch { b.textContent = '复制失败，手动选'; }
-    setTimeout(() => b.textContent = '复制', 1500);
-  }));
-  document.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () => {
-    const bucket = b.dataset.save;
-    const text = document.getElementById('out-' + bucket).textContent;
-    /* Blob + a[download]：本地另存，不经网络 */
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([text], {type:'text/yaml'}));
-    a.download = bucket === 'plain' ? 'PIPELINE_CONFIG.yaml' : 'PIPELINE_SECRETS.yaml';
-    a.click(); URL.revokeObjectURL(a.href);
-  }));
-  refresh();
+  readSource();
 }
-mount();
+
+document.addEventListener('DOMContentLoaded', mount);
 """
 
 HTML = """<!DOCTYPE html>
@@ -479,60 +494,58 @@ HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>流水线配置生成器</title>
+<title>流水线配置编辑器</title>
 <style>%(css)s</style>
 </head>
 <body>
 <header>
-  <h1>流水线配置生成器</h1>
-  <div class="sub">填完复制走 —— 明文配置进 <code>vars.PIPELINE_CONFIG</code>，密钥进
-    <code>secrets.PIPELINE_SECRETS</code>　字段、类型、默认值与校验规则都来自
-    <code>scripts/config/schema.yaml</code>，共 %(nplain)d 个明文键、%(nsecret)d 个密钥键</div>
+  <h1>流水线配置编辑器</h1>
+  <div class="sub">右边贴 YAML，左边按它的内容自动摆出表单；两边实时双向同步　每一项属于
+    <code>vars.PIPELINE_CONFIG</code> 还是 <code>secrets.PIPELINE_SECRETS</code> 由
+    <code>scripts/config/schema.yaml</code> 判定，逐项标出来 —— 共 %(nplain)d 个明文键、%(nsecret)d 个密钥键</div>
 </header>
 <div class="warn">
-  <b>这张页面不联网</b>　没有任何外部引用，也没有 fetch、表单提交或上报：你填进去的值只在
-  当前标签页里，关掉就没了　选文件走的是浏览器本地读取，文件内容同样不出页面
-  <br><b>生成的密钥文档不要提交进仓库</b>　它只该贴进 GitHub 的 Secrets 页面，或者用
+  <b>这张页面不联网</b>　没有任何外部引用，也没有 fetch、表单提交或上报：贴进去的值只在当前标签页里，关掉就没了
+  <br><b>密钥文档不要提交进仓库</b>　它只该贴进 GitHub 的 Secrets 页面，或者用
   <code>gh secret set</code> 从本地文件喂进去
 </div>
-<div class="tabs" role="tablist">
-  <button class="tab" data-tab="plain" role="tab" aria-selected="true">明文配置 PIPELINE_CONFIG</button>
-  <button class="tab" data-tab="secret" role="tab" aria-selected="false">密钥 PIPELINE_SECRETS</button>
+<div class="wrap">
+  <div class="col">
+    <div class="bar"><strong>配置项</strong><span class="grow"></span><span id="nerr"></span></div>
+    <div class="panel"><div id="form"></div><div id="addable"></div></div>
+  </div>
+  <div class="col">
+    <div class="bar"><strong>YAML</strong><span class="grow"></span>
+      <span class="sub" style="font-size:12px">贴进来即可，改哪边另一边跟着动</span></div>
+    <textarea id="src" spellcheck="false" placeholder="把手上那份 PIPELINE_CONFIG 或 PIPELINE_SECRETS 贴在这里
+两份混在一起也行，下面会按归属拆开
+
+service:
+  binary_name: my-service
+kube:
+  namespace: business
+  kubeconfig: |
+    apiVersion: v1
+    ..."></textarea>
+    <div id="unknown"></div>
+
+    <div class="bar" style="margin-top:14px"><strong>vars.PIPELINE_CONFIG</strong>
+      <span class="grow"></span><span id="cnt-plain"></span>
+      <button id="copy-plain">复制</button></div>
+    <div class="panel"><pre id="out-plain"></pre></div>
+
+    <div class="bar"><strong>secrets.PIPELINE_SECRETS</strong>
+      <span class="grow"></span><span id="cnt-secret"></span>
+      <button id="copy-secret">复制</button></div>
+    <div class="panel"><pre id="out-secret"></pre></div>
+  </div>
 </div>
-%(panes)s
 <script id="schema" type="application/json">%(schema)s</script>
 <script>%(js)s</script>
 </body>
 </html>
 """
 
-PANE = """
-<div class="wrap" data-pane="%(bucket)s"%(hidden)s>
-  <div><div id="form-%(bucket)s"></div></div>
-  <div class="out">
-    <div class="bar">
-      <strong>%(title)s</strong>
-      <span class="grow"></span>
-      <span class="cnt" id="cnt-%(bucket)s"></span>
-      <button data-copy="%(bucket)s">复制</button>
-      <button data-save="%(bucket)s">另存</button>
-    </div>
-    <pre id="out-%(bucket)s"></pre>
-    <div class="err" id="errs-%(bucket)s"></div>
-    <div class="hint">写进仓库：<code id="cmd-%(bucket)s"></code></div>
-    <div class="hint">%(note)s</div>
-    <details class="imp">
-      <summary>导入已有文档，反填进左边的表单</summary>
-      <textarea id="imp-box-%(bucket)s" placeholder="把现有的 %(title)s 整份粘进来"></textarea>
-      <div class="bar">
-        <button class="primary" data-import="%(bucket)s">解析并反填</button>
-        <input type="file" data-impfile="%(bucket)s" class="file">
-      </div>
-      <div class="hint" id="imp-%(bucket)s"></div>
-    </details>
-  </div>
-</div>
-"""
 
 
 def main(argv=None):
@@ -544,16 +557,8 @@ def main(argv=None):
     nplain = sum(len(s["keys"]) for s in model["plain"])
     nsecret = sum(len(s["keys"]) for s in model["secret"])
 
-    panes = PANE % {
-        "bucket": "plain", "hidden": "", "title": "vars.PIPELINE_CONFIG",
-        "note": "只写填了的键，没填的走 schema 默认值 —— 文档越小越好查",
-    } + PANE % {
-        "bucket": "secret", "hidden": " hidden", "title": "secrets.PIPELINE_SECRETS",
-        "note": "要配在 Environment 上，而且每个环境那份要写全："
-                "同名的 Environment secret 整体取代仓库级那一份，不做逐键合并",
-    }
     html = HTML % {"css": CSS, "js": JS, "schema": embed(model),
-                   "panes": panes, "nplain": nplain, "nsecret": nsecret}
+                   "nplain": nplain, "nsecret": nsecret}
 
     out = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out), exist_ok=True)

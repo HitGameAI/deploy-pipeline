@@ -1444,6 +1444,125 @@ def check_mermaid(_yaml_mod):
           "\n".join(problems) if problems else "")
 
 
+HARNESS = r"""
+const fs = require('fs');
+const html = fs.readFileSync(process.argv[2], 'utf8');
+const schema = html.match(/<script id="schema" type="application\/json">([\s\S]*?)<\/script>/)[1];
+const js = html.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/)[1];
+const stub = { textContent: schema, value: '', innerHTML: '', style: {}, addEventListener(){},
+               querySelector(){return null}, querySelectorAll(){return []} };
+global.document = { getElementById: () => stub, addEventListener: () => {},
+                    querySelectorAll: () => [], createElement: () => ({...stub}) };
+global.navigator = { clipboard: { writeText: async () => {} } };
+const mod = {};
+new Function('module', js + '\nmodule.exports={parseDoc,nest,render,check,INDEX,classify};')(mod);
+const { parseDoc, nest, render, classify } = mod.exports;
+
+const sample = fs.readFileSync(process.argv[3], 'utf8');
+const r = parseDoc(sample);
+const pairs = Object.keys(r.flat).map(p => [p, r.flat[p]]);
+const r2 = parseDoc(render(nest(pairs)));
+// 比**排序后**的键值对，不是 JSON.stringify 对象
+// 序列化会把同一节的键合并到一起，所以键的先后顺序本来就会变 —— 那是对的行为
+// 用顺序敏感的比较会把这当成「文档被改坏」，而真正要守的是值不丢不变
+// [EN] Sorted entries are compared rather than JSON.stringify of the objects: serialization
+// groups keys of one section together so insertion order legitimately changes, and an
+// order-sensitive comparison would read that as corruption. What must hold is that no value is
+// lost or altered.
+const norm = o => Object.keys(o).sort().map(k => k + '\u0000' + o[k]).join('\u0001');
+const buckets = {};
+for (const p of Object.keys(r.flat)) { const i = classify(p); buckets[p] = i ? i.bucket : null; }
+console.log(JSON.stringify({
+  keys: Object.keys(r.flat).length,
+  unknown: r.unknown.length,
+  roundtrip: norm(r.flat) === norm(r2.flat),
+  buckets,
+}));
+"""
+
+
+def check_config_page_roundtrip(_yaml_mod):
+    """配置页面：右边贴 YAML、左边自动摆表单，两边实时双向
+
+    双向同步最怕的是来回一趟把文档改坏 —— 而「改坏」在页面上看不出来：
+    表单照样显示，复制出去的文档却少了一项或多了一层缩进
+    所以这里把页面里那几个纯函数抽出来在 node 里真跑：解析一份带多行块标量的文档，
+    序列化回去再解析，比两次的键值表
+
+    另一半同样重要:每个键属于哪份文档 节名在两份里会重复（kube / docker / notify
+    都既有明文键也有密钥键），判定只能按整条路径 —— 把 kube.kubeconfig 填进
+    PIPELINE_CONFIG 是真发生过的错，而流水线读不到它且不会报错
+
+    [EN] The page's pure functions are executed in node: a document with multi-line block scalars
+    is parsed, serialized back and parsed again, and the two key/value maps compared. A two-way
+    editor that corrupts the document shows nothing on screen -- the form still renders while the
+    copied document has lost a key or gained an indent level. The other half matters as much:
+    which document each key belongs to. Section names repeat across the two (kube, docker and
+    notify each hold both kinds), so only the full path decides, and putting kube.kubeconfig into
+    PIPELINE_CONFIG has actually happened -- the pipeline cannot read it and nothing complains.
+    """
+    section("配置页面的双向同步")
+
+    node = shutil.which("node")
+    if not check(node is not None, "有 node 可以跑页面里的逻辑",
+                 "装了 node 才能验这组 —— GitHub runner 自带"):
+        return
+
+    work = tempfile.mkdtemp(prefix="cfgpage-")
+    try:
+        page = os.path.join(work, "index.html")
+        r = run([sys.executable, os.path.join(ROOT, "scripts", "make-config-page.py"),
+                 "-o", page])
+        if not check(r.returncode == 0 and os.path.isfile(page), "页面能生成",
+                     (r.stdout + r.stderr)[-300:]):
+            return
+
+        sample = os.path.join(work, "sample.yaml")
+        with io.open(sample, "w", encoding="utf-8") as fh:
+            fh.write(
+                "service:\n  binary_name: demo-gateway\n"
+                "ports:\n  http: 8082\n"
+                "kube:\n  namespace: business\n  kubeconfig: |\n"
+                "    apiVersion: v1\n    clusters:\n    - name: default\n"
+                "go:\n  app_private_key: |\n"
+                "    -----BEGIN RSA PRIVATE KEY-----\n    AAAA\n"
+                "    -----END RSA PRIVATE KEY-----\n"
+                "env:\n  LOG_LEVEL: info\n"
+                "app:\n  DEMO_SECRET: not-real\n"
+                "service:\n  no_such_key: x\n")
+        harness = os.path.join(work, "harness.js")
+        with io.open(harness, "w", encoding="utf-8") as fh:
+            fh.write(HARNESS)
+
+        r = run([node, harness, page, sample])
+        if not check(r.returncode == 0, "页面逻辑能在 node 里跑起来",
+                     (r.stdout + r.stderr)[-400:]):
+            return
+        try:
+            got = json.loads(r.stdout.strip().split("\n")[-1])
+        except ValueError as exc:
+            check(False, "harness 输出是合法 JSON", "%s / %s" % (exc, r.stdout[-200:]))
+            return
+
+        check(got["unknown"] == 0, "示例文档每一行都认得出来",
+              "%d 行没认出来" % got["unknown"])
+        check(got["roundtrip"] is True,
+              "解析 → 序列化 → 再解析，键值完全一致（含多行块标量；键的分组顺序会变，那是对的）")
+        b = got["buckets"]
+        # 同一个 kube 节里，namespace 是明文、kubeconfig 是密钥 —— 这条最容易错
+        # [EN] Within one kube section, namespace is plaintext while kubeconfig is a secret
+        check(b.get("kube.namespace") == "plain" and b.get("kube.kubeconfig") == "secret",
+              "同一节里明文键与密钥键分别判对",
+              "namespace=%s kubeconfig=%s" % (b.get("kube.namespace"), b.get("kube.kubeconfig")))
+        check(b.get("env.LOG_LEVEL") == "plain" and b.get("app.DEMO_SECRET") == "secret",
+              "自由键值表（env / app）也按节归属判对",
+              "env=%s app=%s" % (b.get("env.LOG_LEVEL"), b.get("app.DEMO_SECRET")))
+        check(b.get("service.no_such_key") is None,
+              "schema 里没有的键被标成未知，而不是悄悄归到某一份")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main():
     try:
         import yaml
@@ -1461,6 +1580,7 @@ def main():
     check_zero_config(yaml)
     check_env_coverage(yaml)
     check_config_page(yaml)
+    check_config_page_roundtrip(yaml)
     check_service_config_repo(yaml)
     check_config_encryption(yaml)
     check_config_moved_to_repo(yaml)
