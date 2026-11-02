@@ -70,43 +70,53 @@ def fingerprint(value):
 def yaml_hint(raw, line):
     """按出错那一行的形状给一条可操作的提示，不回显内容。
 
-    最常见的坏法只有一种：多行值（kubeconfig、PEM 私钥）直接贴在键后面，
-    于是第二行起没有缩进，解析器在那里说「找不到期望的 :」
-    光给行列号的话，看报错的人只知道第 6 行有问题，不知道该怎么改
+    最常见的坏法是块标量只缩进了第一行：写法本身对（键后面有 |），但 YAML 要求整段
+    都缩进到同一层，只缩第一行的话第二行就跳出了块，解析器在那之后才报
+    「找不到期望的 :」 贴 PEM 私钥或 kubeconfig 时几乎必然这样，因为复制过来的
+    原文没有缩进
 
-    [EN] Returns an actionable hint derived from the shape of the offending line without
-    echoing it. Nearly every failure is the same one: a multi-line value such as a kubeconfig
-    or a PEM key pasted straight after the key, leaving later lines unindented, where the
-    parser reports a missing colon. A bare line number tells the reader where but not what.
+    光给行列号的话，看报错的人只知道第 6 行有问题，不知道该怎么改 —— 而在密钥文档里
+    那一行还会被 GitHub 打码，所以提示必须靠结构推出来，不能靠回显内容
+
+    [EN] Returns an actionable hint derived from the shape of the offending line without echoing
+    it. The common failure is a block scalar with only its first line indented: the syntax is
+    right, since the key is followed by |, but YAML wants the whole body at one indent level, so
+    the second line leaves the block and the parser only reports a missing colon somewhere after
+    it. Pasting a PEM key or a kubeconfig hits this every time, because the copied text carries
+    no indentation. A bare line number tells the reader where but not what, and inside a secrets
+    document that line is masked by GitHub anyway, so the hint has to come from structure.
     """
     if not (0 <= line < len(raw)):
         return ""
     cur = raw[line]
-    if cur[:1] not in (" ", "\t", "", "#"):
-        # 往上跨过连续的未缩进行再看
-        #
-        # 解析器报的位置通常在真正起因之后几行：私钥贴成多行时，它要到某一行
-        # 出现「看起来像键但没有冒号」才报错，而那之前好几行都是私钥正文
-        # 只看紧邻的上一行会拿到私钥中间那一行，于是给不出有用的提示
-        #
-        # [EN] Walk up past the run of unindented lines: the parser reports a position several
-        # lines after the real cause, because a pasted key only fails once some line looks like
-        # a key without a colon, and the lines before it are the key's own body. Looking only at
-        # the immediately preceding line lands in the middle of that body
-        i = line - 1
-        while i >= 0 and raw[i].strip() and raw[i][:1] not in (" ", "\t"):
-            i -= 1
-        anchor = raw[i] if i >= 0 else ""
-        if ":" in anchor and anchor.split(":", 1)[1].strip():
-            key = anchor.split(":", 1)[0].strip()
-            return ("；这一行没有缩进，往上第一个缩进行是「%s: 值」—— 多行值要写成"
-                    "「%s: |」再把内容整体缩进两格 | a multi-line value needs \"%s: |\" "
-                    "with the body indented" % (key, key, key))
-        return "；这一行没有缩进，顶层只能是节名 | this line is not indented"
-    if cur.lstrip().startswith("-"):
-        return "；这一行是列表项，而这份配置里每一节都是键值表 | lists are not used here"
-    return ""
+    if cur[:1] in (" ", "\t"):
+        if cur.lstrip().startswith("-"):
+            return "；这一行是列表项，而这份配置里每一节都是键值表 | lists are not used here"
+        return ""
+    if not cur.strip() or cur.lstrip().startswith("#"):
+        return ""
 
+    # 往上找最近的块标量声明，形如「  key: |」
+    # 中间跨过的都是它的正文（正是这些行该缩进却没缩进）
+    # [EN] Look upward for the nearest block scalar declaration; everything in between is its
+    # body, which is exactly what should have been indented
+    decl = re.compile(r'^(\s*)([\w.-]+)\s*:\s*[|>][-+]?\d*\s*$')
+    for k in range(line - 1, -1, -1):
+        hit = decl.match(raw[k])
+        if hit:
+            want = len(hit.group(1)) + 2
+            return ("；上面「%s: |」那一段只缩进了第一行 —— 块标量要求整段都缩进到同一层，"
+                    "把它的每一行都缩进 %d 个空格 | the block scalar under \"%s\" has only its "
+                    "first line indented; indent every line of the body by %d spaces"
+                    % (hit.group(2), want, hit.group(2), want))
+        # 碰到一个「键: 值」形式的缩进行，说明不是块标量的问题
+        # [EN] An indented key-value line means this is not a block scalar problem
+        if raw[k][:1] in (" ", "\t") and ":" in raw[k] and raw[k].split(":", 1)[1].strip():
+            key = raw[k].split(":", 1)[0].strip()
+            return ("；这一行没有缩进，往上第一个配置项是「%s: 值」—— 多行值要写成「%s: |」"
+                    "再把内容整体缩进两格 | a multi-line value needs \"%s: |\" with the body "
+                    "indented" % (key, key, key))
+    return "；这一行没有缩进，顶层只能是节名 | this line is not indented"
 
 def parse_yaml(text, origin, errors, redact=False):
     """解析一段 YAML；语法错误带行列号报出来，像 k3s 校验配置文件那样。
