@@ -589,6 +589,29 @@ sections:
         type: bool
         default: 'false'
         desc: '下游升完依赖后是否自动打 tag，从而把联动继续传下去'
+      watch:
+        env: GOLIB_WATCH
+        input: watch
+        type: string
+        default: ''
+        desc: >-
+          要盯的三方模块，写成 YAML 列表（多行块标量），留空则整个 job 跳过
+          每组一个模块，各自带自己的重点文件与值探针
+          不用「逗号分隔的字符串」是因为探针的值是正则，里面本来就带逗号、分号、冒号，
+          任何单字符分隔符都会撞上
+          完整写法与四种探针结果见 docs/03-configuration.md 的 golib 一节
+      watch_max_stat:
+        env: GOLIB_WATCH_MAX_STAT
+        input: watch-max-stat
+        type: string
+        default: '60'
+        desc: '整模块变更文件清单最多列几行，防止报告被几千行淹掉'
+      watch_max_diff:
+        env: GOLIB_WATCH_MAX_DIFF
+        input: watch-max-diff
+        type: string
+        default: '120'
+        desc: '每个重点文件的 diff 最多列几行'
       bump_run_tests:
         env: GOLIB_BUMP_RUN_TESTS
         input: run-tests

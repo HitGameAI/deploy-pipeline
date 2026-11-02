@@ -24,6 +24,7 @@
 | **Go 库** | Bump Upstream | `go-bump-upstream.yml` | 收到上游发版通知后升 go.mod，**过了闸门才推主干** |
 | **Go 库** | Trigger Downstream | `go-trigger-downstream.yml` | 发 tag 后通知一级下游，清单由依赖图自动推导 |
 | **Go 库** | Bootstrap | `golib-bootstrap.yml` | 体检并下发各库的接入状态与 App 凭证 |
+| **Go 库** | Dep Watch | `go-dep-watch.yml` | 盯指定三方模块的升级，给出内容 diff 与值探针对比 |
 
 > GitHub reusable workflow 的 `uses:` 目标必须直接位于 `.github/workflows/` 顶层，不能放在 `backend/`、`frontend/`、`shared/` 等二级目录
 
@@ -759,6 +760,77 @@ App token 在这里按 `repositories: matrix.repo` 收窄授权范围
 
 派发用 `peter-evans/repository-dispatch@v3`，`event-type: upstream-updated`，
 载荷带 `module`、`version`、`sha`、`create_tag`、`commit_message`
+
+#### 🔭 Go Dep Watch（`go-dep-watch.yml`）
+
+dependabot 只说「v1.2.3 → v1.2.4」,而各仓库的 automerge 把 minor 与 patch 直接合掉,
+没人看过里面改了什么 对多数依赖这没问题,对少数不行 —— 典型是把对端协议版本
+**写死在代码里**的那种:上游一个 patch 改掉那个常量,行为就全变了,而服务端淘汰旧版本之后
+直接拒连,这种失败在升级之前完全无法规避
+
+三件事,全由 `PIPELINE_CONFIG` 的 `golib` 节驱动,工作流与脚本都不认识任何具体模块:
+
+| 做什么 | 怎么配 |
+| --- | --- |
+| pinned 版本 vs 上游最新版本 | 每组的 `module` |
+| 内容 diff:优先只看**本仓库 import 到的包**,再加指定文件的全文 diff | 每组的 `focus` |
+| 值探针:按正则从源码抠一个值,比较两版变没变 | 每组的 `probes` |
+
+配置是 `golib.watch`,**一个 YAML 列表,每组一个模块**,各自带自己的 focus 与 probes:
+
+```yaml
+golib:
+  watch: |
+    - module: example.com/upstream-sdk
+      focus:
+        - store/payload.go
+      probes:
+        - name: 客户端协议版本
+          file: store/payload.go
+          regex: 'ProtocolVersion\{[0-9, ]+\}'
+    - module: github.com/example/transport
+      focus:
+        - transport/client.go
+      probes:
+        - name: 默认协议层版本
+          file: transport/client.go
+          regex: 'layer +int'
+```
+
+**为什么是 YAML 列表而不是逗号分隔的字符串**:探针的值是正则,里面本来就带逗号、分号、
+冒号 —— 任何单字符分隔符都会撞上 第一版就是这么坏的:探针写成 `模块=文件:正则` 用逗号
+分隔,而 `[0-9, ]` 把一条切成两半,表现是探针静默取不到值、不报错
+
+脚本内部把这份 YAML 摊成**制表符分隔**的行协议再交给 shell —— 制表符不会出现在模块路径、
+文件路径或正则里
+
+探针有四种结果,都会报:
+
+| 情形 | 含义 |
+| --- | --- |
+| 值变了 | 这次升级动的正是被盯住的那个值 |
+| 旧版匹配不到、新版匹配到 | 上游新增了这个东西 |
+| 旧版匹配到、新版匹配不到 | 🚨 被盯的东西改名或挪走了 —— **探针从此失明,再也不会报警** |
+| 两版都匹配不到 | 🚨 探针从一开始就配错了 —— 一个永远不会响的检查,而它不响会被当成「没事」 |
+
+最后两种比「值变了」更该重视:一个不会响的检查,比没有检查更坏
+
+调用方自己排期,每个仓库各自决定频率:
+
+```yaml
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  watch:
+    uses: ORG/deploy-pipeline/.github/workflows/go-dep-watch.yml@master
+    secrets: inherit
+```
+
+`golib.watch_modules` 留空时整个 job 跳过,所以不配的仓库不会因此多跑一次
+有漂移时退 2,汇总进 job summary 并按 `notify.provider` 发通知;没有则安静结束
 
 #### 🧰 Go Library Bootstrap（`golib-bootstrap.yml`）
 

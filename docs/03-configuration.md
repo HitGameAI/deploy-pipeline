@@ -323,6 +323,32 @@ Downstream](02-workflows.md) 三条工作流共用
 | `golib.exclude_repos_regex` | `GOLIB_EXCLUDE_REPOS_REGEX` | `exclude-repos-regex` | `GOLIB_EXCLUDE_REPOS_REGEX` | string | `^(.*-template$\|deploy-pipeline$)` |
 | `golib.downstream_create_tag` | `GOLIB_DOWNSTREAM_CREATE_TAG` | `downstream-create-tag` | `GOLIB_DOWNSTREAM_CREATE_TAG` | bool | `false` |
 | `golib.bump_run_tests` | `GOLIB_BUMP_RUN_TESTS` | `run-tests` | `GOLIB_BUMP_RUN_TESTS` | bool | `true` |
+| `golib.watch` | `GOLIB_WATCH` | `watch` | `GOLIB_WATCH` | string | `''` |
+| `golib.watch_max_stat` | `GOLIB_WATCH_MAX_STAT` | `watch-max-stat` | `GOLIB_WATCH_MAX_STAT` | string | `60` |
+| `golib.watch_max_diff` | `GOLIB_WATCH_MAX_DIFF` | `watch-max-diff` | `GOLIB_WATCH_MAX_DIFF` | string | `120` |
+
+**`watch` 与两个 `watch_max_*` 给 [`go-dep-watch.yml`](02-workflows.md) 用**,留空则整个 job 跳过
+
+`watch` 是一个 **YAML 列表**,每组一个模块,各自带 `focus` 与 `probes`:
+
+```yaml
+golib:
+  watch: |
+    - module: example.com/upstream-sdk
+      focus:
+        - store/payload.go
+      probes:
+        - name: 客户端协议版本
+          file: store/payload.go
+          regex: 'ProtocolVersion\{[0-9, ]+\}'
+    - module: github.com/example/transport
+      focus:
+        - transport/client.go
+```
+
+不用「逗号分隔的字符串」是因为探针的值是正则,里面本来就带逗号、分号、冒号,
+任何单字符分隔符都会撞上 —— 第一版就是这么坏的,`[0-9, ]` 把一条探针切成两半,
+而表现是探针静默取不到值、不报错
 
 **四个默认值留空是故意的，填上会坏事：**
 
