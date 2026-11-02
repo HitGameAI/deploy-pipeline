@@ -70,9 +70,23 @@ ${LIVENESS_PROBE_BLOCK}
           mountPath: ${CONFIG_MOUNT_PATH}
           readOnly: true
       volumes:
+      # projected 而不是单个 configMap：配置可能来自两处 —— 明文那份在 ConfigMap 里，
+      # 配置仓库里加密的那份解开后在 Secret 里（ConfigMap 在集群里明文可读，不能放解密结果）
+      # 两者挂到同一个目录、文件名不变，服务读到的路径与只有 ConfigMap 时完全一样
+      # 两个来源都 optional：任一侧不存在时 Pod 仍能启动，由服务自己报缺哪份配置
+      #
+      # [EN] A projected volume rather than a single configMap source: config can come from two
+      # places, the plaintext half in a ConfigMap and the half that was encrypted in the config
+      # repository in a Secret, since a ConfigMap is readable in plaintext in-cluster and must not
+      # hold decrypted values. Both land in one directory under their own names, so the paths the
+      # service reads are identical to the ConfigMap-only case. Both sources are optional so the
+      # Pod still starts when one is absent and the service itself reports what is missing.
       - name: config
-        configMap:
-          name: ${CONFIGMAP_NAME}
-          optional: true
+        projected:
+          sources:
+          - configMap:
+              name: ${CONFIGMAP_NAME}
+              optional: true
+${CONFIG_FILES_SOURCE_BLOCK}
       imagePullSecrets:
       - name: ${IMAGE_PULL_SECRETS}

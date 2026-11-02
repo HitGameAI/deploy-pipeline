@@ -363,6 +363,9 @@ Downstream](02-workflows.md) 三条工作流共用
 | `service.configmap_name` | `CONFIGMAP_NAME_TEMPLATE` | `CONFIGMAP_NAME_TEMPLATE` | string | `{name}-config-{env}` |
 | `service.cmd_args` | `CMD_ARGS_TEMPLATE` | `CMD_ARGS_TEMPLATE` | string | `-f resources/{configfile}` |
 | `service.secret_name` | `K8S_SECRET_NAME` | `K8S_SECRET_NAME` | string | `{name}-secrets` |
+| `service.config_repo` | `CONFIG_REPO` | `CONFIG_REPO` | string | `''` |
+| `service.config_ref` | `CONFIG_REF` | `CONFIG_REF` | string | `master` |
+| `service.config_repo_path` | `CONFIG_REPO_PATH` | `CONFIG_REPO_PATH` | string | `{name}/{env}` |
 | `service.secret_scan_dirs` | `SECRET_SCAN_DIRS` | `SECRET_SCAN_DIRS` | csv | `internal` |
 
 #### `branch` — 批量切分支与 dev 回收 | Batch branch cut and dev recycle
@@ -394,6 +397,135 @@ Downstream](02-workflows.md) 三条工作流共用
 只写要改的、其余用内置值（内置 `prod` / `staging` / `test` / `uat` / `dev`）
 色值可以不带 `#`：聚合配置是 YAML，不带引号的 `#` 会被当成注释起点
 邮件各项的用法、常见邮箱的地址端口与排错见 [通知与发布单](07-notifications.md)
+
+### 业务配置放在一个中心仓库里
+
+业务配置不进 `PIPELINE_CONFIG`,也不必留在服务仓库里 —— 用一个专门的仓库集中存放,
+部署时按「服务 / 环境」把那一层的文件全部挂进 ConfigMap
+
+```yaml
+service:
+  config_repo: your-org/service-configs
+  config_ref: master              # 想让部署可复现就填 tag 或 commit
+  config_repo_path: '{name}/{env}'   # 默认值,一般不用改
+```
+
+目录约定(`config_repo_path` 里的 `{name}` 是 `service.binary_name`,`{env}` 是本次部署的环境):
+
+```text
+service-configs/
+├── demo-gateway/
+│   ├── dev/config.yaml
+│   └── staging/config.yaml
+├── demo-api/
+│   ├── dev/config.yaml
+│   └── staging/config.yaml
+└── demo-service/
+    └── dev/config.yaml
+```
+
+`<服务>/<环境>/` 这一层里的**明文文件**全部进 ConfigMap,按文件名作 data 的键,与服务自己
+那份配置挂在同一个目录(`<工作目录>/resources`) 只取这一层,**不递归** —— ConfigMap 的
+data 键名是扁平的文件名,子目录里的文件一进来就只剩 basename,层级信息丢掉还会撞名
+
+文件名带 `.enc.` 的是密文,走下面的解密那条路,不进 ConfigMap
+
+文件内容原样进去,不经任何拼接 所以这里**不存在块标量缩进那一类问题**:文件就是文件
+
+#### 凭据:必须用 GitHub App,不能靠 GITHUB_TOKEN
+
+这一条踩过就知道难查 复用工作流里 `GITHUB_TOKEN` 的作用域是**调用方仓库**,对配置仓库
+没有读权限 而 GitHub 对无权访问的私有仓库返回 **404 而不是 403**(避免泄漏仓库是否存在),
+所以失败信息是 `remote: Repository not found.` —— 看起来像仓库名写错了
+
+`Settings → Actions → General → Access` 只放开 `uses:` 对私有 workflow / action 的引用,
+**不给 checkout 提供凭据**,开了也修不掉这一步
+
+所以流水线用 `PIPELINE_SECRETS` 里的 `go.app_id` / `go.app_private_key` 换一个跨仓库 token
+前提是**把这个 GitHub App 装到配置仓库上**(Install app → 把它加进仓库清单)
+拉取失败时报错里会直接点出这一条,不会只甩一句 Repository not found
+
+#### 加密:密文进仓库,明文只在流水线里
+
+配置仓库里的文件可以是密文 用 [sops](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age):
+age 的**公钥**写进配置仓库的 `.sops.yaml`,谁都能加密;**私钥**只配在 `PIPELINE_SECRETS`
+的 `config.age_key` 里,只有流水线解得开
+
+为什么用 sops 而不是整份文件 base64 或一个对称口令:sops **只加密值、保留键名**,
+配置仓库的 diff 仍然看得出改了哪一项 —— 整份文件加密之后,review 能看到的只有「变了」
+
+一次性准备(本机):
+
+```bash
+# 1. 生成一对 age 密钥
+age-keygen -o age.key          # 标准输出里那行 public key 是公钥，文件内容是私钥
+
+# 2. 配置仓库根目录放 .sops.yaml，填公钥
+cat > .sops.yaml <<'EOF'
+creation_rules:
+  - path_regex: \.enc\.(yaml|yml|json)$
+    age: age1...            # 上一步的 public key
+EOF
+
+# 3. 私钥全文填进 PIPELINE_SECRETS 的 config.age_key，本机那份删掉
+```
+
+日常加密(本机):
+
+```bash
+sops --encrypt config.yaml  > demo-gateway/dev/config.enc.yaml
+sops --encrypt secrets.yaml > demo-gateway/dev/secrets.enc.yaml
+
+# 改已有的密文：直接编辑，存盘时就地重新加密，不用先解再加
+sops demo-gateway/dev/config.enc.yaml
+```
+
+只有文件名里带 `.enc.` 的才会被解密 解开后摘掉 `.enc.` 这一节,其余不动:
+`config.dev.enc.yaml` → `config.dev.yaml`
+
+两类密文按文件名分两条路:
+
+| 密文文件 | 解开后落在哪 | 容器里怎么拿到 |
+|---|---|---|
+| `secrets.enc.yaml` | 业务 Secret(`kube.secret_name`,默认 `{name}-secrets`) | 环境变量,每个键一条 `secretKeyRef` |
+| 其余 `*.enc.*` | 配置文件 Secret(同名加后缀 `-files`) | 挂在 `<工作目录>/resources` 下,文件名不变 |
+
+`secrets.enc.yaml` 必须是**扁平**的 `KEY: value` 映射:
+
+```yaml
+DEMO_JWT_ACCESS_SECRET: ...
+DEMO_SERVICE_AUTH_GATEWAY_TO_API_SECRET: ...
+```
+
+嵌套结构当场报错,不做任何转换 —— 环境变量只能是字符串,让它悄悄变成 `{'a': 1}` 注进容器,
+服务会拿着一个看着像配置的垃圾值跑起来,比在流水线里失败难查得多
+
+解开的配置文件**不进 ConfigMap,进 Secret** ConfigMap 在集群里是明文可读的(任何能
+`get configmap` 的人都能看),把解开的东西放回去,这层加密就只剩「传输时是密文」
+容器侧两者挂在同一个目录、文件名不变 —— 服务不需要知道哪份是明文来的、哪份是解密来的
+(Deployment 的 config volume 因此是 `projected`,ConfigMap 与 Secret 两个来源都 `optional`,
+任一侧不存在时 Pod 仍能起来,由服务自己报缺哪份配置)
+
+同一个密钥在 `PIPELINE_SECRETS` 的 `app` 节和 `secrets.enc.yaml` 里各写一份时**直接报错**,
+不猜哪边该赢:两边迟早会不一致,而不一致时服务拿到哪个值完全取决于一个看不见的默认,
+排查时根本看不出来
+
+`secrets.enc.yaml` 还顺手补上一个洞:[service-vars.sh](#service-varssh) 扫的是**服务仓库里**
+那份配置文件,配置搬进配置仓库之后它扫不到那些 `*Env:` 声明,不生成 `secretKeyRef`,
+容器就拿不到这些环境变量 解密那步会按解开的键名补一份 env 条目,与 setup 传来的那份
+按名字去重后合并,再交给渲染与同步 Secret 两步 —— 两边都读合并后的那一份
+
+#### 两道闸门
+
+**内容里有 `BEGIN ... PRIVATE KEY` 的直接拒** ConfigMap 是明文的,命名空间里有读权限
+的人都能看 密钥走 `secrets` 侧的 `app` 节,渲染成 `secretKeyRef`,值只存在集群的 Secret 里
+公钥证书(`BEGIN CERTIFICATE`)不受影响
+
+**同名文件直接拒** 服务自己那份配置与配置仓库里的文件重名时不静默覆盖,而是报错并
+指出是哪两个路径 —— data 的键名是文件名,重名的后果是一份悄悄顶掉另一份
+
+尾换行按原文保留:以换行结尾的用 `|`,不以换行结尾的用 `|-` 有的解析器要求配置文件以
+换行结尾,凭空加或凭空去掉都会出问题
 
 #### `env` — 容器里的非密钥环境变量，键名即变量名 | Plaintext container environment, keyed by name
 
@@ -457,6 +589,15 @@ env:
 | YAML 路径 | 导出的 env | 旧式单个 secret | 类型 | 默认值 |
 |---|---|---|---|---|
 | `branch.token` | `BRANCH_OPS_TOKEN` | `BRANCH_OPS_TOKEN` | secret | `''` |
+
+#### `config` — 业务配置仓库的解密凭据 | Config repository decryption credential
+
+| YAML 路径 | 导出的 env | 旧式单个 secret | 类型 | 默认值 |
+|---|---|---|---|---|
+| `config.age_key` | `CONFIG_AGE_KEY` | `CONFIG_AGE_KEY` | secret | `''` |
+
+age 私钥全文,`AGE-SECRET-KEY-` 开头那一行 留空而配置仓库里又有 `*.enc.*` 密文时,
+部署会在解密那步失败并点出这一项;配置仓库里没有密文则这一项可以不填
 
 #### `app` — 业务密钥，键名即容器里的环境变量名 | Service secrets, keyed by container env name
 

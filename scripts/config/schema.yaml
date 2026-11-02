@@ -716,6 +716,27 @@ sections:
         type: string
         default: '{name}-secrets'
         desc: '集群里那个业务 Secret 的名字'
+      config_repo:
+        env: CONFIG_REPO
+        var: CONFIG_REPO
+        type: string
+        default: ''
+        desc: '集中存放业务配置的仓库，形如 owner/name；留空则只挂服务自己那份配置'
+      config_ref:
+        env: CONFIG_REF
+        var: CONFIG_REF
+        type: string
+        default: 'master'
+        desc: '配置仓库取哪个 ref；想让部署可复现就填 tag 或 commit，填分支则配置会在你不知道时变'
+      config_repo_path:
+        env: CONFIG_REPO_PATH
+        var: CONFIG_REPO_PATH
+        type: string
+        default: '{name}/{env}'
+        desc: >-
+          配置仓库里的目录，{name} 替换成服务名、{env} 替换成部署环境
+          这一层里的明文文件全部进 ConfigMap，文件名带 .enc. 的先解密、再按两条路分流
+          （secrets.enc.yaml 走环境变量，其余走单独的配置文件 Secret）
       secret_scan_dirs:
         env: SECRET_SCAN_DIRS
         input: secret-scan-dirs
@@ -971,6 +992,36 @@ secret_sections:
         type: secret
         default: ''
         desc: 'PAT 或 GitHub App token，需覆盖目标仓库；留空则回退本次运行的 GITHUB_TOKEN（只够操作当前仓库）'
+  # -------------------- 业务配置仓库的解密凭据 | Config repository decryption --------------------
+  # 配置仓库里的 *.enc.yaml 是 SOPS 逐值加密的：键名明文、值是密文，所以 PR 里的 diff
+  # 仍然能看出改了哪个键 整份文件加密的话每次改动都是一团二进制 diff，review 等于没有
+  #
+  # 解出来的东西一律进集群 Secret，不进 ConfigMap ——
+  # 在 git 里加密、在集群里明文，防住的只是「仓库被看到」，防不住「集群被看到」，
+  # 而后者通常更容易拿到
+  #
+  # 按文件名分两条路：secrets.enc.yaml 是扁平的 KEY: value，并进 app 节那份、
+  # 渲染成 secretKeyRef 当环境变量；其余 *.enc.* 按文件挂载，进一个后缀 -files 的
+  # Secret，与 ConfigMap 一起 projected 到同一个目录，容器侧路径与文件名都不变
+  #
+  # [EN] The config repository's *.enc.yaml files are encrypted per value by SOPS, so keys stay
+  # readable and a pull request's diff still shows which key changed; encrypting whole files
+  # makes every change an opaque binary diff and review pointless. The decrypted values merge
+  # into the app section and reach the in-cluster Secret rather than a ConfigMap, because
+  # encrypting in git while sitting in plaintext in the cluster guards only against seeing the
+  # repository, not against seeing the cluster, and the latter is usually the easier of the two
+  config:
+    desc: '业务配置仓库的解密凭据 | Config repository decryption credential'
+    keys:
+      age_key:
+        env: CONFIG_AGE_KEY
+        secret: CONFIG_AGE_KEY
+        type: secret
+        default: ''
+        desc: >-
+          age 私钥全文（AGE-SECRET-KEY- 开头那一行），用来解密配置仓库里的 *.enc.*
+          配置仓库里没有密文时可以不填；有密文而这一项为空，部署会在解密那步直接失败
+
   # app 节是自由键值表：键名就是业务容器里的环境变量名，
   # 由 deploy-k8s 的「同步密钥到集群」那步写成集群里的 K8s Secret。
   # 不走 GITHUB_ENV，落到 RUNNER_TEMP 下 0600 的文件里，少一层暴露面。
