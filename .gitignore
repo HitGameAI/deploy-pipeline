@@ -2,5 +2,8 @@
 __pycache__/
 *.pyc
 
-# send-email.py --preview 的输出目录
-email-preview/
+# send-email.py --preview 的默认输出目录；带前导斜杠是刻意的：
+# 不带斜杠的模式会匹配任意层级，连 docs/email-preview/ 这种要提交的产物也一起挡掉
+# [EN] The leading slash is deliberate: without it the pattern matches at any depth and
+# would also ignore docs/email-preview/, which is committed on the build branch
+/email-preview/
