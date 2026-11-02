@@ -706,7 +706,11 @@ jobs:
           # the sops metadata block present -- so it needs no key and runs before the AGE_KEY check
           notenc=()
           for f in "${enc[@]}"; do
-            grep -qE '^(sops:|[[:space:]]*"sops":)' "${f}" 2>/dev/null || notenc+=("${f#${CONFIGMAP_DIR}/}")
+            # 内层展开要单独加引号（SC2295）：不加的话 CONFIGMAP_DIR 里的 glob 字符
+            # 会被当成模式去匹配，前缀裁剪的结果就不是想要的那个
+            # [EN] The inner expansion is quoted separately (SC2295): otherwise glob characters in
+            # CONFIGMAP_DIR are treated as a pattern and the prefix is stripped incorrectly
+            grep -qE '^(sops:|[[:space:]]*"sops":)' "${f}" 2>/dev/null || notenc+=("${f#"${CONFIGMAP_DIR}"/}")
           done
           if [ "${#notenc[@]}" -gt 0 ]; then
             for f in "${notenc[@]}"; do
@@ -717,6 +721,9 @@ jobs:
             {
               echo "## 🚨 配置仓库里有未加密的密钥文件"
               echo ""
+              # sed 里的 $ 是行尾锚点，不是 shell 展开 —— SC2016 在这里是误判
+              # [EN] The $ belongs to sed as an end-of-line anchor, not a shell expansion
+              # shellcheck disable=SC2016
               printf '%s\n' "${notenc[@]}" | sed 's/^/- `/; s/$/`/'
               echo ""
               echo "名字带 \`.enc.\` 的文件必须是 sops 密文 这几份是明文 ——"
