@@ -206,9 +206,17 @@ grep '^module	' "${PLAN}" | cut -f2 | while IFS= read -r mod; do
     [ -f "${curdir}/${pfile}" ] && before="$(grep -ohE "${prx}" "${curdir}/${pfile}" 2>/dev/null | head -1)"
     [ -n "${newdir}" ] && [ -f "${newdir}/${pfile}" ] && \
       after="$(grep -ohE "${prx}" "${newdir}/${pfile}" 2>/dev/null | head -1)"
-    {
-      echo "| 探针 \`${pname:-${pfile}}\` | 本仓库 \`${before:-取不到}\`"$([ -n "${newdir}" ] && printf ' ／ 上游最新 `%s`' "${after:-取不到}")" |"
-    } >> "${REPORT}"
+      # 分两步拼，不要把 $(...) 塞在引号串中间
+      # "前半"$(...)"后半" 这种写法会在 $(...) 处**关掉引号**，命令替换的结果于是被词分割
+      # —— 探针名或正则里只要有空格，这一行就散成好几段（shellcheck SC2027 / SC2046）
+      # [EN] Assembled in steps instead of embedding $(...) inside a quoted string:
+      # "head"$(...)"tail" closes the quote at the substitution, so its output is word-split and a
+      # probe name or regex containing a space breaks the row apart (SC2027 / SC2046)
+      row="| 探针 \`${pname:-${pfile}}\` | 本仓库 \`${before:-匹配不到}\`"
+      if [ -n "${newdir}" ]; then
+        row="${row} ／ 上游最新 \`${after:-匹配不到}\`"
+      fi
+      printf '%s |\n' "${row}" >> "${REPORT}"
     # 显示要分清「没有更新版本可比」与「正则在新版里匹配不到」—— 两者 after 都是空，
     # 混成一句话会让人以为探针好着
     # [EN] The display distinguishes "no newer version to compare" from "the regex matched nothing
