@@ -381,7 +381,19 @@ Downstream](02-workflows.md) 三条工作流共用
 
 | YAML 路径 | 导出的 env | 旧式单个 vars | 类型 | 默认值 |
 |---|---|---|---|---|
-| `notify.provider` | `NOTIFICATION_PROVIDER` | `NOTIFICATION_PROVIDER` | enum: none \| feishu \| wecom \| telegram \| all | `all` |
+| `notify.provider` | `NOTIFICATION_PROVIDER` | `NOTIFICATION_PROVIDER` | enum: none \| feishu \| wecom \| telegram \| email \| all | `all` |
+| `notify.env_styles` | `NOTIFY_ENV_STYLES` | `NOTIFY_ENV_STYLES` | string | `''` |
+| `notify.email_smtp_host` | `EMAIL_SMTP_HOST` | `EMAIL_SMTP_HOST` | string | `''` |
+| `notify.email_smtp_port` | `EMAIL_SMTP_PORT` | `EMAIL_SMTP_PORT` | port | `465` |
+| `notify.email_smtp_tls` | `EMAIL_SMTP_TLS` | `EMAIL_SMTP_TLS` | enum: '' \| ssl \| starttls \| none | `''` |
+| `notify.email_from` | `EMAIL_FROM` | `EMAIL_FROM` | string | `''` |
+| `notify.email_from_name` | `EMAIL_FROM_NAME` | `EMAIL_FROM_NAME` | string | `CI 流水线` |
+| `notify.email_to` | `EMAIL_TO` | `EMAIL_TO` | string | `''` |
+
+`notify.env_styles` 覆盖环境标签与配色，格式 `环境名=标签|主色|底色`，多项用逗号分隔，
+只写要改的、其余用内置值（内置 `prod` / `staging` / `test` / `uat` / `dev`）
+色值可以不带 `#`：聚合配置是 YAML，不带引号的 `#` 会被当成注释起点
+邮件各项的用法、常见邮箱的地址端口与排错见 [通知与发布单](07-notifications.md)
 
 #### `env` — 容器里的非密钥环境变量，键名即变量名 | Plaintext container environment, keyed by name
 
@@ -418,6 +430,11 @@ env:
 | `notify.wecom_webhook_key` | `WECOM_WEBHOOK_KEY` | `WECOM_WEBHOOK_KEY` | secret | `''` |
 | `notify.telegram_bot_token` | `TELEGRAM_BOT_TOKEN` | `TELEGRAM_BOT_TOKEN` | secret | `''` |
 | `notify.telegram_chat_id` | `TELEGRAM_CHAT_ID` | `TELEGRAM_CHAT_ID` | secret | `''` |
+| `notify.email_smtp_user` | `EMAIL_SMTP_USER` | `EMAIL_SMTP_USER` | secret | `''` |
+| `notify.email_smtp_password` | `EMAIL_SMTP_PASSWORD` | `EMAIL_SMTP_PASSWORD` | secret | `''` |
+
+邮件只有账号与密码算密钥，地址、端口、收件人在明文的 `notify` 节
+密码多数邮箱要填「授权码」而不是登录密码
 
 #### `go` — 私有模块拉取凭证 | Private module credentials
 
