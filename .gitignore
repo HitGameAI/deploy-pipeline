@@ -7,3 +7,7 @@ __pycache__/
 # [EN] The leading slash is deliberate: without it the pattern matches at any depth and
 # would also ignore docs/email-preview/, which is committed on the build branch
 /email-preview/
+
+# make-config-page.py 的默认输出目录；同样带前导斜杠，理由同上
+# [EN] make-config-page.py's default output directory, with the same leading slash
+/config-page/

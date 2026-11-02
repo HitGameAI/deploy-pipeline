@@ -405,6 +405,52 @@ def check_templates(_yaml_mod):
           "\n".join("%s: %s" % (k, " ".join(sorted(v))) for k, v in orphan.items()) if orphan else "")
 
 
+def check_config_page(yaml_mod):
+    """配置页面必须由 schema 生成，而且不许有外部引用。
+
+    页面有 116 个字段，手抄一份第一次改 schema 就漂移 —— 而漂移的现象是「页面上没有
+    这个字段，所以以为不用配」，不会有任何报错
+    外部引用这条更要紧：这张页面是要往里粘私钥的，引一个字体或 CDN 就多一次外部请求
+
+    [EN] The page must be generated from the schema and must carry no external reference. With
+    116 fields a hand-made copy drifts the first time the schema changes, and the symptom is a
+    field missing from the page, which nobody reads as an error. The external-reference rule
+    matters more: private keys get pasted into this page, and one font or CDN link is one more
+    outbound request.
+    """
+    section("配置页面")
+
+    gen = os.path.join(ROOT, "scripts", "make-config-page.py")
+    if not check(os.path.exists(gen), "存在 make-config-page.py"):
+        return
+    out = os.path.join(tempfile.mkdtemp(), "index.html")
+    r = run([sys.executable, gen, "-o", out])
+    if not check(r.returncode == 0, "页面能生成", r.stdout + r.stderr):
+        return
+    html = io.open(out, encoding="utf-8").read()
+
+    # 字段数要和 schema 对得上：页面少一个字段，就有一个配置项没人能从界面填
+    # [EN] The field count must match the schema, or a setting has no way in from the page
+    schema = load_schema(yaml_mod)
+    want = sum(len(b.get("keys") or {})
+               for g in ("sections", "secret_sections") for b in schema[g].values())
+    m = re.search(r'<script id="schema" type="application/json">(.*?)</script>', html, re.S)
+    if check(m is not None, "页面里嵌了 schema"):
+        model = json.loads(m.group(1).replace("\\u003c", "<"))
+        got = sum(len(s["keys"]) for bucket in model.values() for s in bucket)
+        check(got == want, "页面字段数与配置表一致（%d）" % want,
+              "页面 %d 个，配置表 %d 个" % (got, want))
+
+    # 外部引用：只许出现在 schema 的默认值里（goproxy 那种），不许是资源引用
+    # [EN] A URL may appear only inside a schema default, never as a resource reference
+    banned = [p for p in ("src=", "@import", "integrity=", "fetch(", "XMLHttpRequest",
+                          "sendBeacon", "<form", "<iframe", "<link ")
+              if p in html]
+    check(not banned, "页面没有外部引用与上报", " ".join(banned) if banned else "")
+
+    os.unlink(out)
+
+
 def main():
     try:
         import yaml
@@ -418,6 +464,7 @@ def main():
     check_validate_loop_covers_all_sections(yaml)
     check_zero_config(yaml)
     check_env_coverage(yaml)
+    check_config_page(yaml)
     check_docs(yaml)
     check_templates(yaml)
 

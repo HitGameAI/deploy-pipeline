@@ -152,10 +152,10 @@ bash scripts/update-proto-mod.sh <目标分支> <模块名> <模块版本>
 
 ### notify.sh
 
-通用通知脚本，支持飞书 / 企业微信 / Telegram（单通道失败不影响其他通道）
+通用通知脚本，支持飞书 / 企业微信 / Telegram / 邮件（单通道失败不影响其他通道）
 
 ```bash
-export NOTIFICATION_PROVIDER=feishu  # feishu | wecom | telegram | all | none
+export NOTIFICATION_PROVIDER=feishu  # feishu | wecom | telegram | email | all | none
 export NOTIFICATION_TYPE=deployment  # deployment | rollback | custom
 export STATUS=success                # success | failure | warning | info
 export ENVIRONMENT=dev
@@ -245,3 +245,39 @@ PEM 私钥会变成一堆被空行分隔的片段 —— 能解析回去,但人�
 它既不以配置的身份生效(名字对不上 schema),又以密钥的身份进了集群,两头都不报错
 
 注意这个脚本依赖 PyYAML,所以**不能用 `python3 -I` 跑** —— `-I` 会屏蔽 user site-packages
+
+### make-config-page.py
+
+由 schema 生成一张**离线的配置页面**:左边按节填表,右边实时出 YAML,复制或另存走
+
+```bash
+python3 scripts/make-config-page.py -o config-page/index.html
+open config-page/index.html        # file:// 直接打开,不需要起服务
+```
+
+它存在的理由就是缩进:这两份文档里有多行值(kubeconfig、PEM 私钥),而 YAML 的块标量
+要求正文**每一行**都缩进到同一层 手写时粘贴过来的原文没有缩进,只缩第一行几乎是必然,
+而后果有两种都难查 ——
+
+| 跑出块的那些行 | 现象 |
+|---|---|
+| 不构成合法 YAML | 语法错误,报错位置在真正起因之后好几行 |
+| 恰好构成合法 YAML(kubeconfig 就是) | **不报语法错**,那些行变成顶层节,报「未知配置节 `clusters`,是否想写 docker?」 |
+
+页面把缩进算掉,多行字段还带一个「选文件」:浏览器本地读,内容不出页面
+
+三条硬约束
+
+**单文件** CSS 与 JS 全内联,没有任何外部引用 —— 引一个字体或 CDN 就多一次外部请求,
+而这张页面是要往里粘私钥的
+
+**零网络** 没有 `fetch`、没有表单提交、没有上报 值只在当前标签页里,关掉就没了
+「另存」走的是 `Blob` + `a[download]`,也不经网络
+
+**校验与 `resolve-config.py` 同规则** 端口、布尔、资源量、百分比、枚举、整数区间逐条照着
+`validate()` 实现 页面说通过而 CI 说不通过是最坏的结果,因为人会信页面
+
+自检里有一组断言盯着它:页面字段数必须与配置表一致(少一个字段的现象是「界面上没有,
+所以以为不用配」,不会报错),以及不许出现 `src=` / `@import` / `fetch(` / `<form>` 这类
+
+产物默认落在仓库根的 `config-page/`,已被 `.gitignore` 排除
