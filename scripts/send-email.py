@@ -281,48 +281,48 @@ def render(name, mapping):
 PREVIEW_SCENARIOS = {
     "deploy-success": {
         "NOTIFICATION_TYPE": "deployment", "STATUS": "success", "ENVIRONMENT": "staging",
-        "BINARY_NAME": "ws-gateway", "VERSION": "ghcr.io/linmi-tech/ws-gateway:dev-c36b7d0-20261030",
+        "BINARY_NAME": "demo-gateway", "VERSION": "ghcr.io/your-org/demo-gateway:dev-c36b7d0-20261030",
         "GIT_COMMIT": "c36b7d0a1b2c3d4e5f6a7b8c", "OPERATOR": "kamalyes",
-        "GITHUB_REPOSITORY": "linmi-tech/ws-gateway", "NAMESPACE": "business",
+        "GITHUB_REPOSITORY": "your-org/demo-gateway", "NAMESPACE": "business",
         "DEPLOYMENT_REPLICAS": "2", "HTTP_PORT": "8082", "RPC_PORT": "9082",
         "CPU_REQUEST": "100m", "CPU_LIMIT": "300m",
         "MEMORY_REQUEST": "128Mi", "MEMORY_LIMIT": "256Mi",
         "CONFIG_YAML": "config/config.dev.yaml",
-        "WORKFLOW_URL": "https://github.com/linmi-tech/ws-gateway/actions/runs/41017643925",
+        "WORKFLOW_URL": "https://github.com/your-org/demo-gateway/actions/runs/41017643925",
     },
     "deploy-failure": {
         "NOTIFICATION_TYPE": "deployment", "STATUS": "failure", "ENVIRONMENT": "prod",
-        "BINARY_NAME": "lm-api", "VERSION": "ghcr.io/linmi-tech/lm-api:v1.4.2",
+        "BINARY_NAME": "demo-api", "VERSION": "ghcr.io/your-org/demo-api:v1.4.2",
         "GIT_COMMIT": "9d8680bf1a2b3c", "OPERATOR": "kamalyes",
-        "GITHUB_REPOSITORY": "linmi-tech/lm-api", "NAMESPACE": "business",
+        "GITHUB_REPOSITORY": "your-org/demo-api", "NAMESPACE": "business",
         "ERROR_MESSAGE": (
             "Error: ImagePullBackOff\n"
-            'failed to pull image "ghcr.io/linmi-tech/lm-api:v1.4.2": '
+            'failed to pull image "ghcr.io/your-org/demo-api:v1.4.2": '
             "rpc error: code = Unknown desc = failed to resolve reference: unauthorized"
         ),
-        "WORKFLOW_URL": "https://github.com/linmi-tech/lm-api/actions/runs/41017700001",
+        "WORKFLOW_URL": "https://github.com/your-org/demo-api/actions/runs/41017700001",
     },
     "rollback-success": {
         "NOTIFICATION_TYPE": "rollback", "STATUS": "success", "ENVIRONMENT": "prod",
-        "BINARY_NAME": "channel-service", "VERSION": "ghcr.io/linmi-tech/channel-service:v1.3.9",
+        "BINARY_NAME": "demo-service", "VERSION": "ghcr.io/your-org/demo-service:v1.3.9",
         "GIT_COMMIT": "f6448490a1b2c3", "OPERATOR": "kamalyes",
-        "GITHUB_REPOSITORY": "linmi-tech/channel-service", "NAMESPACE": "business",
+        "GITHUB_REPOSITORY": "your-org/demo-service", "NAMESPACE": "business",
         "DEPLOYMENT_REPLICAS": "3",
-        "WORKFLOW_URL": "https://github.com/linmi-tech/channel-service/actions/runs/41017700002",
+        "WORKFLOW_URL": "https://github.com/your-org/demo-service/actions/runs/41017700002",
     },
     "custom-pr": {
         "NOTIFICATION_TYPE": "custom", "STATUS": "info", "ENVIRONMENT": "dev",
-        "BINARY_NAME": "ws-gateway", "OPERATOR": "kamalyes",
-        "GITHUB_REPOSITORY": "linmi-tech/ws-gateway",
-        "CUSTOM_TITLE": "📣 新 PR · ws-gateway · ci: 通知渠道增加邮件",
+        "BINARY_NAME": "demo-gateway", "OPERATOR": "kamalyes",
+        "GITHUB_REPOSITORY": "your-org/demo-gateway",
+        "CUSTOM_TITLE": "📣 新 PR · demo-gateway · ci: 通知渠道增加邮件",
         "CUSTOM_MESSAGE": (
             "📦 **9 个文件**：➕ 4 新增 / 📝 5 修改 / ➖ 0 删除（+612/-18 行）\n"
             "- 新增 `scripts/send-email.py` 与四套邮件模板\n"
             "- 环境标签与配色改为可配置，补上了漏掉的 `staging`\n"
             "- 修复模板注释里的占位符被一并替换导致明细重复注入\n"
-            "详见 [运行记录](https://github.com/linmi-tech/ws-gateway/actions/runs/41017700003)"
+            "详见 [运行记录](https://github.com/your-org/demo-gateway/actions/runs/41017700003)"
         ),
-        "WORKFLOW_URL": "https://github.com/linmi-tech/ws-gateway/actions/runs/41017700003",
+        "WORKFLOW_URL": "https://github.com/your-org/demo-gateway/actions/runs/41017700003",
     },
 }
 
@@ -522,7 +522,7 @@ def build_message():
         plain_lines += ["", "运行详情: {}".format(workflow_url)]
 
     # 主题分段拼接，但 custom 的标题通常已经带了服务名（PR 通知就是
-    # 「📣 新 PR · ws-gateway · 标题」这种），再拼一次会在收件箱里看到两遍
+    # 「📣 新 PR · demo-gateway · 标题」这种），再拼一次会在收件箱里看到两遍
     # [EN] Subject segments are joined, but a custom title usually already carries the service
     # name, as the PR notifications do, so appending it again shows it twice in the inbox
     subject_parts = ["{} {}".format(icon, title)]

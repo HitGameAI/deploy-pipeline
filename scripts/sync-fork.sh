@@ -132,7 +132,13 @@ fi
 # 真发生过一次，一次同步删掉了 schema 里 116 个旧键名、resolve-config 的旧解析层
 # 和 action 的 config-file 入参，--check 的输出里只看到「~ 已更新」三个字
 #
-# 代价是这几个文件以后要手工把对应改动搬到两边，脚本不再替你做
+# 这张清单怎么来的：逐个比对两份不同的文件，数 vars.XXX / secrets.XXX / 旧式 / config-file
+# 的出现次数，哪边多就说明兼容信息在哪边 —— 当前是 18 个文件在 kamalyes 那侧更多
+# 以后要复核就重跑这个口径，别凭印象增删
+#
+# 代价是这些文件以后要手工把对应改动搬到两边，脚本不再替你做
+# 还能自动同步的是真正共用的那部分：k8s 模板、notify.sh、send-email.py、make-config.py、
+# 配置页面，以及 05 / 07 / 10 / 12 这几篇文档
 #
 # [EN] Files the two copies differ in on purpose: not synced, and not reported as missing. The
 # copies were once identical apart from the organization prefix in their self-references; now one
@@ -144,11 +150,32 @@ fi
 # --check showed nothing but "~ updated". The cost is that changes to these files must be carried
 # to both copies by hand.
 KEEP_DIVERGENT=(
+  # 配置解析本身：一份认旧式单个 vars / secrets 与 action 的 config-file 入参，
+  # 另一份只认聚合配置 schema 里那一百多个旧键名也在这里
   "scripts/config/schema.yaml"
   "scripts/resolve-config.py"
   ".github/actions/resolve-config/action.yml"
   "scripts/self-test.py"
+
+  # 工作流：inputs 的描述里写着「overrides vars.XXX」，指向的正是旧式单个变量这条入口
+  ".github/workflows/backend-build-binary.yml"
+  ".github/workflows/backend-build-docker.yml"
+  ".github/workflows/backend-deploy-k8s.yml"
+  ".github/workflows/branch-cut.yml"
+  ".github/workflows/branch-recycle.yml"
+  ".github/workflows/cleanup-artifacts.yml"
+  ".github/workflows/code-quality.yml"
+  ".github/workflows/frontend-build-docker.yml"
+  ".github/workflows/frontend-deploy-k8s.yml"
+  ".github/workflows/pr-merged-notify.yml"
+  ".github/workflows/pr-opened-notify.yml"
+  "templates/golib/trigger-downstream.yml"
+
+  # 文档：成段讲旧式单个变量怎么配、哪些仍然有效
+  "docs/02-workflows.md"
   "docs/03-configuration.md"
+  "docs/09-composite-actions.md"
+  "docs/11-self-check.md"
 )
 
 is_divergent() {
