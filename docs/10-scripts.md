@@ -182,3 +182,66 @@ bash scripts/notify.sh
 ```
 
 ---
+
+### send-email.py
+
+邮件通知的渲染与投递，由 notify.sh 在 `NOTIFICATION_PROVIDER` 命中 email 时调用，
+平时不用直接跑 模板在 `scripts/templates/email/`，`_base.html` 是外壳，
+`deployment.html` / `custom.html` 是两种正文
+
+值全部从环境变量读，与 notify.sh 同一套名字 配置分两处:地址、端口、收件人在
+`vars.PIPELINE_CONFIG` 的 notify 节，账号与密码在 `secrets.PIPELINE_SECRETS`
+
+```bash
+# 看模板效果不需要 SMTP：各场景渲染成本地 HTML，浏览器直接打开
+python3 scripts/send-email.py --preview email-preview
+open email-preview/index.html
+```
+
+`--preview` 走的是和真实发送完全相同的渲染路径,只是不碰 SMTP,所以它能看出来的问题
+真实发送也会有 退出码:0 成功、2 配置不全、其它为发送失败
+
+渲染产物默认落在仓库根的 `email-preview/`,已被 `.gitignore` 排除;`build` 分支上那份
+提交进来的产物在 `docs/email-preview/` —— `.gitignore` 里写的是带前导斜杠的
+`/email-preview/`,只挡仓库根那一个,就是为了让 docs 下这份能提交
+
+### make-config.py
+
+接一个服务要配几十项，一个个在 Settings 里点既慢又容易漏 这个脚本收一份
+`KEY=VALUE` 清单(就是平时 `.env` 的样子)，按 `scripts/config/schema.yaml` 自动分类并
+生成那两份聚合文档
+
+```bash
+python3 scripts/make-config.py dump.env -o out/
+python3 scripts/make-config.py dump.env -o out/ --map K8S_NAMESPACE=NAMESPACE
+python3 scripts/make-config.py dump.env -o out/ --apply your-org/your-service:dev
+```
+
+分类规则
+
+| 输入的名字 | 去向 |
+|---|---|
+| 命中密钥节的 env 名(`KUBECONFIG`、`APP_PRIVATE_KEY` …) | `PIPELINE_SECRETS` 的对应路径 |
+| 命中明文节的 env 名(`NAMESPACE`、`DOCKER_REGISTRY` …) | `PIPELINE_CONFIG` 的对应路径,并提示它不该当 secret 配 |
+| 都没命中 | `PIPELINE_SECRETS` 的 `app` 节,即业务密钥,键名就是容器里的变量名 |
+
+输入格式:`KEY=value`、`export KEY=value`、`KEY="value"`(成对引号会去掉)、
+`KEY@=路径`(值从文件读,给 kubeconfig 与 PEM 私钥用)、`#` 注释与空行跳过
+
+几处刻意的设计
+
+**值不经过终端** 默认写成两个 0600 的文件,标准输出只打名字、去向与长度
+终端滚屏、CI 日志、shell 历史都会留痕,而密钥一旦出现在那里只能轮换、不能撤回
+
+**多行值强制 `|` 块标量,且保留结尾换行** PyYAML 默认会给多行值选折叠的单引号形式,
+PEM 私钥会变成一堆被空行分隔的片段 —— 能解析回去,但人看不出哪儿是真换行,手工改一下就坏
+结尾换行也是格式的一部分:去掉之后 ssh 与 openssl 都判无效,而现象只是部署时「认证失败」
+
+**落盘前做往返校验** 生成的 YAML 读回来必须和输入逐字节相同,不一致就拒绝落盘
+密钥最怕的不是报错而是悄悄变形
+
+**认得出被误放的配置项** 名字去掉 `K8S_` / `CLEANUP_` 这类常见前缀后能命中明文配置项的,
+会单独提示并给出 `--map` 的写法 业务密钥会被同步成集群 Secret,一个配置项误落进去,
+它既不以配置的身份生效(名字对不上 schema),又以密钥的身份进了集群,两头都不报错
+
+注意这个脚本依赖 PyYAML,所以**不能用 `python3 -I` 跑** —— `-I` 会屏蔽 user site-packages

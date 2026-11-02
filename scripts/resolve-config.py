@@ -67,10 +67,58 @@ def fingerprint(value):
 
 # ==================== YAML 解析 | YAML parsing ====================
 
-def parse_yaml(text, origin, errors):
+def yaml_hint(raw, line):
+    """按出错那一行的形状给一条可操作的提示，不回显内容。
+
+    最常见的坏法只有一种：多行值（kubeconfig、PEM 私钥）直接贴在键后面，
+    于是第二行起没有缩进，解析器在那里说「找不到期望的 :」
+    光给行列号的话，看报错的人只知道第 6 行有问题，不知道该怎么改
+
+    [EN] Returns an actionable hint derived from the shape of the offending line without
+    echoing it. Nearly every failure is the same one: a multi-line value such as a kubeconfig
+    or a PEM key pasted straight after the key, leaving later lines unindented, where the
+    parser reports a missing colon. A bare line number tells the reader where but not what.
+    """
+    if not (0 <= line < len(raw)):
+        return ""
+    cur = raw[line]
+    if cur[:1] not in (" ", "\t", "", "#"):
+        # 往上跨过连续的未缩进行再看
+        #
+        # 解析器报的位置通常在真正起因之后几行：私钥贴成多行时，它要到某一行
+        # 出现「看起来像键但没有冒号」才报错，而那之前好几行都是私钥正文
+        # 只看紧邻的上一行会拿到私钥中间那一行，于是给不出有用的提示
+        #
+        # [EN] Walk up past the run of unindented lines: the parser reports a position several
+        # lines after the real cause, because a pasted key only fails once some line looks like
+        # a key without a colon, and the lines before it are the key's own body. Looking only at
+        # the immediately preceding line lands in the middle of that body
+        i = line - 1
+        while i >= 0 and raw[i].strip() and raw[i][:1] not in (" ", "\t"):
+            i -= 1
+        anchor = raw[i] if i >= 0 else ""
+        if ":" in anchor and anchor.split(":", 1)[1].strip():
+            key = anchor.split(":", 1)[0].strip()
+            return ("；这一行没有缩进，往上第一个缩进行是「%s: 值」—— 多行值要写成"
+                    "「%s: |」再把内容整体缩进两格 | a multi-line value needs \"%s: |\" "
+                    "with the body indented" % (key, key, key))
+        return "；这一行没有缩进，顶层只能是节名 | this line is not indented"
+    if cur.lstrip().startswith("-"):
+        return "；这一行是列表项，而这份配置里每一节都是键值表 | lists are not used here"
+    return ""
+
+
+def parse_yaml(text, origin, errors, redact=False):
     """解析一段 YAML；语法错误带行列号报出来，像 k3s 校验配置文件那样。
 
-    [EN] Parse one YAML document, reporting syntax errors with line and column.
+    redact=True 时不回显出错那一行：密钥文档里那一行就是密钥本身，
+    GitHub 会把它打码成 ***，于是报错里唯一有用的信息反而没了 ——
+    实测过的现象是「YAML 语法错误 第 6 行第 1 列：***」，看不出该改什么
+
+    [EN] Parse one YAML document, reporting syntax errors with line and column. With redact the
+    offending line is not echoed: inside a secrets document that line is the secret itself, so
+    GitHub masks it to *** and the only useful part of the error disappears -- the observed
+    symptom is literally "invalid YAML at line 6 column 1: ***"
     """
     if text is None or not text.strip():
         return {}
@@ -79,10 +127,12 @@ def parse_yaml(text, origin, errors):
     except yaml.YAMLError as exc:
         where = ""
         mark = getattr(exc, "problem_mark", None)
+        raw = text.split("\n")
         if mark is not None:
             where = " 第 %d 行第 %d 列" % (mark.line + 1, mark.column + 1)
-            raw = text.split("\n")
-            if 0 <= mark.line < len(raw):
+            if redact:
+                where += yaml_hint(raw, mark.line)
+            elif 0 <= mark.line < len(raw):
                 where += "：%s" % raw[mark.line].rstrip()
         problem = getattr(exc, "problem", None) or str(exc).split("\n")[0]
         errors.append("%s: YAML 语法错误%s（%s）| invalid YAML" % (origin, where, problem))
@@ -94,7 +144,6 @@ def parse_yaml(text, origin, errors):
                       % (origin, type(data).__name__))
         return {}
     return data
-
 
 def leaves(node, prefix=""):
     """把嵌套 YAML 压平成「点号路径 → 值」，便于逐项对照 schema。
@@ -653,8 +702,10 @@ def main(argv):
     # 密钥：secrets.PIPELINE_SECRETS 走 secrets 侧的 schema
     # [EN] Secrets come from secrets.PIPELINE_SECRETS, validated against the secrets schema
     secrets_blob = github_secrets.get("PIPELINE_SECRETS")
+    # redact：出错那一行是密钥本身，回显会被 GitHub 打成 ***，等于没有报错信息
+    # [EN] redact, because the offending line is the secret and echoing it yields only ***
     secrets_tree = parse_yaml(secrets_blob if isinstance(secrets_blob, str) else "",
-                              "secrets.PIPELINE_SECRETS", errors)
+                              "secrets.PIPELINE_SECRETS", errors, redact=True)
     from_secrets = check_tree(secrets_tree, secret_sections, "secrets.PIPELINE_SECRETS", errors)
     if errors:
         fail(errors)
