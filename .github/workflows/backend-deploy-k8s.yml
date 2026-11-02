@@ -964,6 +964,15 @@ jobs:
                   sys.exit("::error::service.configmap_dir 指向的 %s 不是目录 | not a directory"
                            % cmdir)
               for name in sorted(os.listdir(cmdir)):
+                  # 点文件是仓库自己的东西（.gitkeep / .sops.yaml 之类），不是配置
+                  # 带目录结构就得有占位文件，而 ConfigMap 的键名就是文件名，
+                  # 不跳过的话容器的 resources/ 下会凭空多出一个 .gitkeep
+                  # [EN] Dotfiles belong to the repository (.gitkeep, .sops.yaml), not to the
+                  # service: a placeholder is needed to carry the directory structure, and since
+                  # a ConfigMap key is the file name, not skipping them would invent a .gitkeep
+                  # inside the container's resources/
+                  if name.startswith("."):
+                      continue
                   path = os.path.join(cmdir, name)
                   if os.path.isfile(path):
                       add(path)

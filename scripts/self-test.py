@@ -711,6 +711,17 @@ def check_service_config_repo(yaml_mod):
     # 目录不存在要报错并说清约定，而不是静默只挂一份
     # [EN] A missing directory fails with the convention spelled out, rather than silently
     # shipping only the service's own file
+    # 点文件不能进 ConfigMap：带目录结构要靠 .gitkeep 占位，而键名就是文件名
+    # [EN] Dotfiles must not enter the ConfigMap: a .gitkeep carries the directory structure and
+    # a ConfigMap key is the file name
+    os.makedirs(os.path.join(work, "cmdir2"), exist_ok=True)
+    with io.open(os.path.join(work, "cmdir2", ".gitkeep"), "w", encoding="utf-8") as fh:
+        fh.write("")
+    r = generate(os.path.join(work, "dotfile.yaml"), dirpath=os.path.join(work, "cmdir2"))
+    doc = yaml_mod.safe_load(io.open(os.path.join(work, "dotfile.yaml"), encoding="utf-8").read()) or {}
+    check(r.returncode == 0 and ".gitkeep" not in (doc.get("data") or {}),
+          "点文件（.gitkeep）不进 ConfigMap", sorted((doc.get("data") or {})))
+
     r = generate(os.path.join(work, "bad3.yaml"), dirpath=os.path.join(work, "nope"))
     check(r.returncode != 0, "config_repo 的目录不存在时报错", (r.stdout + r.stderr)[-300:])
 
