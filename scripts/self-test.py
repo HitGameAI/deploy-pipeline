@@ -1455,8 +1455,27 @@ global.document = { getElementById: () => stub, addEventListener: () => {},
                     querySelectorAll: () => [], createElement: () => ({...stub}) };
 global.navigator = { clipboard: { writeText: async () => {} } };
 const mod = {};
-new Function('module', js + '\nmodule.exports={parseDoc,nest,render,check,INDEX,classify};')(mod);
-const { parseDoc, nest, render, classify } = mod.exports;
+new Function('module', js + '\nmodule.exports={parseDoc,nest,render,check,INDEX,classify,emitLines};')(mod);
+const { parseDoc, nest, render, classify, emitLines } = mod.exports;
+
+// 内置模板：节名行都带注释，而嵌套全靠「冒号后面是不是空的」来判断
+// 模板解析错的表现不是报错，是**每个键都变成未知键** —— 页面照样显示，只是全标红
+const pick = id => html.match(new RegExp('<script id="' + id + '"[^>]*>([\\s\\S]*?)<\\/script>'))[1];
+const tpl = pick('tpl-plain-src').replace(/\\u003c/g, '<').replace(/^\n/, '');
+const rt = parseDoc(tpl);
+const tplPaths = Object.keys(rt.flat);
+const tplUnknown = tplPaths.filter(p => !classify(p));
+// 改一个带注释的键：只许动那一行，注释要留着
+let tplEdit = {ok: false, comment: false, others: -1};
+const sp = rt.spans['kube.namespace'];
+if (sp){
+  const L = tpl.split('\n'), B = L.slice();
+  L.splice(sp.start, sp.end - sp.start + 1, ...emitLines('kube.namespace', 'business', sp));
+  let d = 0;
+  for (let i = 0; i < Math.max(B.length, L.length); i++) if (i !== sp.start && B[i] !== L[i]) d++;
+  tplEdit = {ok: parseDoc(L.join('\n')).flat['kube.namespace'] === 'business',
+             comment: L[sp.start].includes('#'), others: d};
+}
 
 const sample = fs.readFileSync(process.argv[3], 'utf8');
 const r = parseDoc(sample);
@@ -1477,6 +1496,8 @@ console.log(JSON.stringify({
   unknown: r.unknown.length,
   roundtrip: norm(r.flat) === norm(r2.flat),
   buckets,
+  tpl: {keys: tplPaths.length, badLines: rt.unknown.length,
+        unknownKeys: tplUnknown.slice(0, 5), edit: tplEdit},
 }));
 """
 
@@ -1559,6 +1580,24 @@ def check_config_page_roundtrip(_yaml_mod):
               "env=%s app=%s" % (b.get("env.LOG_LEVEL"), b.get("app.DEMO_SECRET")))
         check(b.get("service.no_such_key") is None,
               "schema 里没有的键被标成未知，而不是悄悄归到某一份")
+        t = got["tpl"]
+        check(t["badLines"] == 0 and t["keys"] > 80,
+              "内置明文模板能完整解析（%d 个键）" % t["keys"],
+              "%d 行没认出来" % t["badLines"])
+        # 模板解析错的表现不是报错，是每个键都成了未知键 —— 页面照样显示，只是全标红
+        # 真踩过：节名行的注释剥不掉，`ports:  # 注释` 被当成有值的标量、不入栈，
+        # 于是整份文档的嵌套全平，108 个路径变成 ports / http / rpc 这样的裸键
+        # [EN] A misparsed template does not raise: every key simply becomes unknown, and the page
+        # still renders with everything flagged red. This happened: the comment on a section line
+        # could not be stripped, `ports:  # comment` was taken as a scalar and never pushed onto
+        # the stack, flattening the whole document into bare keys
+        check(not t["unknownKeys"],
+              "模板里每个键 schema 都认得（嵌套没被解析成扁平）",
+              "这些成了未知键：%s" % " ".join(t["unknownKeys"]))
+        e = t["edit"]
+        check(e["ok"] and e["comment"] and e["others"] == 0,
+              "改模板里一个值，只动那一行且注释留着",
+              "读回正确=%s 注释在=%s 其它行被动=%s" % (e["ok"], e["comment"], e["others"]))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

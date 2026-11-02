@@ -37,6 +37,7 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 try:
@@ -50,6 +51,28 @@ SCHEMA = os.path.join(HERE, "config", "schema.yaml")
 # 这几个键的值是多行的，页面给 textarea 加「从文件读」
 # [EN] These values are multi-line, so the page offers a textarea and a local file picker
 MULTILINE = {"kubeconfig", "app_private_key", "git_ssh_private_key"}
+
+
+# 内置模板直接取 resolve-config.py --print-example 的输出，不另写一套
+#
+# 这样只有一个事实来源：那两份示例已经被自检验证过「能通过自己的校验」
+# （scripts/self-test.py 的「配置表：示例能通过自己的校验」一组），
+# 页面里再抄一份的话，schema 一改两边就会悄悄不一致
+# 而它们的价值大半在逐行注释上 —— 所以页面改值时是**就地改那几行**，不整份重排
+#
+# [EN] The built-in templates are the output of resolve-config.py --print-example rather than a
+# second copy: those examples are already asserted to pass their own validation by the self-test,
+# and a copy here would drift silently the next time the schema changes. Most of their value is
+# the per-line comments, which is why editing a value patches only those lines.
+def example(secrets=False):
+    cmd = [sys.executable, os.path.join(HERE, "resolve-config.py"), "--print-example"]
+    if secrets:
+        cmd.append("--secrets")
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if r.returncode != 0:
+        sys.exit("取不到示例模板（%s）：%s"
+                 % (" ".join(cmd[-2:]), r.stderr.decode("utf-8", "replace")[-300:]))
+    return r.stdout.decode("utf-8")
 
 
 def build_model():
@@ -225,17 +248,29 @@ function render(tree, indent = 0){
 
 function parseDoc(text){
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
-  const flat = {}, unknown = [];
+  const flat = {}, unknown = [], spans = {};
   const stack = [];                      /* [{indent, key}] */
   let i = 0;
   while (i < lines.length){
     const line = lines[i];
     if (!line.trim() || line.trim().startsWith('#')){ i++; continue; }
     const indent = line.length - line.trimStart().length;
-    const m = line.match(/^\s*([\w.\-]+):\s*(.*)$/);
+    /* 冒号后面的东西整段拿下来，不要让 \s* 把空白吃掉
+       吃掉的后果：`ports:  # 注释` 的剩余部分变成 `# 注释`，而剥注释的正则要求 # 前有空白，
+       于是剥不掉、`ports` 被当成有值的标量、再也不入栈 —— 整份文档的嵌套就全平了
+       内置模板每一节都带注释，所以这一个字符的差别会让整份模板解析错（实测踩过）
+       [EN] Everything after the colon is captured without letting \s* consume the whitespace:
+       otherwise `ports:  # comment` leaves `# comment`, the comment-stripping regex requires
+       whitespace before #, nothing is stripped, `ports` is taken as a scalar and never pushed
+       onto the stack -- flattening the whole document. Every section line in the built-in
+       template carries a comment, so this one character broke the entire template (measured) */
+    const m = line.match(/^(\s*)([\w.\-]+):(.*)$/);
     if (!m){ unknown.push(`第 ${i+1} 行：${line.trim().slice(0,60)}`); i++; continue; }
-    const [, key, rawRest] = m;
-    const rest = rawRest.replace(/\s+#.*$/, '').trim();
+    const key = m[2], tail = m[3];
+    /* 注释只认「# 前面有空白」这一种，和 YAML 一致 —— `key:#foo` 里 #foo 是值不是注释
+       [EN] A comment requires whitespace before #, as YAML does: in `key:#foo`, #foo is a value */
+    const cm = tail.match(/(\s+#.*)$/);
+    const rest = tail.replace(/\s+#.*$/, '').trim();
     while (stack.length && stack.at(-1).indent >= indent) stack.pop();
     const path = [...stack.map(x => x.key), key].join('.');
     if (/^[|>][-+]?$/.test(rest)){
@@ -251,8 +286,16 @@ function parseDoc(text){
         body.push(nxt.slice(base));
         j++;
       }
-      while (body.length && body.at(-1) === '') body.pop();
+      /* 尾部空行要同时从 body 和行范围里退掉
+         只 pop body、不退 j 的话，end 会多吃一行 —— 文档里用空行分节时，
+         改这个块标量会把分节的空行一起吞掉（实测到）
+         [EN] Trailing blanks are dropped from both the body and the line range: popping only the
+         body leaves end one line too far, so editing the block scalar would also swallow the
+         blank line separating sections (measured) */
+      let popped = 0;
+      while (body.length && body.at(-1) === ''){ body.pop(); popped++; }
       flat[path] = body.join('\n') + (rest.includes('-') ? '' : '\n');
+      spans[path] = {start: i, end: j - 1 - popped, indent, comment: cm ? cm[1] : ''};
       i = j; continue;
     }
     if (rest === ''){ stack.push({indent, key}); i++; continue; }
@@ -260,10 +303,22 @@ function parseDoc(text){
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
       v = v.slice(1, -1);
     flat[path] = v;
+    spans[path] = {start: i, end: i, indent, comment: cm ? cm[1] : ''};
     i++;
   }
-  return {flat, unknown};
-}const MODEL = JSON.parse(document.getElementById('schema').textContent);
+  /* spans 是「这个键在原文里占了哪几行」—— 有了它，改一个值就只改那几行，
+     而不是把整份文档重新序列化一遍
+     这不只是洁癖：内置模板的价值大半在逐行注释上，整份重排会把注释全丢掉；
+     而且重排还会动引号与键的顺序，让人以为页面乱改了自己贴进来的东西
+     [EN] spans records which lines a key occupies in the original text, so editing one value
+     rewrites only those lines instead of re-serializing the whole document. This is not
+     fastidiousness: most of a template's value is its per-line comments, which a full
+     re-serialization discards, and it would also change quoting and key order so the page looks
+     like it mangled what was pasted. */
+  return {flat, unknown, spans};
+}
+
+const MODEL = JSON.parse(document.getElementById('schema').textContent);
 const BOOL_TRUE = ['true','yes','on','1'], BOOL_FALSE = ['false','no','off','0'];
 const QTY = /^\d+(\.\d+)?(m|Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$/;
 
@@ -285,6 +340,7 @@ for (const bucket of ['plain','secret']){
 }
 
 let DOC = {};          /* 路径 → 值，顺序就是粘贴进来的顺序 */
+let SPANS = {};        /* 路径 → 它在原文里占的行范围，改值时只动这几行 */
 let UNKNOWN = [];
 let WRITING = false;   /* 回写 textarea 时不要再去解析它，否则光标会被打断 */
 
@@ -300,9 +356,7 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
 /* ============ 右边：YAML 是唯一的事实来源 ============ */
 
 function readSource(){
-  const r = parseDoc(document.getElementById('src').value);
-  DOC = r.flat;
-  UNKNOWN = r.unknown;
+  reparse();
   renderForm();
   renderOutputs();
 }
@@ -313,6 +367,79 @@ function writeSource(){
   document.getElementById('src').value = pairs.length ? render(nest(pairs)) : '';
   WRITING = false;
   renderOutputs();
+}
+
+/* 把一个键渲染成它在文档里该占的那几行：沿用原来的缩进与行尾注释
+   [EN] Renders one key as the lines it should occupy, keeping the original indent and comment */
+function emitLines(path, value, span){
+  const key = path.split('.').pop();
+  const ind = ' '.repeat(span ? span.indent : 2);
+  const cm = span ? span.comment : '';
+  const s = String(value);
+  if (s.includes('\n')){
+    const pad = ' '.repeat((span ? span.indent : 2) + 2);
+    const body = s.replace(/\n+$/, '').split('\n').map(l => pad + l);
+    return [ind + key + ': ' + (s.endsWith('\n') ? '|' : '|-') + cm, ...body];
+  }
+  return [ind + key + ': ' + yamlScalar(s, span ? span.indent : 2) + cm];
+}
+
+function reparse(){
+  const r = parseDoc(document.getElementById('src').value);
+  DOC = r.flat; UNKNOWN = r.unknown; SPANS = r.spans;
+}
+
+function setSource(lines){
+  const src = document.getElementById('src');
+  WRITING = true;
+  src.value = lines.join('\n');
+  WRITING = false;
+  reparse();
+  renderOutputs();
+}
+
+function srcLines(){
+  return document.getElementById('src').value.replace(/\r\n?/g, '\n').split('\n');
+}
+
+/* 改一个值：只改它占的那几行 */
+function patchSource(path, value){
+  const span = SPANS[path];
+  if (!span){ insertKey(path, value); return; }
+  const lines = srcLines();
+  lines.splice(span.start, span.end - span.start + 1, ...emitLines(path, value, span));
+  setSource(lines);
+}
+
+/* 删一个键：连同它占的那几行一起去掉 */
+function deleteKey(path){
+  const span = SPANS[path];
+  if (!span){ delete DOC[path]; writeSource(); return; }
+  const lines = srcLines();
+  lines.splice(span.start, span.end - span.start + 1);
+  setSource(lines);
+}
+
+/* 加一个键：插在同一节最后一个键之后，而不是整份重排
+   找不到那个节就在末尾新起一节 —— 整份重排会把注释全丢掉
+   [EN] A new key is inserted after the last key of its section instead of re-serializing the
+   whole document, which would discard every comment; a missing section is appended */
+function insertKey(path, value){
+  const sec = path.split('.')[0];
+  let at = -1, indent = 2;
+  for (const p in SPANS){
+    if (p.split('.')[0] !== sec) continue;
+    if (SPANS[p].end > at){ at = SPANS[p].end; indent = SPANS[p].indent; }
+  }
+  const lines = srcLines();
+  if (at < 0){
+    while (lines.length && lines.at(-1).trim() === '') lines.pop();
+    lines.push('', sec + ':', ...emitLines(path, value, {indent: 2, comment: ''}));
+  } else {
+    lines.splice(at + 1, 0, ...emitLines(path, value, {indent, comment: ''}));
+  }
+  setSource(lines);
+  renderForm();
 }
 
 /* ============ 左边：按 DOC 里实际有什么来摆 ============ */
@@ -439,10 +566,10 @@ function mount(){
     const path = el.getAttribute('data-path');
     DOC[path] = el.type === 'checkbox' ? String(el.checked) : el.value;
     if (el.type === 'checkbox') el.parentNode.querySelector('span').textContent = String(el.checked);
-    /* 只回写右边并重算校验，不重建左边的 DOM —— 否则正在打字的输入框会被换掉
-       [EN] Only the right pane is rewritten; the left DOM stays so the field being typed into is
-       not replaced under the cursor */
-    writeSource();
+    /* 只改右边那几行并重算校验，不重建左边的 DOM —— 否则正在打字的输入框会被换掉
+       [EN] Only the affected lines on the right are rewritten; the left DOM stays so the field
+       being typed into is not replaced under the cursor */
+    patchSource(path, DOC[path]);
     const info = classify(path);
     const row = el.closest('.row');
     if (info && info.spec && row){
@@ -460,8 +587,7 @@ function mount(){
   document.getElementById('form').addEventListener('click', ev => {
     const d = ev.target.closest('[data-del]');
     if (!d) return;
-    delete DOC[d.getAttribute('data-del')];
-    writeSource();
+    deleteKey(d.getAttribute('data-del'));
     renderForm();
   });
 
@@ -469,10 +595,20 @@ function mount(){
     const a = ev.target.closest('[data-add]');
     if (!a) return;
     const p = a.getAttribute('data-add');
-    DOC[p] = INDEX[p].spec.default || '';
-    writeSource();
-    renderForm();
+    insertKey(p, INDEX[p].spec.default || '');
   });
+
+  /* 模板按钮：文本框非空时先确认，别把人贴进去的东西直接盖掉
+     [EN] A confirmation guards the template buttons so a pasted document is not overwritten */
+  for (const which of ['plain','secret']){
+    document.getElementById('tpl-' + which).addEventListener('click', () => {
+      const src = document.getElementById('src');
+      if (src.value.trim() && !confirm('会覆盖右边现在的内容，继续？')) return;
+      src.value = document.getElementById('tpl-' + which + '-src').textContent
+        .replace(/\\u003c/g, '<').replace(/^\n/, '');
+      readSource();
+    });
+  }
 
   for (const bucket of ['plain','secret']){
     document.getElementById('copy-' + bucket).addEventListener('click', async ev => {
@@ -515,7 +651,10 @@ HTML = """<!DOCTYPE html>
     <div class="panel"><div id="form"></div><div id="addable"></div></div>
   </div>
   <div class="col">
-    <div class="bar"><strong>YAML</strong><span class="grow"></span>
+    <div class="bar"><strong>YAML</strong>
+      <button id="tpl-plain" title="一份完整的 vars.PIPELINE_CONFIG，逐项带注释">明文模板</button>
+      <button id="tpl-secret" title="一份完整的 secrets.PIPELINE_SECRETS，占位值替换成真的">密钥模板</button>
+      <span class="grow"></span>
       <span class="sub" style="font-size:12px">贴进来即可，改哪边另一边跟着动</span></div>
     <textarea id="src" spellcheck="false" placeholder="把手上那份 PIPELINE_CONFIG 或 PIPELINE_SECRETS 贴在这里
 两份混在一起也行，下面会按归属拆开
@@ -541,6 +680,8 @@ kube:
   </div>
 </div>
 <script id="schema" type="application/json">%(schema)s</script>
+<script id="tpl-plain-src" type="text/plain">%(tplplain)s</script>
+<script id="tpl-secret-src" type="text/plain">%(tplsecret)s</script>
 <script>%(js)s</script>
 </body>
 </html>
@@ -557,7 +698,11 @@ def main(argv=None):
     nplain = sum(len(s["keys"]) for s in model["plain"])
     nsecret = sum(len(s["keys"]) for s in model["secret"])
 
+    # 模板原样嵌进 <script type="text/plain">，只转义 < 以免 </script> 提前闭合标签
+    # [EN] Templates are embedded verbatim; only < is escaped so a </script> cannot close the tag
     html = HTML % {"css": CSS, "js": JS, "schema": embed(model),
+                   "tplplain": example().replace("<", "\\u003c"),
+                   "tplsecret": example(True).replace("<", "\\u003c"),
                    "nplain": nplain, "nsecret": nsecret}
 
     out = os.path.abspath(args.out)
