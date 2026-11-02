@@ -504,6 +504,51 @@ jobs:
           echo "待解密 ${#enc[@]} 个："
           printf '  %s\n' "${enc[@]##*/}"
 
+          # 先挡住「名字带 .enc. 但根本没加密」这一种
+          #
+          # 不挡的话它会走进下面的解密循环，报「解不开」，而那句提示指向「不是用这把公钥
+          # 加密的」，会把人带去查配置仓库的 .sops.yaml —— 方向完全错了
+          # 更要紧的是这种情况不只是部署失败：内容已经以明文进过 git，
+          # 光在本机加密回去不够，对应的密钥必须换掉
+          #
+          # 判定只看形态（有没有 sops 元数据块），不需要私钥，所以这一步比 AGE_KEY 检查更早
+          #
+          # [EN] Files whose name says .enc. but which were never encrypted are rejected first.
+          # Otherwise they reach the decryption loop and fail with "cannot decrypt", whose hint
+          # points at a public-key mismatch and sends the reader to the config repository's
+          # .sops.yaml -- entirely the wrong direction. More importantly this is not merely a
+          # failed deploy: the content already reached git as plaintext, so re-encrypting locally
+          # is not enough and the secrets themselves must be rotated. The test is shape only -- is
+          # the sops metadata block present -- so it needs no key and runs before the AGE_KEY check
+          notenc=()
+          for f in "${enc[@]}"; do
+            grep -qE '^(sops:|[[:space:]]*"sops":)' "${f}" 2>/dev/null || notenc+=("${f#${CONFIGMAP_DIR}/}")
+          done
+          if [ "${#notenc[@]}" -gt 0 ]; then
+            for f in "${notenc[@]}"; do
+              echo "::error::${f} 名字带 .enc. 但内容是明文，没有 sops 元数据块" >&2
+            done
+            echo "::error::在配置仓库本机跑 scripts/secrets.sh encrypt 加密后重新提交" >&2
+            echo "::error::这些内容已经以明文进过 git —— 光加密不够，对应的密钥要换掉" >&2
+            {
+              echo "## 🚨 配置仓库里有未加密的密钥文件"
+              echo ""
+              printf '%s\n' "${notenc[@]}" | sed 's/^/- `/; s/$/`/'
+              echo ""
+              echo "名字带 \`.enc.\` 的文件必须是 sops 密文 这几份是明文 ——"
+              echo "常见原因是用编辑器直接打开保存，把密文覆盖回去了"
+              echo ""
+              echo '```bash'
+              echo "scripts/secrets.sh encrypt      # 在配置仓库里跑"
+              echo "scripts/secrets.sh status       # 确认全是密文"
+              echo '```'
+              echo ""
+              echo "> 这些内容已经以明文进过 git，**对应的密钥要换掉** ——"
+              echo "> 光加密不够，历史里那一版还在"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
           if [ -z "${AGE_KEY}" ]; then
             echo "::error::配置仓库里有密文，但没配解密私钥 —— 在 PIPELINE_SECRETS 的 config 节填 age_key（AGE-SECRET-KEY- 开头那一行）" >&2
             exit 1

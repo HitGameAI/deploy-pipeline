@@ -875,6 +875,29 @@ def check_config_encryption(yaml_mod):
     check(not bad, "文档里的 sops --encrypt 命令不会撞上 creation_rules",
           "\n".join(bad) if bad else "")
 
+    # 名字带 .enc. 却没加密：要在 AGE_KEY 检查之前挡住
+    #
+    # 顺序是重点 放在后面的话，没配私钥的仓库会先报「没配解密私钥」，
+    # 把「这个文件根本是明文」这个真正的诊断盖住 —— 而这两件事的处置完全不同：
+    # 前者补个 secret 就行，后者意味着明文已经进过 git，密钥必须换掉
+    # [EN] The plaintext check must precede the AGE_KEY check. Otherwise a repository without the
+    # key reports "no decryption key configured" first and masks the real diagnosis, and the two
+    # have entirely different remedies: one needs a secret added, the other means plaintext
+    # reached git and the secrets must be rotated
+    pos_plain = deploy.find("名字带 .enc. 但内容是明文")
+    pos_key = deploy.find("配置仓库里有密文，但没配解密私钥")
+    check(pos_plain != -1 and pos_key != -1 and pos_plain < pos_key,
+          "未加密检查排在「没配私钥」检查之前",
+          "明文检查位置 %d / 私钥检查位置 %d" % (pos_plain, pos_key))
+    # 判定只看形态，不需要私钥 —— 否则没配 key 的仓库根本跑不到这个诊断
+    # [EN] Shape only, so a repository without the key still reaches this diagnosis
+    check('grep -qE \'^(sops:|[[:space:]]*"sops":)\'' in deploy,
+          "未加密判定只看 sops 元数据块，不解密")
+    check("对应的密钥要换掉" in deploy,
+          "报错点出「已经进过 git，密钥要换掉」，而不只是让人重新加密")
+    check("$GITHUB_STEP_SUMMARY" in deploy and "配置仓库里有未加密的密钥文件" in deploy,
+          "未加密时往 job summary 写一段，便于通知里看到")
+
     _check_projected_volume(yaml_mod)
 
 
