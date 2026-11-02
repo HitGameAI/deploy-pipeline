@@ -1257,6 +1257,56 @@ def check_config_moved_to_repo(yaml_mod):
           "正则出现 %d 次" % deploy.count(needle))
 
 
+def check_workdir_env(yaml_mod):
+    """容器里要有 APP_WORKDIR / APP_DATA_DIR
+
+    代码里要拼绝对路径时得有唯一来源，否则各处硬编码 /usr/local/services/<repo>，
+    改 kube.run_workdir 时漏一处就是一个找不到文件的运行期故障
+
+    注意这两个**不能**给配置文件用：三个服务都是裸 conf.MustLoad、没开 UseEnv()，
+    yaml 里的 ${VAR} 不会被展开 配置里指镜像内的文件要写相对路径
+    [EN] Code needing an absolute path must have one source of truth, or /usr/local/services/<repo>
+    gets hardcoded in several places and changing kube.run_workdir leaves a runtime
+    file-not-found. These must NOT be used from config files: all three services call
+    conf.MustLoad without UseEnv(), so ${VAR} in yaml is never expanded
+    """
+    section("容器里注入工作目录与数据目录")
+
+    deploy = io.open(os.path.join(WF_DIR, "backend-deploy-k8s.yml"), encoding="utf-8").read()
+    for name in ("APP_WORKDIR", "APP_DATA_DIR"):
+        check('export %s="${{ env.DOCKER_RUN_WORKDIR }}' % name in deploy,
+              "渲染步导出 %s，取自 kube.run_workdir" % name)
+
+    path = os.path.join(ROOT, "templates", "k8s", "backend", "deployment.yaml")
+    text = io.open(path, encoding="utf-8").read()
+    probe = {"APP_WORKDIR": "/usr/local/services/demo", "APP_DATA_DIR": "/usr/local/services/demo/data"}
+
+    def sub(m):
+        n = m.group(1)
+        if n in probe:
+            return probe[n]
+        return "" if n.endswith("_BLOCK") else "x"
+
+    rendered = re.sub(r"\$\{([A-Z][A-Z0-9_]*)\}", sub, text)
+    try:
+        doc = yaml_mod.safe_load(rendered)
+    except Exception as exc:
+        check(False, "渲染后仍是合法 YAML", str(exc))
+        return
+    envs = {e["name"]: e.get("value")
+            for e in doc["spec"]["template"]["spec"]["containers"][0].get("env") or []
+            if isinstance(e, dict) and "name" in e}
+    for name, want in probe.items():
+        check(envs.get(name) == want,
+              "渲染后容器 env 里有 %s" % name, "实际 %r" % envs.get(name))
+    # 数据目录必须在工作目录下 —— 否则相对路径与它对不上，两套路径观念并存
+    # [EN] The data directory must sit under the workdir, or relative paths and this variable
+    # describe two different places
+    check(envs.get("APP_DATA_DIR", "").startswith(envs.get("APP_WORKDIR", "\0") + "/"),
+          "APP_DATA_DIR 在 APP_WORKDIR 之下",
+          "%s vs %s" % (envs.get("APP_WORKDIR"), envs.get("APP_DATA_DIR")))
+
+
 def main():
     try:
         import yaml
@@ -1279,6 +1329,7 @@ def main():
     check_config_moved_to_repo(yaml)
     check_docs(yaml)
     check_templates(yaml)
+    check_workdir_env(yaml)
 
     print("\n" + "=" * 60)
     if failures:

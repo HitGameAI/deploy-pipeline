@@ -1002,6 +1002,19 @@ jobs:
             export CONFIG_FILES_SOURCE_BLOCK=""
           fi
           export CONFIG_MOUNT_PATH="${{ env.DOCKER_RUN_WORKDIR }}/resources"
+          # 容器里的工作目录与数据目录注进 env，让需要绝对路径的代码有唯一来源
+          #
+          # 配置文件里**不要**用它们：三个服务都是裸 conf.MustLoad、没开 UseEnv()，
+          # yaml 里的 ${VAR} 不会被展开 配置里要指镜像内的文件就写相对路径 ——
+          # 进程 cwd 就是 WORKDIR，cmd_args 默认值 `-f resources/{configfile}` 一直这么用
+          #
+          # [EN] The container's workdir and data directory are injected so code needing an
+          # absolute path has one source of truth. Config files must NOT reference them: all three
+          # services call conf.MustLoad without UseEnv(), so ${VAR} in yaml is never expanded; a
+          # config pointing at a file inside the image uses a relative path, since the process cwd
+          # is the WORKDIR -- which is how the cmd_args default `-f resources/{configfile}` works
+          export APP_WORKDIR="${{ env.DOCKER_RUN_WORKDIR }}"
+          export APP_DATA_DIR="${{ env.DOCKER_RUN_WORKDIR }}/data"
           # Extra env block: 自动缩进 8 空格对齐 env 条目，留空则不注入
           # 尾换行必须外挂 $'\n'：$(...) 命令替换会剥掉尾部换行，
           # 模板中本块与 POD_NAME 行同处一行，靠自带收尾换行断行（见 deployment.yaml 拼接处）

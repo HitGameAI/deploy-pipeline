@@ -33,6 +33,14 @@ ${ANNOTATIONS_BLOCK}
         env:
         - name: APP_ENV
           value: "${RUN_MODE}"
+        # 工作目录与数据目录：代码里要拼绝对路径时用这两个，别各处硬编码
+        # 以后改 kube.run_workdir 只改一处，这里跟着变
+        # [EN] Workdir and data directory for code that needs an absolute path, instead of
+        # hardcoding it in several places; changing kube.run_workdir updates both
+        - name: APP_WORKDIR
+          value: "${APP_WORKDIR}"
+        - name: APP_DATA_DIR
+          value: "${APP_DATA_DIR}"
 ${GOMEMLIMIT_ENV_BLOCK}${EXTRA_ENV_BLOCK}        - name: POD_NAME
           valueFrom:
             fieldRef:
