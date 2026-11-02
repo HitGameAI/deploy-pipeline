@@ -314,23 +314,97 @@ def listify(value):
     return value if isinstance(value, list) else [value]
 
 
+def escaped_block_keys(raw_text, unknown):
+    """找出「块标量正文跑到顶层」的那些键；unknown 是本文档里不认识的顶层节名。
+
+    只靠缩进判断不行：块标量正文后面退回到更浅的缩进本来就是**正常结束**，
+    后面跟着的往往是一个合法的兄弟节 区别在于退回后那一行是什么 ——
+    是合法配置节就正常，是不认识的名字就说明那些行本该还在块里
+
+    kubeconfig 正是后者：它自己的 clusters / contexts / users 都是合法 YAML 键，
+    所以解析不报错，只是全都变成了这份文档的顶层节
+
+    [EN] Indentation alone is not enough: a block scalar body returning to a shallower indent is
+    the normal way the block ends, and what follows is usually a legitimate sibling section. The
+    difference is what that line is -- a valid section means all is well, an unrecognised name
+    means those lines belonged inside the block. A kubeconfig is the latter case, since its own
+    clusters, contexts and users are valid YAML keys, so nothing fails to parse and they all
+    simply become top-level sections of this document.
+    """
+    if not raw_text or not unknown:
+        return []
+    lines = raw_text.split("\n")
+    bad = []
+    for i, line in enumerate(lines):
+        stripped = line.rstrip()
+        if not stripped or not line[:1].isspace():
+            continue
+        if not (stripped.endswith(("|", "|-", "|+", ">", ">-", ">+")) and ":" in stripped):
+            continue
+        decl_indent = len(line) - len(line.lstrip())
+        key = stripped.split(":", 1)[0].strip()
+        body_seen = False
+        for j in range(i + 1, len(lines)):
+            nxt = lines[j]
+            if not nxt.strip():
+                continue
+            indent = len(nxt) - len(nxt.lstrip())
+            if indent > decl_indent:
+                body_seen = True
+                continue
+            # 退回到声明层或更浅：块在这里结束，看这一行是不是认识的节名
+            # [EN] Back at or above the declaration's indent: the block ends here, so check
+            # whether this line is a section we know
+            if body_seen and nxt.split(":", 1)[0].strip() in unknown:
+                bad.append(key)
+            break
+    return bad
+
+
 def check_tree(tree, schema_sections, origin, errors, single_section=None,
-               secret_sections=None):
+               secret_sections=None, raw_text=None):
     """逐项对照 schema 校验键名：未知键报错并给「是否想写」提示。
 
-    single_section 不为空时，tree 本身就是那一节的内容（分节变量的情形）。
+    single_section 不为空时，tree 本身就是那一节的内容（--check --section 的情形）。
+    raw_text 给未知节的提示用：有它才能看出是不是块标量的正文跑到了顶层。
     [EN] Check every leaf path against the schema and suggest the closest valid key for an
-    unknown one. With single_section set, tree is the body of that one section.
+    unknown one. With single_section set, tree is the body of that one section. raw_text lets
+    the unknown-section hint tell whether a block scalar's body escaped to the top level.
     """
     if single_section:
         groups = [(single_section, tree)]
     else:
+        # 块标量的正文跑到顶层时，只报这一条就够了
+        #
+        # 那种情形下每一行跑出去的内容都会被当成一个未知节：kubeconfig 会一次报出
+        # clusters / contexts / current-context / kind / users 五条，每条还各附一个
+        # 毫不相干的「是否想写 docker？」 五条噪音盖住了唯一的真问题
+        #
+        # [EN] One error is enough when a block scalar body escapes: every escaped line becomes
+        # an unknown section, so a kubeconfig reports five at once, each with an unrelated
+        # did-you-mean, and the noise buries the single real problem
+        unknown = {str(n) for n in tree if str(n) not in schema_sections}
+        escaped = escaped_block_keys(raw_text, unknown)
+        if escaped:
+            names = dict.fromkeys(escaped)
+            errors.append(
+                "%s: %s后面那个块标量的正文没有整段缩进，跑出去的行被当成了顶层配置节"
+                "（%s）—— 块标量要求正文每一行都缩进到同一层"
+                " | the block scalar body under %s is not fully indented and its escaped lines "
+                "were read as top-level sections"
+                % (origin,
+                   "、".join("键「%s」" % k for k in names),
+                   " ".join(sorted(unknown)),
+                   " / ".join(names)))
+            return {}
+
         groups = []
         for name, body in tree.items():
             name = str(name)
             if name not in schema_sections:
                 hint = difflib.get_close_matches(name, list(schema_sections), n=1, cutoff=0.4)
-                tail = "，是否想写 %s？" % hint[0] if hint else "，可用的节：%s" % " ".join(schema_sections)
+                tail = ("，是否想写 %s？" % hint[0] if hint
+                        else "，可用的节：%s" % " ".join(schema_sections))
                 errors.append("%s: 未知配置节 %r%s | unknown section" % (origin, name, tail))
                 continue
             # 一节写了但下面是空的（键全注释掉了，或只写了 env: {}）：当空表，不报错
@@ -383,7 +457,6 @@ def check_tree(tree, schema_sections, origin, errors, single_section=None,
 
 
 # ==================== 解析优先级 | Precedence ====================
-
 def pick(section, path, spec, sources, repo_name):
     """按优先级取值：分节 YAML > 总表 YAML > input > 旧式 vars > 默认值。
 
@@ -708,7 +781,7 @@ def main(argv):
         tree = parse_yaml(aggregate, "vars.PIPELINE_CONFIG", errors)
         yaml_layers.append(("vars.PIPELINE_CONFIG",
                             check_tree(tree, sections, "vars.PIPELINE_CONFIG", errors,
-                                       None, secret_sections)))
+                                       None, secret_sections, raw_text=aggregate)))
 
     config_file = env_text("CONFIG_FILE").strip()
     if config_file:
@@ -727,7 +800,8 @@ def main(argv):
     # [EN] redact, because the offending line is the secret and echoing it yields only ***
     secrets_tree = parse_yaml(secrets_blob if isinstance(secrets_blob, str) else "",
                               "secrets.PIPELINE_SECRETS", errors, redact=True)
-    from_secrets = check_tree(secrets_tree, secret_sections, "secrets.PIPELINE_SECRETS", errors)
+    from_secrets = check_tree(secrets_tree, secret_sections, "secrets.PIPELINE_SECRETS", errors,
+                              raw_text=secrets_blob if isinstance(secrets_blob, str) else "")
     if errors:
         fail(errors)
 
