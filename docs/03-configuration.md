@@ -223,7 +223,7 @@ jobs:
 ### 全部配置项
 
 明文配置（`PIPELINE_CONFIG` / 分节变量），也可以 `python3 scripts/resolve-config.py --print-example` 直接打印，
-或手动触发 [⚙️ Generate Pipeline Config](#generate-pipeline-config) 让流水线打给你：
+或手动触发 [⚙️ Generate Pipeline Config](02-workflows.md#generate-pipeline-config) 让流水线打给你：
 
 #### `ports` — 容器端口；留空 / 0 / none 表示该端口不启用 | Container ports; empty, 0 or none disables one
 
@@ -499,9 +499,12 @@ flowchart TD
 `Settings → Actions → General → Access` 只放开 `uses:` 对私有 workflow / action 的引用,
 **不给 checkout 提供凭据**,开了也修不掉这一步
 
-所以流水线用 `PIPELINE_SECRETS` 里的 `go.app_id` / `go.app_private_key` 换一个跨仓库 token
-前提是**把这个 GitHub App 装到配置仓库上**(Install app → 把它加进仓库清单)
-拉取失败时报错里会直接点出这一条,不会只甩一句 Repository not found
+所以流水线用调用方 `PIPELINE_SECRETS` 的 `go.app_id` / `go.app_private_key` 换一个配置仓库 token
+必须同时满足两项：**安装范围包含配置仓库**，以及 **Contents 至少 Read-only 且安装已批准生效**
+安装页只显示 metadata、actions、pull requests、workflows，不等于能读取仓库文件
+仓库已经在清单里时不用反复添加，应检查 Contents 与待批准权限变更
+配置仓库本身无需再保存一份 App 私钥
+最新流程显式申请 contents:read，clone 失败还会用同一 token 自检，见[安装页权限对照](04-github-app.md#仓库已经勾选为什么仍然拉不到)
 
 #### 加密:密文进仓库,明文只在流水线里
 

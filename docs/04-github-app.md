@@ -4,8 +4,10 @@
 
 ## 🔑 GitHub App 创建与配置
 
-`APP_ID` + `APP_PRIVATE_KEY` 这两个 Secret 不是随手填的字符串，它们来自一个你自己注册的
-GitHub App
+流水线环境变量 `APP_ID` + `APP_PRIVATE_KEY` 来自一个你自己注册的 GitHub App
+新接入将它们保存在调用方 `secrets.PIPELINE_SECRETS` 的 `go.app_id` / `go.app_private_key`，
+解析器会导出对应环境变量，不必再创建两份独立 Secret
+本仓库仍兼容独立 APP_ID / APP_PRIVATE_KEY，聚合 YAML 优先；下面的新接入步骤统一使用聚合 Secret
 本节把「从零注册到工作流跑通」这条路写完整，官方文档见
 [注册 GitHub App](https://docs.github.com/zh/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
 
@@ -26,6 +28,7 @@ GitHub App
 
 | 用途 | 哪个工作流 | 需要的权限 |
 |------|-----------|-----------|
+| 拉取集中配置仓库 | `backend-deploy-k8s.yml` | Contents: **Read-only** |
 | 拉取私有 Go 模块（`go mod download`）| `code-quality.yml`、`backend-build-binary.yml` | Contents: **Read-only** |
 | 下游仓库升级 proto 引用并推回（`update-proto-mod`）| 业务仓库调用该 Action | Contents: **Read and write** |
 | 机器人评论 PR（pb 同步报告、变更摘要）| `pr-opened-notify.yml` 及业务仓库的生成流程 | Pull requests: **Read and write** |
@@ -34,12 +37,44 @@ GitHub App
 | 给各库下发 App 凭证（写别人仓库的 Actions secret）| `golib-bootstrap.yml` | Secrets: **Read and write** |
 | 推导依赖图（枚举仓库、读各库 `go.mod`）| `go-trigger-downstream.yml`、`golib-bootstrap.yml` | Metadata + Contents: **Read-only** 即可 |
 
-只做前一件事时，权限给到 `Contents: Read-only` 就够了
-把三件事放在同一个 App 上没问题 —— 权限是按安装仓库生效的，不会让只读场景拿到写权限
+只拉私有模块或配置仓库时，Contents Read-only 就够了，Metadata 是自动授予的基础只读权限
+推代码、发跨仓库 repository_dispatch 或开 PR 才需要表中对应写权限
+同一 App 可以承担多项功能，但生成 token 默认可能继承安装的全部权限；
+只读用途应显式申请 `permission-contents: read`，例如配置仓库的 token 步骤
+
+### 仓库已经勾选，为什么仍然拉不到
+
+安装页的两块信息要分别看：
+
+| 安装页显示 | 说明 | 能否代替 Contents |
+|---|---|---|
+| Repository access 中有 service-configs | 这个 App 安装已覆盖配置仓库，不用再添加 | 不能 |
+| Read access to metadata | 能读取仓库基本信息 | 不能 |
+| Read and write access to actions, pull requests, and workflows | 有 Actions、PR 与 workflow 文件相关权限 | 不能 |
+| Read access to contents 或权限列表中包含 contents | 有读仓库文件所需的权限 | 是 |
+
+**如果仓库已经在清单里，但 Permissions 没有 contents，下一步改权限，不要反复修改清单**
+
+1. 打开该 App 的注册设置页：组织 Settings → Developer settings → GitHub Apps → 对应 App → Permissions & events
+2. Repository permissions → **Contents → Read-only**，保存
+3. 回到组织 Settings → GitHub Apps / Installed GitHub Apps，找到同一个 App，批准待处理的权限变更
+4. 核对安装页的 Permissions 已包含 contents，再重新触发部署
+
+配置仓库里无需再存 App ID / 私钥，也无需开启 Actions Access 来解决 git clone 的认证
+需要检查的是调用方 PIPELINE_SECRETS.go 指向的 App 与上述安装是否为同一个
+GitHub 对 HTTP Git 访问要求 Contents，见[官方权限说明](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app#choosing-permissions-for-git-access)
+新增权限要由已有安装批准才会生效，见[官方变更规则](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration#changing-the-permissions-of-a-github-app)
+
+### 哪些权限默认不用开
+
+只拉配置仓库或私有模块时，除了 Metadata Read-only 和 Contents Read-only，其余保持 No access
+不需要 Actions、Pull requests、Workflows、Secrets、Administration 或 Organization permissions
+具体用途的追加权限见上表；自动下发工作流文件还需要 Workflows 写权限
+这些是 App 后台权限，不同于业务 workflow 中控制 GITHUB_TOKEN 的 permissions 字段
 
 ### 令牌是怎么换出来的
 
-弄清这条链路，才知道为什么「App 建好了但还是 403」——问题几乎总出在第 3 步的安装关系上
+弄清这条链路后，按失败步骤区分安装范围、文件读取权限和实际凭据，避免只凭 403 / 404 猜原因
 
 ```mermaid
 sequenceDiagram
@@ -100,8 +135,8 @@ sequenceDiagram
 7. **安装到仓库**：左侧 Install App → 选择账号/组织 → 选 `Only select repositories`，
    勾上需要被访问的仓库（比如 proto 仓库 + 所有要拉它的业务仓库）
 
-   > 漏装是最常见的失败原因：App 创建好了但没装到目标仓库，换令牌会成功，
-   > 但用它 `git clone` 私有仓库仍然 404
+   > 漏装目标仓库会导致安装查询或后续访问失败；是否能换到令牌取决于申请的仓库范围
+   > 当前配置仓库步骤明确指定目标仓库，未安装通常会先在换令牌步骤失败
 
    > 这一步与上面第 3 步是两件事，缺哪一件报错都一样：
    > 这里决定 App 看得见哪些仓库，第 3 步的 Contents 决定看得见的能不能读
@@ -109,40 +144,45 @@ sequenceDiagram
    > `git clone` 还是 404 —— 与漏装一字不差，所以先按仓库清单查过一遍、
    > 确认仓库在清单里之后，下一个要看的就是 Contents
 
-8. **写进 Secrets**（仓库 Settings → Secrets and variables → Actions）
+8. **写进业务仓库的聚合 Secret**（Settings → Secrets and variables → Actions → Secrets → `PIPELINE_SECRETS`）
 
-   | Secret | 值 |
+   | YAML 路径 | 值 |
    |--------|----|
-   | `APP_ID` | 第 5 步那串数字 |
-   | `APP_PRIVATE_KEY` | `.pem` 文件的**全部内容**，含 `-----BEGIN RSA PRIVATE KEY-----` 和 `-----END` 两行 |
+   | `go.app_id` | 第 5 步那串数字，作为字符串保存 |
+   | `go.app_private_key` | `.pem` 文件的**全部内容**，含 BEGIN / END 行，用 YAML 的 `|` 保留换行 |
+
+   ```yaml
+   go:
+     app_id: '123456'
+     app_private_key: |
+       -----BEGIN RSA PRIVATE KEY-----
+       <完整 PEM 私钥内容>
+       -----END RSA PRIVATE KEY-----
+   ```
 
    粘贴私钥时保持原始换行，不要手动删空行或加缩进 —— 粘成一行会报
    `error:0909006C:PEM routines:get_name:no start line`
 
-   组织多仓库复用时，用 **Organization secrets** 配一次，再按仓库授权，比每个仓库各存一份好维护
+   组织内使用相同完整密钥配置时，可用 Organization secret `PIPELINE_SECRETS`，授权给调用方仓库
+   仓库或 Environment 的同名聚合 Secret 会整体覆盖它，不会按 YAML 路径合并
 
-9. **在工作流里启用**：把认证方式切到 `app-token` 并把两个 Secret 透传给可复用工作流
+9. **在工作流里启用**：在 `PIPELINE_CONFIG.builder` 中设 `go_auth_method: app-token` 和私有模块前缀 `goprivate`，并显式传递聚合 Secret
 
    ```yaml
    jobs:
      code-quality:
        uses: kamalyes/deploy-pipeline/.github/workflows/code-quality.yml@master
-       with:
-         goprivate: github.com/<你的组织>/*      # 不填则不会触发私有模块认证
-         go-auth-method: app-token
        secrets:
-         APP_ID: ${{ secrets.APP_ID }}
-         APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+         PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}
    ```
 
-   也可以把 `go-auth-method` 配成仓库 Variable `GO_AUTH_METHOD=app-token`，省掉每个
-   工作流都写一遍
+   `builder.go_auth_method` 与 `builder.goprivate` 都写在同一份 `PIPELINE_CONFIG`，不再增加独立 Variable
 
 ### 常见错误对照
 
 | 报错 / 现象 | 原因 | 处理 |
 |------------|------|------|
-| `Input required and not supplied: app-id` | Secret 没配，或可复用工作流没透传 `secrets:` | 在 `secrets:` 段里显式映射；不要指望 `secrets: inherit`，它[跨账号时失效](#inherit-cross-account) |
+| `Input required and not supplied: app-id` | 聚合 Secret 缺少 go.app_id，或未传给复用工作流 | 检查 PIPELINE_SECRETS.go，并显式传递 PIPELINE_SECRETS，见[配置说明](03-configuration.md#inherit-cross-account) |
 | `PEM routines:get_name:no start line` | 私钥粘成了一行 / 丢了 BEGIN-END 行 | 重新粘贴完整 `.pem` 内容 |
 | 换令牌成功但 `go mod download` 仍 403/404 | App 没安装到被依赖的那个私有仓库 | Install App 里补勾该仓库 |
 | 换令牌成功但 `git clone` 报 `Repository not found`，而仓库确实在 Install App 的清单里 | 仓库访问给了、`Contents` 权限没给，令牌只有 Metadata | App 设置 → Permissions → Repository permissions → `Contents` = Read-only，保存后到组织里批准这次权限变更 |

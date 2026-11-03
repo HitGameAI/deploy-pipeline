@@ -4,125 +4,110 @@
 
 ## 🚀 快速接入
 
-> 下面的示例用 `secrets: inherit` 图省事
-> **调用方与本仓库在同一账号下时它是有效的**；
-> 跨账号（例如本仓库在个人账号、调用方在组织）必须改成逐个显式映射，
-> 原因见[那条说明](#inherit-cross-account)
-
+第一次从零落地先读 [README 的 0 → 7 步骤](../README.md)，先跑通一个 dev 服务
+配置内容由现有的 [Generate Pipeline Config](../.github/workflows/generate-config.yml) 生成，本页只保留工作流调用示例
 
 ### 后端 Go 服务示例
 
-调用方的 `pipeline.yml` 只写两类东西：**触发条件**与**本仓特有的决策**
-产物名、版本号、镜像名、要不要部署、ConfigMap、容器 env 列表这些，
-由 [resolve-service-vars](#resolve-service-vars) 一步算出来
+先到流水线仓库 Actions → **⚙️ Generate Pipeline Config** → Run workflow，选择 `mode: generate`
+从运行 Summary 复制明文配置与密钥骨架，分别保存到业务仓库的 Variable `PIPELINE_CONFIG` 和 Secret `PIPELINE_SECRETS`
+完整配置项和默认值以生成结果为准，不再维护独立的 YAML 模板文件
+字段用途与首次部署应修改的项目见 [README 第 4 节](../README.md#4-在业务仓库保存两份聚合-yaml)
+
+将下面的调用示例保存为业务仓库 `.github/workflows/pipeline.yml`
+迁移组织时替换所有流水线仓库引用，按服务情况调整分支与环境
+它通过 resolve-service-vars 计算产物、镜像、部署条件和容器 env，再连接构建、推镜像与部署
 
 ```yaml
-name: 🚀 CI/CD Pipeline
+name: Backend CI/CD
 
 on:
   push:
     branches: [dev]
-    tags: ['v*']          # 打 tag 走发布模式：只构建推送镜像，不部署
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       environment:
+        description: 部署环境
         type: choice
-        options: [dev, staging]
+        options: [dev]
         default: dev
-      code-quality:
-        type: boolean
-        default: false
-      build-docker:
-        type: boolean
-        default: true
-      deploy-k8s:
-        type: boolean
-        default: true
-      enable-hpa:
-        type: boolean
-        default: true
 
+# 这是本次运行的 GITHUB_TOKEN 权限，与 GitHub App 后台权限分开
+# 镜像工作流内嵌 release-note，调用方也要允许下面的权限
 permissions:
-  contents: write         # release-note 建 GitHub Release 要写
-  packages: write         # 推 GHCR 镜像要写
-  pull-requests: read     # release-note 收集 PR 明细要读
+  contents: write
+  packages: write
+  pull-requests: read
+
+concurrency:
+  group: pipeline-${{ github.workflow }}-${{ github.ref }}-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
 
 jobs:
   setup:
-    name: ⚙️ Setup
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment || 'dev' }}
     outputs:
       binary-name: ${{ steps.vars.outputs.binary-name }}
       binary-source-dir: ${{ steps.vars.outputs.binary-source-dir }}
       binary-output: ${{ steps.vars.outputs.binary-output }}
+      binary-build-dir: ${{ steps.vars.outputs.binary-build-dir }}
       version: ${{ steps.vars.outputs.version }}
       build-time: ${{ steps.vars.outputs.build-time }}
       git-commit: ${{ steps.vars.outputs.git-commit }}
       image-base: ${{ steps.vars.outputs.image-base }}
       image-name: ${{ steps.vars.outputs.image-name }}
+      deploy-environment: ${{ steps.vars.outputs.deploy-environment }}
       should-build-docker: ${{ steps.vars.outputs.should-build-docker }}
       should-deploy-k8s: ${{ steps.vars.outputs.should-deploy-k8s }}
-      code-quality: ${{ steps.vars.outputs.code-quality }}
-      deploy-environment: ${{ steps.vars.outputs.deploy-environment }}
-      notification-provider: ${{ steps.vars.outputs.notification-provider }}
       k8s-config-yaml: ${{ steps.vars.outputs.k8s-config-yaml }}
       k8s-configmap-name: ${{ steps.vars.outputs.k8s-configmap-name }}
-      k8s-enable-hpa: ${{ steps.vars.outputs.k8s-enable-hpa }}
       cmd-args: ${{ steps.vars.outputs.cmd-args }}
+      extra-copy-dirs: ${{ steps.vars.outputs.extra-copy-dirs }}
       extra-env-block: ${{ steps.vars.outputs.extra-env-block }}
     steps:
-      # 必须先 checkout：下一步要读服务配置文件、扫源码抽密钥名
-      # [EN] Check out first: the next step reads the config file and scans the source
       - uses: actions/checkout@v6
-
-      - name: ⚙️ Setup Variables
-        id: vars
+      - id: vars
         uses: kamalyes/deploy-pipeline/.github/actions/resolve-service-vars@master
         with:
           environment: ${{ inputs.environment || 'dev' }}
           vars-json: ${{ toJSON(vars) }}
           inputs-json: ${{ toJSON(inputs) }}
           secrets-json: ${{ toJSON(secrets) }}
-          build-docker: ${{ inputs.build-docker }}
-          deploy-k8s: ${{ inputs.deploy-k8s }}
-          code-quality: ${{ inputs.code-quality }}
-          notification-provider: ${{ inputs.notification-provider }}
-
-  code-quality:
-    needs: setup
-    if: ${{ needs.setup.outputs.code-quality == 'true' }}
-    uses: kamalyes/deploy-pipeline/.github/workflows/code-quality.yml@master
-    secrets: inherit
+          build-docker: 'true'
+          deploy-k8s: 'true'
 
   build-binary:
     needs: setup
     uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
     with:
+      environment: ${{ needs.setup.outputs.deploy-environment }}
       binary-name: ${{ needs.setup.outputs.binary-name }}
       binary-source-dir: ${{ needs.setup.outputs.binary-source-dir }}
       binary-output: ${{ needs.setup.outputs.binary-output }}
+      binary-build-dir: ${{ needs.setup.outputs.binary-build-dir }}
       version: ${{ needs.setup.outputs.version }}
       build-time: ${{ needs.setup.outputs.build-time }}
       git-commit: ${{ needs.setup.outputs.git-commit }}
-      # 入口包不在仓库根时才需要传；其余构建参数走 builder 配置节
-      # [EN] Only needed when the main package is not at the repository root
-      binary-build-dir: ./cmd/server
-    secrets: inherit
+    secrets:
+      PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}
 
   build-docker:
     needs: [setup, build-binary]
     if: ${{ needs.setup.outputs.should-build-docker == 'true' }}
     uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-docker.yml@master
     with:
+      environment: ${{ needs.setup.outputs.deploy-environment }}
       binary-name: ${{ needs.setup.outputs.binary-name }}
       binary-source-dir: ${{ needs.setup.outputs.binary-source-dir }}
       version: ${{ needs.setup.outputs.version }}
       image-base: ${{ needs.setup.outputs.image-base }}
       image-name: ${{ needs.setup.outputs.image-name }}
-      environment: ${{ needs.setup.outputs.deploy-environment }}
       cmd-args: ${{ needs.setup.outputs.cmd-args }}
-    secrets: inherit
+      extra-copy-dirs: ${{ needs.setup.outputs.extra-copy-dirs }}
+    secrets:
+      PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}
 
   deploy-k8s:
     needs: [setup, build-docker]
@@ -135,52 +120,23 @@ jobs:
       binary-source-dir: ${{ needs.setup.outputs.binary-source-dir }}
       config-yaml: ${{ needs.setup.outputs.k8s-config-yaml }}
       configmap-name: ${{ needs.setup.outputs.k8s-configmap-name }}
-      enable-hpa: ${{ needs.setup.outputs.k8s-enable-hpa }}
-      notification-provider: ${{ needs.setup.outputs.notification-provider }}
       extra-env-block: ${{ needs.setup.outputs.extra-env-block }}
-    # 必须 inherit 而不是逐个列举：显式映射只把列出的那几个送进公共工作流，
-    # 业务密钥就看不见，集群 Secret 同步会整步跳过
-    # [EN] Inherit rather than listing: an explicit map forwards only the named secrets, so the
-    # business ones stay invisible and the in-cluster Secret sync skips entirely
-    secrets: inherit
+    secrets:
+      PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}
 ```
 
-端口、资源限制、镜像仓库、产物布局这些**一行都不用写在这里**，全在
-`vars.PIPELINE_CONFIG` 里
-要配哪些、默认值是什么，手动触发
-[⚙️ Generate Pipeline Config](#generate-pipeline-config) 就会整份打印出来
+默认配置文件是业务仓库的 `config/config.dev.yaml`，集中配置仓库见 [README](../README.md#82-集中配置仓库)
+没有私有 Go 模块时显式设 `builder.go_auth_method: none`，无需 App 或 SSH
+示例显式传递 `PIPELINE_SECRETS`，其中 app 节业务密钥也会一起传递
+分散的旧业务 Secrets 应先迁移到 app 节，配置作用域见[配置指南](03-configuration.md)
 
-一个后端服务典型的配置：
+下面前端示例保留了 inherit / 独立 Secret 的调用形式
+前端新接入同样以 `PIPELINE_CONFIG` / `PIPELINE_SECRETS` 为配置来源，并显式映射聚合 Secret：
 
 ```yaml
-# vars.PIPELINE_CONFIG
-ports:
-  http: 8080
-  rpc: 9181
-service:
-  binary_build_dir: ./cmd/server
-  extra_copy_dirs: docs
-kube:
-  namespace: business
-  resources:
-    limits: { cpu: 1, memory: 1Gi }
-  ingress:
-    host: api.example.com
-    tls: true
-env:
-  LOG_LEVEL: info
+secrets:
+  PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}
 ```
-
-```yaml
-# secrets.PIPELINE_SECRETS
-kube:
-  kubeconfig: |
-    apiVersion: v1
-    ...
-app:                      # 业务密钥，键名即容器里的环境变量名
-  DB_PASSWORD: xxx
-```
-
 
 ### 前端应用示例
 
