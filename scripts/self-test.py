@@ -1602,6 +1602,199 @@ def check_config_page_roundtrip(_yaml_mod):
         shutil.rmtree(work, ignore_errors=True)
 
 
+# 会去下载 Go 依赖、因此需要私有依赖预检的那几份 workflow
+# [EN] The workflows that download Go dependencies and therefore need the preflight
+GO_DOWNLOAD_WORKFLOWS = ("backend-build-binary.yml", "code-quality.yml", "go-library-test.yml")
+
+PREFLIGHT = "check-private-modules.sh"
+
+
+def job_steps(doc):
+    """(job 名, [step, ...]) 逐个产出"""
+    for name, job in (doc.get("jobs") or {}).items():
+        if isinstance(job, dict) and isinstance(job.get("steps"), list):
+            yield name, job["steps"]
+
+
+def check_private_module_preflight(_yaml_mod):
+    """私有依赖可达性预检：脚本得在、得跑在 go mod download 之前、资产得先拉下来
+
+    这组检查盯的是一个具体的坑：预检脚本在流水线仓库的 scripts/ 下，而复用工作流跑在
+    调用方仓库的工作区里 —— 没有 fetch-pipeline-assets 把 scripts/ 拷过去，这一步会以
+    「找不到文件」失败，把一个诊断变成一个新故障 顺序同理：跑在 go mod download 之后，
+    预检就永远等不到它要解释的那次失败
+    [EN] These checks watch one specific trap: the preflight script lives in this repository's
+    scripts/, while a reusable workflow runs inside the caller's workspace. Without
+    fetch-pipeline-assets copying scripts/ over, the step fails with file-not-found and turns a
+    diagnostic into a new failure. Ordering likewise: run after go mod download and the preflight
+    never gets to explain the failure it exists for
+    """
+    section("私有依赖拉不到时先说清是权限不是仓库名")
+
+    script = os.path.join(ROOT, "scripts", PREFLIGHT)
+    check(os.path.isfile(script), "scripts/%s 在" % PREFLIGHT)
+    if not os.path.isfile(script):
+        return
+
+    for wf in GO_DOWNLOAD_WORKFLOWS:
+        doc = parsed_workflow(wf)
+        if doc is None:
+            check(False, "%s 能解析" % wf)
+            continue
+
+        found = False
+        for job, steps in job_steps(doc):
+            idx = [i for i, s in enumerate(steps)
+                   if PREFLIGHT in str(s.get("run") or "")]
+            if not idx:
+                continue
+            found = True
+            at = idx[0]
+            step = steps[at]
+            label = "%s/%s" % (wf, job)
+
+            # 脚本从 _deploy-workflows/ 下引用，就必须有人把它拷到那儿
+            # [EN] Referenced from _deploy-workflows/, so something must have copied it there
+            run = str(step.get("run"))
+            if "_deploy-workflows/" in run:
+                fetched = [i for i, s in enumerate(steps[:at])
+                           if "fetch-pipeline-assets" in str(s.get("uses") or "")
+                           and "scripts" in str((s.get("with") or {}).get("assets", "scripts"))]
+                check(bool(fetched),
+                      "%s 预检之前拉过 scripts 资产" % label,
+                      "没有 fetch-pipeline-assets，脚本不在工作区里")
+
+            # 必须早于 go mod download，否则解释不了那次失败
+            # [EN] Must precede go mod download, or it cannot explain that failure
+            dl = [i for i, s in enumerate(steps)
+                  if "go mod download" in str(s.get("run") or "")]
+            check(bool(dl) and at < min(dl),
+                  "%s 预检跑在 go mod download 之前" % label,
+                  "预检在第 %d 步，download 在 %r" % (at, dl))
+
+            # 没配私有依赖、或者没拿到 token 的仓库不该被这一步拖红
+            # [EN] A repository with no private modules, or without a token, must not go red here
+            cond = str(step.get("if") or "")
+            check("env.GOPRIVATE" in cond and "token" in cond,
+                  "%s 预检对无私有依赖/无 token 的仓库跳过" % label,
+                  "if: %r" % cond)
+
+            check("GH_TOKEN" in (step.get("env") or {}),
+                  "%s 预检拿到 GH_TOKEN" % label)
+
+        check(found, "%s 里有私有依赖预检" % wf)
+
+    # 行为：缺前置条件与「没有可检的东西」要分得开，而且都不许联网
+    # [EN] Behaviour: missing prerequisites and nothing-to-check must be distinguishable, and
+    # neither may touch the network
+    import subprocess
+    import tempfile
+
+    tmp = tempfile.mkdtemp()
+    mod = os.path.join(tmp, "go.mod")
+    with io.open(mod, "w", encoding="utf-8") as fh:
+        fh.write("module github.com/acme/self\n\ngo 1.22\n\nrequire (\n"
+                 "\tgithub.com/acme/self v0.1.0\n"
+                 "\tgithub.com/public/thing v1.2.3\n)\n")
+
+    def run(args, env):
+        e = dict(os.environ)
+        e.pop("GOPRIVATE", None)
+        e.pop("GH_TOKEN", None)
+        e.pop("GITHUB_STEP_SUMMARY", None)
+        e.update(env)
+        p = subprocess.Popen(["bash", script] + args, env=e,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = p.communicate()
+        return p.returncode, (out + err).decode("utf-8", "replace")
+
+    code, _ = run([os.path.join(tmp, "nope.mod")], {})
+    check(code == 2, "go.mod 不存在时退 2（缺前置条件）", "实际退 %d" % code)
+
+    code, out = run([mod], {})
+    check(code == 0, "GOPRIVATE 为空时退 0 而不是报错", "实际退 %d: %s" % (code, out.strip()))
+
+    code, out = run([mod], {"GOPRIVATE": "github.com/acme/*", "GH_TOKEN": "x"})
+    check(code == 0 and "没有匹配" in out,
+          "只匹配到本模块自己时退 0、且一次网络都不发",
+          "实际退 %d: %s" % (code, out.strip()))
+
+    # 两级探测必须分得开「不在清单里」和「装了但没 Contents」—— 用桩服务器各走一遍
+    #
+    # 这条测的是一个真实踩到的假阴性：/repos/<slug> 只要 Metadata 就返回 200，
+    # 只探这一步的话，App 装了却没给 Contents 时预检会打勾，而构建照样红
+    # [EN] The two probes must tell "outside the App's list" apart from "installed without
+    # Contents". This covers a real false negative: /repos/<slug> answers 200 with only Metadata,
+    # so probing just that passes the preflight while the build still fails
+    import threading
+    try:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    except ImportError:
+        ThreadingHTTPServer = None
+
+    if ThreadingHTTPServer is None:
+        check(False, "跑得起桩服务器（需要 ThreadingHTTPServer）")
+        return
+
+    ROUTES = {
+        "/repos/acme/ok": 200, "/repos/acme/ok/commits": 200,
+        "/repos/acme/empty": 200, "/repos/acme/empty/commits": 409,
+        "/repos/acme/noperm": 200, "/repos/acme/noperm/commits": 403,
+        "/repos/acme/unlisted": 404,
+    }
+
+    class Stub(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(ROUTES.get(self.path.split("?")[0], 404))
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:%d" % srv.server_address[1]
+
+    def with_dep(name):
+        d = tempfile.mkdtemp()
+        f = os.path.join(d, "go.mod")
+        with io.open(f, "w", encoding="utf-8") as fh:
+            fh.write("module github.com/acme/self\n\ngo 1.22\n\nrequire (\n"
+                     "\tgithub.com/acme/%s v1.0.0\n)\n" % name)
+        return f
+
+    try:
+        env = {"GOPRIVATE": "github.com/acme/*", "GH_TOKEN": "x", "GH_API_BASE": base}
+
+        code, out = run([with_dep("ok")], env)
+        check(code == 0 and "✅" in out, "能读文件的依赖退 0",
+              "退 %d: %s" % (code, out.strip()))
+
+        code, out = run([with_dep("empty")], env)
+        check(code == 0, "空仓库（commits 返回 409）不算失败",
+              "退 %d: %s" % (code, out.strip()))
+
+        code, out = run([with_dep("noperm")], env)
+        check(code == 1 and "Contents" in out and "清单里有" in out,
+              "装了 App 但没 Contents 权限时退 1、且说的是缺 Contents",
+              "退 %d: %s" % (code, out.strip()))
+        check("Permissions & events" in out,
+              "缺 Contents 时给的是 Permissions 页而不是 Install App 页")
+        check("批准" in out,
+              "缺 Contents 时提醒要批准那条待审的权限变更")
+
+        code, out = run([with_dep("unlisted")], env)
+        check(code == 1 and "不在 App 的仓库清单里" in out,
+              "不在清单里时退 1、且说的是不在清单里",
+              "退 %d: %s" % (code, out.strip()))
+        check("Contents" not in out,
+              "不在清单里时不该乱指 Contents 权限")
+        check("settings/installations" in out,
+              "不在清单里时给的是 installations 页")
+    finally:
+        srv.shutdown()
+
+
 def main():
     try:
         import yaml
@@ -1627,6 +1820,7 @@ def main():
     check_mermaid(yaml)
     check_templates(yaml)
     check_workdir_env(yaml)
+    check_private_module_preflight(yaml)
 
     print("\n" + "=" * 60)
     if failures:

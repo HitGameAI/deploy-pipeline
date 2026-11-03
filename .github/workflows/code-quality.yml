@@ -120,6 +120,35 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # 私有依赖到底看不看得见 —— 在 go mod download 之前先问清楚
+      #
+      # 不预检的后果是报这么一句：
+      #   github.com/acme/foo@v0.0.0-...: invalid version: git ls-remote ... exit status 128:
+      #   remote: Repository not found.
+      # 读起来像仓库名写错了或者仓库被删了，而真实原因几乎总是另一个：
+      # 那个 GitHub App 的仓库清单里没有它 —— GitHub 对无权访问的私有仓库返回 404 而不是 403，
+      # 所以「看不见」和「不存在」在报错里长得一模一样
+      #
+      # 预检只问 GOPRIVATE 匹配到的那几个仓库，公共依赖不问
+      #
+      # [EN] Whether the private dependencies are visible at all, asked before go mod download.
+      # Otherwise the failure reads "remote: Repository not found.", like a wrong name or a deleted
+      # repository, while the cause is almost always that the GitHub App's repository list does not
+      # include it: GitHub answers 404 rather than 403 for a private repository you cannot see, so
+      # invisible and nonexistent look identical. Only the repositories matched by GOPRIVATE are
+      # checked.
+      - name: 📥 Fetch Pipeline Assets (scripts)
+        if: env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        with:
+          assets: scripts
+
+      - name: 🧭 私有依赖可达性预检
+        if: env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: bash _deploy-workflows/scripts/check-private-modules.sh go.mod
+
       - name: 📦 Download Dependencies
         run: |
           export GOPROXY="${{ env.GOPROXY }}"
