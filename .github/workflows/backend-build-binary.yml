@@ -105,6 +105,27 @@ on:
         required: false
         type: string
         default: ''
+      # go.mod 不在仓库根时用这个，比如前后端单仓的 server/
+      #
+      # 与 binary-build-dir 不是一回事:那个是模块**内**的包路径(传给 go build 的目标),
+      # 这个是模块本身在哪 go build 要求在模块目录里执行,否则报
+      # "go.mod file not found in current directory or any parent directory",
+      # 而 binary-build-dir 改的只是目标参数、不改工作目录,所以单仓根本构建不了
+      #
+      # 留空就是现在的行为:在仓库根执行,已有服务一个都不受影响
+      #
+      # [EN] For a repository whose go.mod is not at the root, such as the server/ half of a
+      # front-end plus back-end monorepo. Not the same thing as binary-build-dir, which is the
+      # package path inside the module handed to go build: this is where the module itself lives.
+      # go build must run inside the module directory or it fails with "go.mod file not found",
+      # and binary-build-dir only changes the target argument, never the working directory, so a
+      # monorepo cannot be built at all without this. Empty keeps today's behaviour -- running at
+      # the repository root -- so no existing service is affected
+      working-directory:
+        description: 'Directory holding go.mod when it is not the repository root (e.g. server); empty means the repository root'
+        required: false
+        type: string
+        default: ''
       build-tags:
         description: '额外 Go 构建标签，附加在默认 netgo 之后（如 swagger 用于嵌入 swagger 文档，仅需要的服务启用）'
         required: false
@@ -233,21 +254,33 @@ jobs:
           fi
           go mod download
 
+      # 脚本路径与产物目录都用 ${GITHUB_WORKSPACE} 拼成绝对路径
+      #
+      # working-directory 一设,相对路径的基准就跟着变:脚本在仓库根、产物目录由
+      # 下游步骤按仓库根解读,两边都不能跟着 cd 走 绝对路径让这一步与工作目录解耦,
+      # 留空那条路算出来的字符串和改之前逐字相同
+      #
+      # [EN] Both the script path and the output directory are made absolute with
+      # GITHUB_WORKSPACE. Setting working-directory moves the base of every relative path, while
+      # the script lives at the repository root and the output directory is read by later steps
+      # relative to that root, so neither may follow the cd. Absolute paths decouple this step
+      # from the working directory, and the empty case resolves to byte-identical strings
       - name: 🔨 Build Binary
+        working-directory: ${{ inputs.working-directory || '.' }}
         run: |
-          if [ -f "${{ inputs.build-script }}" ]; then
-            BUILD_SCRIPT="${{ inputs.build-script }}"
+          if [ -f "${GITHUB_WORKSPACE}/${{ inputs.build-script }}" ]; then
+            BUILD_SCRIPT="${GITHUB_WORKSPACE}/${{ inputs.build-script }}"
           else
-            BUILD_SCRIPT="_deploy-workflows/scripts/backend/build-linux.sh"
+            BUILD_SCRIPT="${GITHUB_WORKSPACE}/_deploy-workflows/scripts/backend/build-linux.sh"
           fi
           chmod +x "${BUILD_SCRIPT}"
 
-          ./${BUILD_SCRIPT} \
+          "${BUILD_SCRIPT}" \
             --version "${{ inputs.version }}" \
             --build-time "${{ inputs.build-time }}" \
             --git-commit "${{ inputs.git-commit }}" \
             --binary-name "${{ inputs.binary-name }}" \
-            --output-dir "${{ inputs.binary-source-dir }}" \
+            --output-dir "${GITHUB_WORKSPACE}/${{ inputs.binary-source-dir }}" \
             --os "${{ env.BUILD_BINARY_OS }}" \
             --arch "${{ env.BUILD_BINARY_ARCH }}" \
             --upx-compress "${{ env.UPX_COMPRESS }}" \
@@ -256,7 +289,7 @@ jobs:
             --build-tags "${{ inputs.build-tags }}"
 
           echo "Build completed: ${{ inputs.binary-name }} (${{ env.BUILD_BINARY_OS }}/${{ env.BUILD_BINARY_ARCH }})"
-          ls -lh "${{ inputs.binary-source-dir }}"
+          ls -lh "${GITHUB_WORKSPACE}/${{ inputs.binary-source-dir }}"
 
       - name: 🧾 Resolve Artifact Paths
         id: artifact-paths
