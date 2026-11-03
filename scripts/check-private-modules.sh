@@ -130,7 +130,7 @@ OWNER="${first%%/*}"
 APPS_URL="https://github.com/organizations/${OWNER}/settings/apps"
 INST_URL="https://github.com/organizations/${OWNER}/settings/installations"
 
-echo "::error::GitHub 对读不到的私有仓库返回 404 而不是 403，所以 go mod download 那句 remote: Repository not found. 读起来像仓库名写错，其实不是" >&2
+echo "::error::git 对读不到的私有仓库一律只说 remote: Repository not found.（不泄漏仓库是否存在），所以 go mod download 那句报错读起来像仓库名写错，其实不是 —— 上面每行括号里的 HTTP 码才是真实原因" >&2
 
 for slug in ${missing}; do
   echo "::error::${slug} 不在 App 的仓库清单里 —— 到 ${INST_URL} 把它加进 Repository access" >&2
@@ -146,8 +146,8 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo ""
     echo "### 为什么报错像「仓库不存在」"
     echo ""
-    echo "GitHub 对读不到的私有仓库返回 **404 而不是 403**（不泄漏仓库是否存在），"
-    echo "所以 \`go mod download\` 那句 \`remote: Repository not found.\` 读起来像名字写错或仓库被删"
+    echo "git 对读不到的私有仓库一律只说 **Repository not found.**（不泄漏仓库是否存在），"
+    echo "所以 \`go mod download\` 那句报错读起来像名字写错或仓库被删 上面列出的 HTTP 码才是真实原因"
     echo ""
     echo "下面两种情况报的是同一句话，但修法不一样 ——"
     if [ -n "${missing// /}" ]; then
