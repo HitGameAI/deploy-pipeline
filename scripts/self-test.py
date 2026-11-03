@@ -1795,6 +1795,97 @@ def check_private_module_preflight(_yaml_mod):
         srv.shutdown()
 
 
+def check_config_source_precedence(_yaml_mod):
+    """配了配置仓库之后，本仓库那份配置不许再当来源
+
+    两份都当来源的后果是 ConfigMap 的 data 里出现同名键 —— 键名就是文件名 ——
+    部署在同名检查那里直接失败 真实报过：
+      ConfigMap 里出现同名文件 config.dev.yaml：config/config.dev.yaml 与
+      .../service-config/ws-gateway/dev/config.dev.yaml
+
+    原先的判定是「先看本仓库有没有这份文件」，于是「本仓库还留着 + 配了配置仓库」
+    这一种组合没有分支接，两份都传了下去 顺序必须是配置仓库优先
+    [EN] With a config repository configured, the copy in the service repository must not be a
+    source as well: a ConfigMap data key is the file name, so two sources collide and the deploy
+    fails on the duplicate-name check. The previous form tested the local file first and had no
+    branch for both being present, so both were passed on. Config repo must win
+    """
+    section("配了配置仓库之后本仓库那份配置不再参与")
+
+    script = os.path.join(ROOT, "scripts", "service-vars.sh")
+    if not os.path.isfile(script):
+        check(False, "scripts/service-vars.sh 在")
+        return
+
+    import subprocess
+    import tempfile
+
+    work = tempfile.mkdtemp()
+    os.makedirs(os.path.join(work, "config"))
+    for cmd in (["git", "init", "-q", "."],
+                ["git", "-c", "user.email=a@b", "-c", "user.name=a",
+                 "commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(cmd, cwd=work, capture_output=True)
+
+    own = os.path.join(work, "config", "config.dev.yaml")
+
+    def run(local_exists, config_repo):
+        if local_exists:
+            with io.open(own, "w", encoding="utf-8") as fh:
+                fh.write("Name: demo\n")
+        elif os.path.exists(own):
+            os.remove(own)
+        outfile = os.path.join(work, "out.txt")
+        io.open(outfile, "w", encoding="utf-8").close()
+        env = {
+            "PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", ""),
+            "GITHUB_REPOSITORY": "acme/demo", "GITHUB_REF_NAME": "dev",
+            "GITHUB_EVENT_NAME": "push", "GITHUB_OUTPUT": outfile,
+            "SERVICE_ENVIRONMENT": "dev", "ALLOWED_ENVS": "dev",
+            "CONFIG_PATH_TEMPLATE": "config/config.{env}.yaml",
+            "CMD_ARGS_TEMPLATE": "-f resources/{configfile}",
+            "CONFIG_REPO": config_repo,
+        }
+        p = subprocess.run(["bash", script], cwd=work, env=env, capture_output=True)
+        out = dict(l.split("=", 1) for l in
+                   io.open(outfile, encoding="utf-8").read().split("\n") if "=" in l)
+        log = (p.stdout + p.stderr).decode("utf-8", "replace")
+        return p.returncode, out, log
+
+    # ① 两者都在 —— 就是线上报错那种情况
+    rc, out, log = run(True, "acme/service-configs")
+    check(rc == 0 and out.get("k8s-config-yaml") == "",
+          "本仓库还留着配置 + 配了配置仓库：本仓库那份不当来源",
+          "退 %d，k8s-config-yaml=%r" % (rc, out.get("k8s-config-yaml")))
+    check("::warning::" in log and "不会生效" in log,
+          "这种情况要出 warning，不能静默忽略（否则改了本地文件没反应，没人知道为什么）")
+    check(out.get("cmd-args") == "-f resources/config.dev.yaml",
+          "清空来源之后启动参数仍然按文件名算出来",
+          "cmd-args=%r" % out.get("cmd-args"))
+    check(out.get("k8s-configmap-name") == "demo-config-dev",
+          "ConfigMap 名也仍然算得出来", "%r" % out.get("k8s-configmap-name"))
+
+    # ② 只有配置仓库 —— 搬完之后的常态，不该有 warning
+    rc, out, log = run(False, "acme/service-configs")
+    check(rc == 0 and out.get("k8s-config-yaml") == "",
+          "本仓库已删掉配置 + 配了配置仓库：正常通过",
+          "退 %d，k8s-config-yaml=%r" % (rc, out.get("k8s-config-yaml")))
+    check("::warning::" not in log,
+          "这种情况不该出 warning（本仓库本来就不该有这份文件）")
+
+    # ③ 只有本仓库 —— 没用中心配置仓库的服务，行为不能被这次改动带坏
+    rc, out, _ = run(True, "")
+    check(rc == 0 and out.get("k8s-config-yaml") == "config/config.dev.yaml",
+          "没配配置仓库时，本仓库那份仍然是来源",
+          "退 %d，k8s-config-yaml=%r" % (rc, out.get("k8s-config-yaml")))
+
+    # ④ 两边都没有 —— 必须报错，不能静默跳过 ConfigMap
+    rc, _, log = run(False, "")
+    check(rc != 0 and "缺少配置文件" in log,
+          "两边都没有这份配置时直接失败，不静默跳过 ConfigMap",
+          "退 %d" % rc)
+
+
 def main():
     try:
         import yaml
@@ -1821,6 +1912,7 @@ def main():
     check_templates(yaml)
     check_workdir_env(yaml)
     check_private_module_preflight(yaml)
+    check_config_source_precedence(yaml)
 
     print("\n" + "=" * 60)
     if failures:
