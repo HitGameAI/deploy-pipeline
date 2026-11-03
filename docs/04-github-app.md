@@ -103,6 +103,12 @@ sequenceDiagram
    > 漏装是最常见的失败原因：App 创建好了但没装到目标仓库，换令牌会成功，
    > 但用它 `git clone` 私有仓库仍然 404
 
+   > 这一步与上面第 3 步是两件事，缺哪一件报错都一样：
+   > 这里决定 App 看得见哪些仓库，第 3 步的 Contents 决定看得见的能不能读
+   > 只装仓库不给 Contents 时，换令牌同样成功，发出来的令牌只有 Metadata，
+   > `git clone` 还是 404 —— 与漏装一字不差，所以先按仓库清单查过一遍、
+   > 确认仓库在清单里之后，下一个要看的就是 Contents
+
 8. **写进 Secrets**（仓库 Settings → Secrets and variables → Actions）
 
    | Secret | 值 |
@@ -139,6 +145,8 @@ sequenceDiagram
 | `Input required and not supplied: app-id` | Secret 没配，或可复用工作流没透传 `secrets:` | 在 `secrets:` 段里显式映射；不要指望 `secrets: inherit`，它[跨账号时失效](#inherit-cross-account) |
 | `PEM routines:get_name:no start line` | 私钥粘成了一行 / 丢了 BEGIN-END 行 | 重新粘贴完整 `.pem` 内容 |
 | 换令牌成功但 `go mod download` 仍 403/404 | App 没安装到被依赖的那个私有仓库 | Install App 里补勾该仓库 |
+| 换令牌成功但 `git clone` 报 `Repository not found`，而仓库确实在 Install App 的清单里 | 仓库访问给了、`Contents` 权限没给，令牌只有 Metadata | App 设置 → Permissions → Repository permissions → `Contents` = Read-only，保存后到组织里批准这次权限变更 |
+| 改了 App 权限但行为没变 | 权限变更对已有安装要批准才生效 | 组织 Settings → GitHub Apps → 该 App → 批准待处理的权限请求 |
 | `GOPRIVATE` 没生效，走了公网代理 | `goprivate` 入参为空 | 填 `github.com/<org>/*` 或配 `vars.GOPRIVATE` |
 | 推送被拒 `403 Resource not accessible by integration` | Contents 只给了 Read-only | 改成 Read and write 并重新安装 |
 | App 一直收到 webhook 投递失败邮件 | 注册时没取消 Webhook → Active | 回 App 设置取消勾选 |

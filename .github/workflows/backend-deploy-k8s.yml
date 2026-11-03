@@ -389,41 +389,83 @@ jobs:
           private-key: ${{ env.APP_PRIVATE_KEY }}
           owner: ${{ env.CONFIG_REPO_OWNER }}
           repositories: ${{ env.CONFIG_REPO_NAME }}
+          # 明确要 contents:read，把「App 权限不够」挪到这一步暴露
+          #
+          # 「装到仓库上」与「读得到文件」是两件事，在 GitHub 后台也是两个页面：
+          # Install App → Repository access 决定 App 覆盖哪些仓库，
+          # App 设置 → Repository permissions → Contents 决定能不能读文件
+          # 只给前者不给后者时，mint 照样成功，发出来的 token 只有 metadata，
+          # git clone 于是报 "Repository not found" —— 与「App 没装」的报错一字不差，
+          # 照着「把仓库加进清单」改永远改不好，因为清单本来就是对的
+          # 把权限写进 token 申请之后，App 没有 contents 权限时 GitHub 直接回 422，
+          # 失败点落在 mint 这一步，报错里也会写明是权限而不是仓库
+          #
+          # [EN] Ask for contents:read explicitly so an under-permissioned App fails here.
+          # Being installed on a repository and being able to read its files are two separate
+          # settings on two separate pages: Install App -> Repository access decides which
+          # repositories the App covers, while the App's Repository permissions -> Contents
+          # decides whether files can be read. With the former but not the latter the mint still
+          # succeeds and hands out a metadata-only token, so git clone answers "Repository not
+          # found" -- byte for byte the error of an App that is not installed, and editing the
+          # repository list never fixes it because that list was already right. Requesting the
+          # permission makes GitHub answer 422 at mint time and name the permission
+          permission-contents: read
       # 换不到 App token 时给一句能直接动手的提示
       #
-      # create-github-app-token 失败时只抛一个裸 404（GET /repos/<owner>/<repo>/installation），
-      # 从里面看不出要去哪里修 而原因几乎总是同一个：这个 App 没装到配置仓库上
-      # GitHub 对「App 没覆盖该仓库」返回 404 而不是 403（不泄漏仓库是否存在），
-      # 所以它读起来像仓库名写错了 —— 下面那步 checkout 的提示本来写了这一条，
-      # 但 mint 这一步先挂，那句提示根本来不及打出来
+      # create-github-app-token 失败时只抛一个裸状态码，从里面看不出要去哪里修，
+      # 而两种原因在 GitHub 后台是两个不同的页面，指错了会一直改不对：
+      #   404  GET /repos/<owner>/<repo>/installation —— App 没覆盖这个仓库
+      #        GitHub 对「App 没覆盖该仓库」返回 404 而不是 403（不泄漏仓库是否存在），
+      #        所以它读起来像仓库名写错了
+      #   422  POST /app/installations/<id>/access_tokens —— App 没有上面申请的
+      #        contents 权限，或者权限改过但这次安装还没批准
+      # 下面那步 checkout 的提示本来写了第一条，但 mint 这一步先挂，那句提示来不及打出来
       #
-      # [EN] An actionable hint when the App token cannot be minted. create-github-app-token fails
-      # with a bare 404 from GET /repos/<owner>/<repo>/installation, which says nothing about
-      # where to fix it, while the cause is almost always the same: the App is not installed on
-      # the config repository. GitHub answers 404 rather than 403 for a repository the App does
-      # not cover, so it reads like a wrong name. The checkout step below carries this hint
-      # already, but minting fails first and that hint never prints.
+      # [EN] An actionable hint when the App token cannot be minted. create-github-app-token
+      # throws only a bare status code, which says nothing about where to fix it, while the two
+      # causes live on two different pages of the GitHub UI and aiming at the wrong one never
+      # fixes anything: a 404 from GET /repos/<owner>/<repo>/installation means the App does not
+      # cover the repository, and GitHub answers 404 rather than 403 there so it reads like a
+      # wrong name; a 422 from POST /app/installations/<id>/access_tokens means the App lacks the
+      # contents permission requested above, or its permissions changed and this installation has
+      # not approved them yet. The checkout step below carries the first hint already, but
+      # minting fails first and that hint never prints.
       - name: 🧭 换不到 token 时怎么修
         if: ${{ failure() && steps.config-token.outcome == 'failure' }}
         run: |
           echo "::error::换不到访问 ${CONFIG_REPO} 的 App token" >&2
-          echo "::error::几乎一定是这个 GitHub App 没装到 ${CONFIG_REPO} 上 —— 不是仓库名写错" >&2
-          echo "::error::修法：GitHub App 设置页 → Install App → 把 ${CONFIG_REPO_NAME} 加进仓库清单" >&2
+          echo "::error::看上面那步抛的状态码：404 是 App 没装到该仓库，422 是 App 没有 Contents 权限 —— 都不是仓库名写错" >&2
+          echo "::error::404 的修法：GitHub App 设置页 → Install App → 把 ${CONFIG_REPO_NAME} 加进仓库清单" >&2
+          echo "::error::422 的修法：同一个 App 的设置页 → Permissions → Repository permissions → Contents 给 Read-only，改完要在组织里批准这次权限变更" >&2
           echo "::error::注意要装的是 PIPELINE_SECRETS 里 go.app_id 那个 App，不是别的" >&2
           {
             echo "## 🧭 换不到配置仓库的 App token"
             echo ""
-            echo "报错是 \`GET /repos/${CONFIG_REPO}/installation\` 返回 404"
+            echo "两种原因，看上面那步抛的状态码分："
+            echo ""
+            echo "| 状态码 | 出处 | 原因 |"
+            echo "| --- | --- | --- |"
+            echo "| 404 | \`GET /repos/${CONFIG_REPO}/installation\` | App 没覆盖这个仓库 |"
+            echo "| 422 | \`POST /app/installations/<id>/access_tokens\` | App 没有 Contents 权限 |"
             echo ""
             echo "GitHub 对「App 没覆盖该仓库」返回 **404 而不是 403**，"
             echo "所以这个报错读起来像仓库不存在 —— 但 \`${CONFIG_REPO}\` 是存在的，"
             echo "只是这个 App 看不到它"
             echo ""
-            echo "### 修法"
+            echo "### 404 的修法：把仓库加进清单"
             echo ""
             echo "1. 打开 \`go.app_id\` 对应那个 GitHub App 的设置页"
             echo "2. Install App → 选 \`${CONFIG_REPO_OWNER}\`"
             echo "3. Repository access 里把 \`${CONFIG_REPO_NAME}\` 加进去"
+            echo ""
+            echo "### 422 的修法：把 Contents 权限给上"
+            echo ""
+            echo "1. 同一个 App 的设置页 → Permissions → Repository permissions"
+            echo "2. **Contents** 选 **Read-only**（只读就够，流水线只克隆不回写）"
+            echo "3. 保存后组织里会多一条待批准的权限变更，批了才对已有安装生效"
+            echo ""
+            echo "> 这两件事是分开的：仓库加进清单只决定 App 看得见哪些仓库，"
+            echo "> 看得见不等于读得到文件 —— 读文件要的是 Contents 权限"
             echo ""
             echo "> 装的必须是同一个 App 换个 App 装上去也不行 ——"
             echo "> 流水线用的是 \`go.app_id\` / \`go.app_private_key\` 这一对"
@@ -434,6 +476,11 @@ jobs:
         if: ${{ env.CONFIG_REPO != '' }}
         env:
           GH_TOKEN: ${{ steps.config-token.outputs.token }}
+          # 带出实际用的是哪个 App：提示里反复强调「必须是 go.app_id 那个 App」，
+          # 可日志里一直查不到用的到底是哪个，只能回去翻 secret 对 app_id
+          # [EN] Carry out which App was actually used: the hints insist it must be the one in
+          # go.app_id, yet the log never said which one it was
+          APP_SLUG: ${{ steps.config-token.outputs.app-slug }}
         run: |
           set -uo pipefail
           # {name} / {env} 在这里替换，而不是让调用方自己拼：
@@ -452,7 +499,104 @@ jobs:
                "${RUNNER_TEMP}/service-config" 2>"${RUNNER_TEMP}/clone.err"; then
             sed 's/^/    /' "${RUNNER_TEMP}/clone.err" >&2 || true
             echo "::error::拉不到配置仓库 ${CONFIG_REPO}@${CONFIG_REF}" >&2
-            echo "::error::若报 Repository not found，多半不是仓库名写错，而是这个 GitHub App 没装到该仓库上 —— Install app 里把它加进仓库清单" >&2
+
+            # 用同一个 token 问两个问题，把三种原因分开
+            #
+            # git 对「仓库不在 App 的清单里」和「App 没有 Contents 权限」都只说
+            # Repository not found，一个字都不差，而这两件事的修法是 GitHub 后台
+            # 两个不同的页面 —— 原来这里一句话断定是前者，于是给了把仓库加进清单的指引，
+            # 清单本来就是对的那次就会卡死在这里，改多少遍都没用
+            # 上面 mint 那步已经申请了 contents:read，权限不够正常会在那里先挂，
+            # 这里兜住的是 token 换好之后权限才被改掉、以及分支压根不存在那两种
+            #   /installation/repositories  只要 metadata 权限就能列，列不到 → 不在清单里
+            #   /repos/<repo>/contents/     列到了却读不了 → Contents 权限没给
+            #   两个都正常                  → 凭据没问题，按 git 原文查（多半是分支不存在）
+            #
+            # [EN] Ask the same token two questions to tell the three causes apart. git answers
+            # "Repository not found" word for word both for a repository outside the App's list
+            # and for an App without the Contents permission, yet the two are fixed on two
+            # different pages of the GitHub UI -- this used to assert the former and hand out
+            # instructions to add the repository to the list, so a run whose list was already
+            # right got stuck here no matter how many times it was edited. The mint step above
+            # already requests contents:read, so a missing permission normally fails there;
+            # what is caught here is a permission revoked after the token was minted, and a ref
+            # that simply does not exist. Listing /installation/repositories needs only metadata,
+            # so a repository missing from it is outside the list; one that is listed but whose
+            # contents cannot be read means the Contents permission was never granted; both
+            # answering normally means the credential is fine and the git message is the lead
+            api() {
+              curl -sS -o "$2" -w '%{http_code}' \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "https://api.github.com/$1" || true
+            }
+            LIST_CODE=$(api "installation/repositories?per_page=100" "${RUNNER_TEMP}/probe-list.json")
+            READ_CODE=$(api "repos/${CONFIG_REPO}/contents/" "${RUNNER_TEMP}/probe-read.json")
+            echo "::notice::token 自检：App ${APP_SLUG}，列安装清单 ${LIST_CODE}，读仓库内容 ${READ_CODE}"
+
+            if [ "${READ_CODE}" = "200" ]; then
+              echo "::error::这个 token 读得到 ${CONFIG_REPO} 的内容，所以凭据和权限都没问题" >&2
+              echo "::error::按上面 git 的原文查：报 Remote branch not found 就是 service.config_ref 写的 ${CONFIG_REF} 这个分支不存在" >&2
+              FIX="ref"
+            elif tr -d ' \n' < "${RUNNER_TEMP}/probe-list.json" | grep -Fq "\"full_name\":\"${CONFIG_REPO}\""; then
+              echo "::error::${CONFIG_REPO} 已经在这个 App 的仓库清单里了 —— 所以不是「没装」，Install App 那页不用再改" >&2
+              echo "::error::缺的是读文件的权限：App 设置页 → Permissions → Repository permissions → Contents 给 Read-only" >&2
+              echo "::error::改完组织里会多一条待批准的权限变更，批准了才对已经装好的安装生效" >&2
+              FIX="contents"
+            else
+              echo "::error::这个 token 的仓库清单里没有 ${CONFIG_REPO} —— App 没覆盖这个仓库" >&2
+              echo "::error::修法：GitHub App 设置页 → Install App → Repository access 里把 ${CONFIG_REPO_NAME} 加进去" >&2
+              echo "::error::注意要装的是 PIPELINE_SECRETS 里 go.app_id 那个 App，不是别的" >&2
+              FIX="install"
+            fi
+
+            {
+              echo "## ❌ 拉不到配置仓库 \`${CONFIG_REPO}@${CONFIG_REF}\`"
+              echo ""
+              echo "git 的原文："
+              echo ""
+              echo '```'
+              cat "${RUNNER_TEMP}/clone.err"
+              echo '```'
+              echo ""
+              echo "令牌来自 App \`${APP_SLUG}\` —— 要改权限就改这一个，换个 App 改了不算"
+              echo ""
+              echo "用同一个 token 自检：列安装清单 \`${LIST_CODE}\`，读仓库内容 \`${READ_CODE}\`"
+              echo ""
+              case "${FIX}" in
+                ref)
+                  echo "### 凭据没问题，是 ref 不对"
+                  echo ""
+                  echo "token 读得到这个仓库的内容，所以 App 装好了、权限也给了"
+                  echo "把 \`service.config_ref\`（当前 \`${CONFIG_REF}\`）改成配置仓库里真实存在的分支"
+                  ;;
+                contents)
+                  echo "### 仓库装好了，缺 Contents 权限"
+                  echo ""
+                  echo "\`${CONFIG_REPO}\` 已经在这个 App 的仓库清单里，**Install App 那页不用再改**"
+                  echo "缺的是读文件的权限 —— 这是另一个页面："
+                  echo ""
+                  echo "1. \`go.app_id\` 对应那个 GitHub App 的设置页 → Permissions"
+                  echo "2. Repository permissions → **Contents** 选 **Read-only**（只读就够，流水线只克隆不回写）"
+                  echo "3. 保存后组织里会多一条待批准的权限变更，批了才对已有安装生效"
+                  echo ""
+                  echo "> 「装到仓库上」和「读得到文件」是两件事："
+                  echo "> 前者决定 App 看得见哪些仓库，后者决定看得见的能不能读"
+                  echo "> 没有 Contents 权限时 token 只有 metadata，git 的回答就是 Repository not found ——"
+                  echo "> 与「App 没装」一字不差，所以这个报错以前一直被当成装没装的问题"
+                  ;;
+                *)
+                  echo "### App 没覆盖这个仓库"
+                  echo ""
+                  echo "这个 token 的仓库清单里没有 \`${CONFIG_REPO}\`"
+                  echo ""
+                  echo "1. 打开 \`go.app_id\` 对应那个 GitHub App 的设置页"
+                  echo "2. Install App → 选 \`${CONFIG_REPO_OWNER}\`"
+                  echo "3. Repository access 里把 \`${CONFIG_REPO_NAME}\` 加进去"
+                  ;;
+              esac
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           git -C "${RUNNER_TEMP}/service-config" sparse-checkout set "${CONFIG_PATH_RESOLVED}"

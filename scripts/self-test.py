@@ -915,6 +915,36 @@ def check_config_encryption(yaml_mod):
     check("404 而不是 403" in deploy,
           "解释了 GitHub 为什么返回 404 —— 否则这个报错读起来像仓库不存在")
 
+    # 「装到仓库上」与「读得到文件」要分开诊断
+    #
+    # 实际踩到：仓库早就加进 App 的清单了，mint 也成功，但 token 只有 metadata，
+    # git clone 照样报 Repository not found —— 与「App 没装」一字不差
+    # 原来这里一口断定是没装，指引是「加进仓库清单」，清单本来就对的那次改不动
+    # 两道防线：mint 申请 contents:read（权限不够就在 mint 挂，GitHub 回 422），
+    # clone 真失败时再用同一个 token 自检，分清是不在清单里还是权限没给
+    # [EN] Being installed on the repository and being able to read its files must be diagnosed
+    # apart: with access but no Contents permission the mint succeeds and the token carries only
+    # metadata, so git clone answers "Repository not found" word for word as it does for an App
+    # that is not installed. Asserting the former sent people to the repository list, which was
+    # already right. Two guards: the mint requests contents:read so GitHub answers 422 when the
+    # permission is absent, and a failing clone probes the same token to tell the two apart
+    mint = yaml_mod.safe_load(deploy.split("- name: 🔑 Mint Token For Config Repo", 1)[1]
+                              .split("- name:", 1)[0])
+    check(mint.get("with", {}).get("permission-contents") == "read",
+          "mint 这一步显式申请 contents:read，权限不够时在 mint 就挂",
+          repr(mint.get("with")))
+
+    fetch = deploy.split("- name: 📥 Fetch Service Config", 1)[1]
+    fetch = fetch.split("- name: 🔓 Decrypt Service Config", 1)[0]
+    check("installation/repositories" in fetch and "/contents/" in fetch,
+          "clone 失败时用同一个 token 自检：既列安装清单，也试读仓库内容")
+    check("已经在这个 App 的仓库清单里" in fetch and "Contents 给 Read-only" in fetch,
+          "在清单里却读不到时，指向 Contents 权限而不是再让人去加仓库")
+    check("Install App" in fetch and "加进去" in fetch,
+          "不在清单里时仍然给出 Install App 那条修法")
+    check("${CONFIG_REF} 这个分支不存在" in fetch,
+          "凭据都正常时点到 ref 上，而不是继续怪 App")
+
     _check_projected_volume(yaml_mod)
 
 
