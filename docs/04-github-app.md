@@ -171,7 +171,7 @@ sequenceDiagram
    ```yaml
    jobs:
      code-quality:
-       uses: HitGameAI/deploy-pipeline/.github/workflows/code-quality.yml@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+       uses: HitGameAI/deploy-pipeline/.github/workflows/code-quality.yml@v1.0.0
        secrets:
          PIPELINE_SECRETS: ${{ secrets.PIPELINE_SECRETS }}
    ```

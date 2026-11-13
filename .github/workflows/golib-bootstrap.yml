@@ -67,7 +67,7 @@ jobs:
         shell: bash
     steps:
       - name: ⚙️ Resolve Credentials
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
         with:
           secret-sections: go
           vars-json: ${{ toJSON(vars) }}

@@ -158,7 +158,7 @@ jobs:
       # [EN] Every setting goes through this step first
       - name: ⚙️ Resolve Pipeline Config
         id: config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
         with:
           sections: builder
           secret-sections: go
@@ -172,7 +172,7 @@ jobs:
           fetch-depth: 1
 
       - name: 🖥️ Print Runner Info
-        uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@v1.0.0
 
       # 不用 actions/checkout 取本仓库：复用工作流里 GITHUB_TOKEN 的作用域是调用方仓库，
       # 对本私有仓库没有读权限，GitHub 返回 404 而不是 403，报错是
@@ -182,7 +182,7 @@ jobs:
       # calling repository and cannot read this private one, and GitHub answers 404 rather than
       # 403, so the error reads as a missing repository when it is a permission
       - name: 📥 Fetch Pipeline Assets (scripts)
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
         with:
           assets: scripts
 

@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   bump:
-    uses: HitGameAI/deploy-pipeline/.github/workflows/go-bump-upstream.yml@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+    uses: HitGameAI/deploy-pipeline/.github/workflows/go-bump-upstream.yml@v1.0.0
     secrets:
       # 凭证按 App 到 PAT 到 GITHUB_TOKEN 取。优先 App 是因为 PAT 得逐仓库配，
       # 而漏配时会悄悄回落到 GITHUB_TOKEN，用它推的提交不触发任何 workflow，

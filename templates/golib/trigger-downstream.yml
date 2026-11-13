@@ -49,7 +49,7 @@ permissions:
 
 jobs:
   trigger:
-    uses: HitGameAI/deploy-pipeline/.github/workflows/go-trigger-downstream.yml@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+    uses: HitGameAI/deploy-pipeline/.github/workflows/go-trigger-downstream.yml@v1.0.0
     with:
       version: ${{ inputs.version }}
       only-repos: ${{ inputs.only_repos }}

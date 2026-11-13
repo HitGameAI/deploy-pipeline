@@ -19,7 +19,7 @@
 | Go 库自动通知下游、升级依赖 | App、上下游入口、仓库安装范围 | 不需要 K8s、镜像仓库 | [Go 库联动](docs/05-go-library-pipeline.md) |
 
 示例中的 `your-org`、`your-service` 换成自己的组织与业务仓库名
-当前公共入口是 `HitGameAI/deploy-pipeline@d3798f49355acd52c79c0fc85fc74b31ece20f6d`，迁移后应指向自己的流水线仓库
+当前公共入口是 `HitGameAI/deploy-pipeline@v1.0.0`，迁移后应指向自己的流水线仓库
 
 ## 1. 准备仓库，放开流水线引用
 

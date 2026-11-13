@@ -244,7 +244,7 @@ jobs:
       # [EN] Every setting goes through this step first: validated, merged and exported through
       # GITHUB_ENV for the steps that follow
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
         with:
           sections: ports kube
           secret-sections: kube
@@ -264,7 +264,7 @@ jobs:
 
       - name: Normalize Docker Image Name
         id: image-name
-        uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@v1.0.0
         with:
           image-name: ${{ inputs.image-name }}
 
@@ -300,7 +300,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: HitGameAI/deploy-pipeline
-          ref: d3798f49355acd52c79c0fc85fc74b31ece20f6d
+          ref: v1.0.0
           path: _deploy-workflows
 
       # ============================================
@@ -656,7 +656,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: HitGameAI/deploy-pipeline
-          ref: d3798f49355acd52c79c0fc85fc74b31ece20f6d
+          ref: v1.0.0
           path: _deploy-workflows
 
       # 通知是独立 job，GITHUB_ENV 不跨 job，所以这里要再解析一次，
@@ -664,7 +664,7 @@ jobs:
       # [EN] Notification is its own job and GITHUB_ENV does not cross jobs, so the same YAML is
       # resolved again here, which keeps the reported namespace and port from drifting
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
         with:
           sections: ports kube notify
           secret-sections: notify

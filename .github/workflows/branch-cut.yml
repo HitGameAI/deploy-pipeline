@@ -111,7 +111,7 @@ jobs:
       # [EN] Every setting goes through this step first. The dry-run switch is deliberately not
       # part of the table and still comes from the inputs and the schedule check alone
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
         with:
           sections: branch notify
           secret-sections: branch notify
@@ -148,7 +148,7 @@ jobs:
       # which does not contain scripts/branch-ops.sh, and a private repository cannot be checked
       # out from here anyway; the action ships its own copy instead
       - name: 📥 Fetch Pipeline Assets (scripts)
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
         with:
           assets: scripts
 
@@ -165,7 +165,7 @@ jobs:
 
       - name: Notify Result
         if: always()
-        uses: HitGameAI/deploy-pipeline/.github/actions/notify@d3798f49355acd52c79c0fc85fc74b31ece20f6d
+        uses: HitGameAI/deploy-pipeline/.github/actions/notify@v1.0.0
         with:
           provider: ${{ env.NOTIFICATION_PROVIDER }}
           status: ${{ steps.ops.outputs.status || 'failure' }}
