@@ -62,6 +62,25 @@ on:
         type: string
         default: 'scripts/frontend/build-frontend.sh'
 
+      # package.json 不在仓库根时用这个,比如前后端单仓的 web/
+      #
+      # 装依赖那一步绕不过去:脚本在当前目录跑 npm ci / pnpm install,
+      # 而 --build-command 只替换构建那一条命令、--output-dir 只影响产物路径,
+      # 两个都改不了装依赖在哪跑 根目录没有 package.json 就直接失败
+      #
+      # 留空就是现在的行为:在仓库根执行,已有调用方一个都不受影响
+      #
+      # [EN] For a repository whose package.json is not at the root, such as the web/ half of a
+      # monorepo. The install step is the one that cannot be worked around: the script runs
+      # npm ci or pnpm install in the current directory, while --build-command only replaces the
+      # build command and --output-dir only affects where the artifact is read from, so neither
+      # moves the install. Without this it fails outright when the root has no package.json.
+      # Empty keeps today's behaviour of running at the repository root
+      working-directory:
+        description: 'Directory holding package.json when it is not the repository root (e.g. web); empty means the repository root'
+        required: false
+        type: string
+        default: ''
       output-dir:
         description: '构建输出目录'
         required: false
@@ -106,18 +125,16 @@ jobs:
           fetch-depth: 1
 
       - name: 🖥️ Print Runner Info
-        uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@v1.0.0
 
       # ============================================
       # 步骤2：检出部署工作流仓库（获取脚本）
       # ============================================
-      - name: 📥 Checkout Deploy Workflows (for scripts)
-        uses: actions/checkout@v6
+      - name: 📥 Fetch Deploy Workflows (for scripts)
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
         with:
-          repository: kamalyes/deploy-pipeline
-          ref: master
           path: _deploy-workflows
-          fetch-depth: 1
+          assets: scripts
 
       # ============================================
       # 步骤3：安装 pnpm（如果使用 pnpm，需在 setup-node 之前安装以启用缓存）
@@ -152,14 +169,25 @@ jobs:
             RESOLVED_BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           fi
 
-          if [ -f "${{ inputs.build-script }}" ]; then
-            BUILD_SCRIPT="${{ inputs.build-script }}"
+          if [ -f "${GITHUB_WORKSPACE}/${{ inputs.build-script }}" ]; then
+            BUILD_SCRIPT="${GITHUB_WORKSPACE}/${{ inputs.build-script }}"
           else
-            BUILD_SCRIPT="_deploy-workflows/scripts/frontend/build-frontend.sh"
+            BUILD_SCRIPT="${GITHUB_WORKSPACE}/_deploy-workflows/scripts/frontend/build-frontend.sh"
           fi
           chmod +x "${BUILD_SCRIPT}"
 
-          ./${BUILD_SCRIPT} \
+          # 产物目录对 upload-artifact 要写成仓库根相对路径,而 --output-dir 对脚本
+          # 是当前目录相对的 —— 两个基准不同,所以把拼好的那份写进 GITHUB_ENV 给下一步用
+          # [EN] upload-artifact reads the path relative to the repository root while
+          # --output-dir is relative to the script's own cwd, so the joined form is exported for
+          # the next step rather than re-derived there
+          if [ -n "${{ inputs.working-directory }}" ]; then
+            echo "RESOLVED_ARTIFACT_PATH=${{ inputs.working-directory }}/${{ inputs.output-dir }}" >> "$GITHUB_ENV"
+          else
+            echo "RESOLVED_ARTIFACT_PATH=${{ inputs.output-dir }}" >> "$GITHUB_ENV"
+          fi
+
+          "${BUILD_SCRIPT}" \
             --version "${RESOLVED_VERSION}" \
             --build-time "${RESOLVED_BUILD_TIME}" \
             --git-commit "${RESOLVED_GIT_COMMIT}" \
@@ -176,5 +204,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact-name }}
-          path: ${{ inputs.output-dir }}
+          path: ${{ env.RESOLVED_ARTIFACT_PATH }}
           retention-days: ${{ inputs.retention-days }}

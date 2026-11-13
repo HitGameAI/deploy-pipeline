@@ -68,6 +68,18 @@ on:
         required: false
         type: string
         default: '7'
+      # job 的 environment: 一直在引用这个输入，但从来没声明过
+      # 未声明的 inputs.environment 求值成空串，于是 environment 等于没设，
+      # 该环境上配的保护规则与环境级 secret 全都不生效，而且不报任何错
+      # [EN] The job's environment has always referenced this input without declaring it. An
+      # undeclared input evaluates to an empty string, so no environment is applied and the
+      # protection rules and environment-scoped secrets attached to it quietly do not take
+      # effect, with nothing reported
+      environment:
+        description: '部署环境名，用于套用环境级保护规则与 secret；留空则不绑定环境 | Environment name for protection rules and scoped secrets; empty binds none'
+        required: false
+        type: string
+        default: ''
       os:
         description: 'Target OS（为空时回退到 vars.BUILD_BINARY_OS，再为空用 linux）'
         required: false
@@ -90,6 +102,27 @@ on:
         default: 'scripts/backend/build-linux.sh'
       binary-build-dir:
         description: 'Build directory containing main package (e.g. ./bootstrap), overrides default repo root'
+        required: false
+        type: string
+        default: ''
+      # go.mod 不在仓库根时用这个，比如前后端单仓的 server/
+      #
+      # 与 binary-build-dir 不是一回事:那个是模块**内**的包路径(传给 go build 的目标),
+      # 这个是模块本身在哪 go build 要求在模块目录里执行,否则报
+      # "go.mod file not found in current directory or any parent directory",
+      # 而 binary-build-dir 改的只是目标参数、不改工作目录,所以单仓根本构建不了
+      #
+      # 留空就是现在的行为:在仓库根执行,已有服务一个都不受影响
+      #
+      # [EN] For a repository whose go.mod is not at the root, such as the server/ half of a
+      # front-end plus back-end monorepo. Not the same thing as binary-build-dir, which is the
+      # package path inside the module handed to go build: this is where the module itself lives.
+      # go build must run inside the module directory or it fails with "go.mod file not found",
+      # and binary-build-dir only changes the target argument, never the working directory, so a
+      # monorepo cannot be built at all without this. Empty keeps today's behaviour -- running at
+      # the repository root -- so no existing service is affected
+      working-directory:
+        description: 'Directory holding go.mod when it is not the repository root (e.g. server); empty means the repository root'
         required: false
         type: string
         default: ''
@@ -125,7 +158,7 @@ jobs:
       # [EN] Every setting goes through this step first
       - name: ⚙️ Resolve Pipeline Config
         id: config
-        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
         with:
           sections: builder
           secret-sections: go
@@ -139,7 +172,7 @@ jobs:
           fetch-depth: 1
 
       - name: 🖥️ Print Runner Info
-        uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@v1.0.0
 
       # 不用 actions/checkout 取本仓库：复用工作流里 GITHUB_TOKEN 的作用域是调用方仓库，
       # 对本私有仓库没有读权限，GitHub 返回 404 而不是 403，报错是
@@ -149,7 +182,7 @@ jobs:
       # calling repository and cannot read this private one, and GitHub answers 404 rather than
       # 403, so the error reads as a missing repository when it is a permission
       - name: 📥 Fetch Pipeline Assets (scripts)
-        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
         with:
           assets: scripts
 
@@ -213,6 +246,29 @@ jobs:
           # 内置模块缓存：以 go.sum 为 key，自动管理 cache 生命周期，无需手动配置
           cache: true
 
+      # 私有依赖到底看不看得见 —— 在 go mod download 之前先问清楚
+      #
+      # 不预检的后果是报这么一句：
+      #   github.com/acme/foo@v0.0.0-...: invalid version: git ls-remote ... exit status 128:
+      #   remote: Repository not found.
+      # 读起来像仓库名写错了或者仓库被删了，而真实原因几乎总是另一个：
+      # 那个 GitHub App 的仓库清单里没有它 —— GitHub 对无权访问的私有仓库返回 404 而不是 403，
+      # 所以「看不见」和「不存在」在报错里长得一模一样
+      #
+      # 预检只问 GOPRIVATE 匹配到的那几个仓库，公共依赖不问
+      #
+      # [EN] Whether the private dependencies are visible at all, asked before go mod download.
+      # Otherwise the failure reads "remote: Repository not found.", like a wrong name or a deleted
+      # repository, while the cause is almost always that the GitHub App's repository list does not
+      # include it: GitHub answers 404 rather than 403 for a private repository you cannot see, so
+      # invisible and nonexistent look identical. Only the repositories matched by GOPRIVATE are
+      # checked.
+      - name: 🧭 私有依赖可达性预检
+        if: env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: bash _deploy-workflows/scripts/check-private-modules.sh go.mod
+
       - name: 📦 Download Dependencies
         run: |
           export GOPROXY="${{ env.GOPROXY }}"
@@ -221,21 +277,33 @@ jobs:
           fi
           go mod download
 
+      # 脚本路径与产物目录都用 ${GITHUB_WORKSPACE} 拼成绝对路径
+      #
+      # working-directory 一设,相对路径的基准就跟着变:脚本在仓库根、产物目录由
+      # 下游步骤按仓库根解读,两边都不能跟着 cd 走 绝对路径让这一步与工作目录解耦,
+      # 留空那条路算出来的字符串和改之前逐字相同
+      #
+      # [EN] Both the script path and the output directory are made absolute with
+      # GITHUB_WORKSPACE. Setting working-directory moves the base of every relative path, while
+      # the script lives at the repository root and the output directory is read by later steps
+      # relative to that root, so neither may follow the cd. Absolute paths decouple this step
+      # from the working directory, and the empty case resolves to byte-identical strings
       - name: 🔨 Build Binary
+        working-directory: ${{ inputs.working-directory || '.' }}
         run: |
-          if [ -f "${{ inputs.build-script }}" ]; then
-            BUILD_SCRIPT="${{ inputs.build-script }}"
+          if [ -f "${GITHUB_WORKSPACE}/${{ inputs.build-script }}" ]; then
+            BUILD_SCRIPT="${GITHUB_WORKSPACE}/${{ inputs.build-script }}"
           else
-            BUILD_SCRIPT="_deploy-workflows/scripts/backend/build-linux.sh"
+            BUILD_SCRIPT="${GITHUB_WORKSPACE}/_deploy-workflows/scripts/backend/build-linux.sh"
           fi
           chmod +x "${BUILD_SCRIPT}"
 
-          ./${BUILD_SCRIPT} \
+          "${BUILD_SCRIPT}" \
             --version "${{ inputs.version }}" \
             --build-time "${{ inputs.build-time }}" \
             --git-commit "${{ inputs.git-commit }}" \
             --binary-name "${{ inputs.binary-name }}" \
-            --output-dir "${{ inputs.binary-source-dir }}" \
+            --output-dir "${GITHUB_WORKSPACE}/${{ inputs.binary-source-dir }}" \
             --os "${{ env.BUILD_BINARY_OS }}" \
             --arch "${{ env.BUILD_BINARY_ARCH }}" \
             --upx-compress "${{ env.UPX_COMPRESS }}" \
@@ -244,7 +312,7 @@ jobs:
             --build-tags "${{ inputs.build-tags }}"
 
           echo "Build completed: ${{ inputs.binary-name }} (${{ env.BUILD_BINARY_OS }}/${{ env.BUILD_BINARY_ARCH }})"
-          ls -lh "${{ inputs.binary-source-dir }}"
+          ls -lh "${GITHUB_WORKSPACE}/${{ inputs.binary-source-dir }}"
 
       - name: 🧾 Resolve Artifact Paths
         id: artifact-paths
@@ -256,7 +324,7 @@ jobs:
         # 两个文件取同一个目录，公共祖先与改动前完全一致，二进制位置不受影响
         run: |
           BINARY_DIR="$(dirname "${{ inputs.binary-output }}")"
-          echo "buildinfo=${BINARY_DIR}/buildinfo.txt" >> $GITHUB_OUTPUT
+          echo "buildinfo=${BINARY_DIR}/buildinfo.txt" >> "$GITHUB_OUTPUT"
 
       - name: 📤 Upload Binary
         uses: actions/upload-artifact@v4

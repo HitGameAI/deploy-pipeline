@@ -244,7 +244,7 @@ jobs:
       # [EN] Every setting goes through this step first: validated, merged and exported through
       # GITHUB_ENV for the steps that follow
       - name: ⚙️ Resolve Pipeline Config
-        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
         with:
           sections: ports kube
           secret-sections: kube
@@ -264,7 +264,7 @@ jobs:
 
       - name: Normalize Docker Image Name
         id: image-name
-        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@v1.0.0
         with:
           image-name: ${{ inputs.image-name }}
 
@@ -296,12 +296,11 @@ jobs:
       # ============================================
       # 步骤3：检出部署工作流仓库（获取模板）
       # ============================================
-      - name: 📥 Checkout Deploy Workflows (for templates)
-        uses: actions/checkout@v6
+      - name: 📥 Fetch Deploy Workflows (for templates)
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
         with:
-          repository: kamalyes/deploy-pipeline
-          ref: master
           path: _deploy-workflows
+          assets: templates
 
       # ============================================
       # 步骤4：生成 K8s 资源清单（使用模板）
@@ -436,7 +435,7 @@ jobs:
           echo "============================================="
           echo "资源清单内容:"
           echo "============================================="
-          for file in ${DEPLOY_DIR}/*.yaml; do
+          for file in "${DEPLOY_DIR}"/*.yaml; do
             echo ""
             echo "--- $(basename "$file") ---"
             if [ "$(basename "$file")" = "configmap.yaml" ]; then
@@ -519,7 +518,7 @@ jobs:
 
             # 只检查新 ReplicaSet 的 Pod，忽略正在终止的旧 Pod
             if [ -n "$NEW_RS_HASH" ]; then
-              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH} \
+              PROBLEM_PODS=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l "app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH}" \
                 -o json | jq -r '.items[] | select(
                   (.status.containerStatuses[]?.restartCount // 0) > 3 or
                   (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
@@ -536,7 +535,7 @@ jobs:
               echo "警告: 新 ReplicaSet 中发现问题 Pod"
               for pod in $PROBLEM_PODS; do
                 echo "--- Pod: $pod ---"
-                kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=30 2>&1 || true
+                kubectl logs "$pod" -n "${{ env.NAMESPACE }}" --tail=30 2>&1 || true
               done
             fi
 
@@ -652,19 +651,18 @@ jobs:
     if: always() && inputs.notification-provider != 'none'
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout Deploy Workflows (for scripts)
-        uses: actions/checkout@v6
+      - name: 📥 Fetch Deploy Workflows (for scripts)
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
         with:
-          repository: kamalyes/deploy-pipeline
-          ref: master
           path: _deploy-workflows
+          assets: scripts
 
       # 通知是独立 job，GITHUB_ENV 不跨 job，所以这里要再解析一次，
       # 和 deploy job 读的是同一份 YAML，报出来的命名空间与端口不会两边不一致
       # [EN] Notification is its own job and GITHUB_ENV does not cross jobs, so the same YAML is
       # resolved again here, which keeps the reported namespace and port from drifting
       - name: ⚙️ Resolve Pipeline Config
-        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
         with:
           sections: ports kube notify
           secret-sections: notify

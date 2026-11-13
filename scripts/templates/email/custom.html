@@ -1,0 +1,28 @@
+<!--
+  场景：自定义通知（PR 开启 / PR 合并 / 任何由调用方给标题和正文的通知）
+  [EN] Scenario: custom notifications, used by the PR-opened and PR-merged flows and by any
+  caller that supplies its own title and body
+
+  正文来自 CUSTOM_MESSAGE，经 send-email.py 做 Markdown 子集转换后注入 {{BODY_HTML}}：
+  只支持 **粗体**、`代码`、[链接](url)、换行和 - 列表，因为这几样就是飞书 / Telegram
+  那边已经在用的写法，调用方不必为邮件单独准备一份正文
+  [EN] The body comes from CUSTOM_MESSAGE, converted by send-email.py from the same Markdown
+  subset the Lark and Telegram paths already accept, so a caller writes the body once
+-->
+<tr>
+  <td class="px" style="padding:0 36px;">
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="rule" style="border:1px solid #e9edf1;border-radius:10px;">
+      <tr>
+        <td class="ink" style="padding:20px 22px;font-size:14px;line-height:1.85;color:#2b323b;">
+          {{BODY_HTML}}
+        </td>
+      </tr>
+    </table>
+
+    {{DETAIL_ROWS_WRAPPED}}
+
+    {{BUTTON}}
+
+  </td>
+</tr>

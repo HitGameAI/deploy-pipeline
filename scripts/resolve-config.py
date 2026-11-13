@@ -67,10 +67,79 @@ def fingerprint(value):
 
 # ==================== YAML 解析 | YAML parsing ====================
 
-def parse_yaml(text, origin, errors):
+def yaml_hint(raw, line):
+    """按出错那一行的形状给一条可操作的提示，不回显内容。
+
+    最常见的坏法是块标量只缩进了第一行：写法本身对（键后面有 |），但 YAML 要求整段
+    都缩进到同一层，只缩第一行的话第二行就跳出了块，解析器在那之后才报
+    「找不到期望的 :」 贴 PEM 私钥或 kubeconfig 时几乎必然这样，因为复制过来的
+    原文没有缩进
+
+    光给行列号的话，看报错的人只知道第 6 行有问题，不知道该怎么改 —— 而在密钥文档里
+    那一行还会被 GitHub 打码，所以提示必须靠结构推出来，不能靠回显内容
+
+    [EN] Returns an actionable hint derived from the shape of the offending line without echoing
+    it. The common failure is a block scalar with only its first line indented: the syntax is
+    right, since the key is followed by |, but YAML wants the whole body at one indent level, so
+    the second line leaves the block and the parser only reports a missing colon somewhere after
+    it. Pasting a PEM key or a kubeconfig hits this every time, because the copied text carries
+    no indentation. A bare line number tells the reader where but not what, and inside a secrets
+    document that line is masked by GitHub anyway, so the hint has to come from structure.
+    """
+    if not (0 <= line < len(raw)):
+        return ""
+    cur = raw[line]
+    if cur[:1] in (" ", "\t"):
+        if cur.lstrip().startswith("-"):
+            return "；这一行是列表项，而这份配置里每一节都是键值表 | lists are not used here"
+        return ""
+    if not cur.strip() or cur.lstrip().startswith("#"):
+        return ""
+
+    # 往上找最近的块标量声明，形如「  key: |」
+    # 中间跨过的都是它的正文（正是这些行该缩进却没缩进）
+    # [EN] Look upward for the nearest block scalar declaration; everything in between is its
+    # body, which is exactly what should have been indented
+    decl = re.compile(r'^(\s*)([\w.-]+)\s*:\s*[|>][-+]?\d*\s*$')
+    for k in range(line - 1, -1, -1):
+        hit = decl.match(raw[k])
+        if hit:
+            want = len(hit.group(1)) + 2
+            # 提示里只写裸键名，不拼「键: |」
+            #
+            # GitHub 对多行 secret 是逐行打码的，而这份文档里就有一行是「键: |」——
+            # 消息里出现同样的串，整段提示会被打成 ***，于是又看不见了
+            # 实测过：中文那半成了「上面「***」那一段」，英文那半因为只写裸键名反而留着
+            #
+            # [EN] The hint carries the bare key name and never the "key: |" form: GitHub masks a
+            # multi-line secret line by line, and one of this document's lines is exactly
+            # "key: |", so repeating that string gets the whole hint replaced by *** -- measured,
+            # with the Chinese half masked and the English half surviving because it used the
+            # bare name
+            return ("；键「%s」后面那个块标量只缩进了第一行 —— 块标量要求整段都缩进到同一层，"
+                    "把它的每一行都缩进 %d 个空格 | the block scalar under \"%s\" has only its "
+                    "first line indented; indent every line of the body by %d spaces"
+                    % (hit.group(2), want, hit.group(2), want))
+        # 碰到一个「键: 值」形式的缩进行，说明不是块标量的问题
+        # [EN] An indented key-value line means this is not a block scalar problem
+        if raw[k][:1] in (" ", "\t") and ":" in raw[k] and raw[k].split(":", 1)[1].strip():
+            key = raw[k].split(":", 1)[0].strip()
+            return ("；这一行没有缩进，往上第一个配置项是键「%s」—— 多行值要在键名后面写一个"
+                    "竖线，再把内容整体缩进两格 | a multi-line value needs a pipe after \"%s\" "
+                    "with the body indented" % (key, key))
+    return "；这一行没有缩进，顶层只能是节名 | this line is not indented"
+
+def parse_yaml(text, origin, errors, redact=False):
     """解析一段 YAML；语法错误带行列号报出来，像 k3s 校验配置文件那样。
 
-    [EN] Parse one YAML document, reporting syntax errors with line and column.
+    redact=True 时不回显出错那一行：密钥文档里那一行就是密钥本身，
+    GitHub 会把它打码成 ***，于是报错里唯一有用的信息反而没了 ——
+    实测过的现象是「YAML 语法错误 第 6 行第 1 列：***」，看不出该改什么
+
+    [EN] Parse one YAML document, reporting syntax errors with line and column. With redact the
+    offending line is not echoed: inside a secrets document that line is the secret itself, so
+    GitHub masks it to *** and the only useful part of the error disappears -- the observed
+    symptom is literally "invalid YAML at line 6 column 1: ***"
     """
     if text is None or not text.strip():
         return {}
@@ -79,10 +148,12 @@ def parse_yaml(text, origin, errors):
     except yaml.YAMLError as exc:
         where = ""
         mark = getattr(exc, "problem_mark", None)
+        raw = text.split("\n")
         if mark is not None:
             where = " 第 %d 行第 %d 列" % (mark.line + 1, mark.column + 1)
-            raw = text.split("\n")
-            if 0 <= mark.line < len(raw):
+            if redact:
+                where += yaml_hint(raw, mark.line)
+            elif 0 <= mark.line < len(raw):
                 where += "：%s" % raw[mark.line].rstrip()
         problem = getattr(exc, "problem", None) or str(exc).split("\n")[0]
         errors.append("%s: YAML 语法错误%s（%s）| invalid YAML" % (origin, where, problem))
@@ -94,7 +165,6 @@ def parse_yaml(text, origin, errors):
                       % (origin, type(data).__name__))
         return {}
     return data
-
 
 def leaves(node, prefix=""):
     """把嵌套 YAML 压平成「点号路径 → 值」，便于逐项对照 schema。
@@ -244,23 +314,97 @@ def listify(value):
     return value if isinstance(value, list) else [value]
 
 
+def escaped_block_keys(raw_text, unknown):
+    """找出「块标量正文跑到顶层」的那些键；unknown 是本文档里不认识的顶层节名。
+
+    只靠缩进判断不行：块标量正文后面退回到更浅的缩进本来就是**正常结束**，
+    后面跟着的往往是一个合法的兄弟节 区别在于退回后那一行是什么 ——
+    是合法配置节就正常，是不认识的名字就说明那些行本该还在块里
+
+    kubeconfig 正是后者：它自己的 clusters / contexts / users 都是合法 YAML 键，
+    所以解析不报错，只是全都变成了这份文档的顶层节
+
+    [EN] Indentation alone is not enough: a block scalar body returning to a shallower indent is
+    the normal way the block ends, and what follows is usually a legitimate sibling section. The
+    difference is what that line is -- a valid section means all is well, an unrecognised name
+    means those lines belonged inside the block. A kubeconfig is the latter case, since its own
+    clusters, contexts and users are valid YAML keys, so nothing fails to parse and they all
+    simply become top-level sections of this document.
+    """
+    if not raw_text or not unknown:
+        return []
+    lines = raw_text.split("\n")
+    bad = []
+    for i, line in enumerate(lines):
+        stripped = line.rstrip()
+        if not stripped or not line[:1].isspace():
+            continue
+        if not (stripped.endswith(("|", "|-", "|+", ">", ">-", ">+")) and ":" in stripped):
+            continue
+        decl_indent = len(line) - len(line.lstrip())
+        key = stripped.split(":", 1)[0].strip()
+        body_seen = False
+        for j in range(i + 1, len(lines)):
+            nxt = lines[j]
+            if not nxt.strip():
+                continue
+            indent = len(nxt) - len(nxt.lstrip())
+            if indent > decl_indent:
+                body_seen = True
+                continue
+            # 退回到声明层或更浅：块在这里结束，看这一行是不是认识的节名
+            # [EN] Back at or above the declaration's indent: the block ends here, so check
+            # whether this line is a section we know
+            if body_seen and nxt.split(":", 1)[0].strip() in unknown:
+                bad.append(key)
+            break
+    return bad
+
+
 def check_tree(tree, schema_sections, origin, errors, single_section=None,
-               secret_sections=None):
+               secret_sections=None, raw_text=None):
     """逐项对照 schema 校验键名：未知键报错并给「是否想写」提示。
 
-    single_section 不为空时，tree 本身就是那一节的内容（分节变量的情形）。
+    single_section 不为空时，tree 本身就是那一节的内容（--check --section 的情形）。
+    raw_text 给未知节的提示用：有它才能看出是不是块标量的正文跑到了顶层。
     [EN] Check every leaf path against the schema and suggest the closest valid key for an
-    unknown one. With single_section set, tree is the body of that one section.
+    unknown one. With single_section set, tree is the body of that one section. raw_text lets
+    the unknown-section hint tell whether a block scalar's body escaped to the top level.
     """
     if single_section:
         groups = [(single_section, tree)]
     else:
+        # 块标量的正文跑到顶层时，只报这一条就够了
+        #
+        # 那种情形下每一行跑出去的内容都会被当成一个未知节：kubeconfig 会一次报出
+        # clusters / contexts / current-context / kind / users 五条，每条还各附一个
+        # 毫不相干的「是否想写 docker？」 五条噪音盖住了唯一的真问题
+        #
+        # [EN] One error is enough when a block scalar body escapes: every escaped line becomes
+        # an unknown section, so a kubeconfig reports five at once, each with an unrelated
+        # did-you-mean, and the noise buries the single real problem
+        unknown = {str(n) for n in tree if str(n) not in schema_sections}
+        escaped = escaped_block_keys(raw_text, unknown)
+        if escaped:
+            names = dict.fromkeys(escaped)
+            errors.append(
+                "%s: %s后面那个块标量的正文没有整段缩进，跑出去的行被当成了顶层配置节"
+                "（%s）—— 块标量要求正文每一行都缩进到同一层"
+                " | the block scalar body under %s is not fully indented and its escaped lines "
+                "were read as top-level sections"
+                % (origin,
+                   "、".join("键「%s」" % k for k in names),
+                   " ".join(sorted(unknown)),
+                   " / ".join(names)))
+            return {}
+
         groups = []
         for name, body in tree.items():
             name = str(name)
             if name not in schema_sections:
                 hint = difflib.get_close_matches(name, list(schema_sections), n=1, cutoff=0.4)
-                tail = "，是否想写 %s？" % hint[0] if hint else "，可用的节：%s" % " ".join(schema_sections)
+                tail = ("，是否想写 %s？" % hint[0] if hint
+                        else "，可用的节：%s" % " ".join(schema_sections))
                 errors.append("%s: 未知配置节 %r%s | unknown section" % (origin, name, tail))
                 continue
             # 一节写了但下面是空的（键全注释掉了，或只写了 env: {}）：当空表，不报错
@@ -313,7 +457,6 @@ def check_tree(tree, schema_sections, origin, errors, single_section=None,
 
 
 # ==================== 解析优先级 | Precedence ====================
-
 def pick(section, path, spec, sources, repo_name):
     """按优先级取值：分节 YAML > 总表 YAML > input > 旧式 vars > 默认值。
 
@@ -328,10 +471,24 @@ def pick(section, path, spec, sources, repo_name):
     for name in listify(spec.get("input")):
         if name in sources["inputs"]:
             value = sources["inputs"][name]
-            # 沿用原先 ${{ inputs.x || vars.X || '默认' }} 的语义：空串与 false 都算「没传」
-            # [EN] Mirrors the original expression chain, where an empty string and false both
-            # mean "not provided"
-            if value not in (None, "", False):
+            # 沿用原先 ${{ inputs.x || vars.X || '默认' }} 的语义：空串算「没传」
+            #
+            # false 只在**非 bool 键**上算「没传」—— 那是为了兼容字符串形态的开关
+            # （调用方传 "" 表示不覆盖）。但 bool 键的 false 是真实取值：
+            # workflow_call 的 boolean input 在调用方省略时会取 default，
+            # 所以「省略」和「显式传 false」在 inputs 里长得一样是不可能的，
+            # 把 false 当没传的后果是**默认为 true 的开关永远关不掉**
+            #
+            # 实测过的后果：go-toolbox 的调用处明明写了 gofmt-check: false，
+            # 解析结果仍是 true，于是 gofmt 闸门照跑、CI 常红
+            # 受影响的键：golib.gofmt_check、golib.bump_run_tests、branch.clean_features
+            #
+            # [EN] An empty string still means "not provided", but false counts as a real value
+            # for bool-typed keys. A workflow_call boolean input falls back to its default when
+            # omitted, so treating false as unset makes any switch defaulting to true impossible
+            # to turn off -- measured: a caller passing gofmt-check: false still resolved to true
+            unset = (None, "") if spec.get("type") == "bool" else (None, "", False)
+            if value not in unset:
                 return scalar(value), "input:%s" % name
 
     for name in listify(spec.get("var")):
@@ -624,7 +781,7 @@ def main(argv):
         tree = parse_yaml(aggregate, "vars.PIPELINE_CONFIG", errors)
         yaml_layers.append(("vars.PIPELINE_CONFIG",
                             check_tree(tree, sections, "vars.PIPELINE_CONFIG", errors,
-                                       None, secret_sections)))
+                                       None, secret_sections, raw_text=aggregate)))
 
     config_file = env_text("CONFIG_FILE").strip()
     if config_file:
@@ -639,9 +796,12 @@ def main(argv):
     # 密钥：secrets.PIPELINE_SECRETS 走 secrets 侧的 schema
     # [EN] Secrets come from secrets.PIPELINE_SECRETS, validated against the secrets schema
     secrets_blob = github_secrets.get("PIPELINE_SECRETS")
+    # redact：出错那一行是密钥本身，回显会被 GitHub 打成 ***，等于没有报错信息
+    # [EN] redact, because the offending line is the secret and echoing it yields only ***
     secrets_tree = parse_yaml(secrets_blob if isinstance(secrets_blob, str) else "",
-                              "secrets.PIPELINE_SECRETS", errors)
-    from_secrets = check_tree(secrets_tree, secret_sections, "secrets.PIPELINE_SECRETS", errors)
+                              "secrets.PIPELINE_SECRETS", errors, redact=True)
+    from_secrets = check_tree(secrets_tree, secret_sections, "secrets.PIPELINE_SECRETS", errors,
+                              raw_text=secrets_blob if isinstance(secrets_blob, str) else "")
     if errors:
         fail(errors)
 
