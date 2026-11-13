@@ -244,7 +244,7 @@ jobs:
       # [EN] Every setting goes through this step first: validated, merged and exported through
       # GITHUB_ENV for the steps that follow
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
           sections: ports kube
           secret-sections: kube
@@ -264,7 +264,7 @@ jobs:
 
       - name: Normalize Docker Image Name
         id: image-name
-        uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
         with:
           image-name: ${{ inputs.image-name }}
 
@@ -299,8 +299,8 @@ jobs:
       - name: 📥 Checkout Deploy Workflows (for templates)
         uses: actions/checkout@v6
         with:
-          repository: HitGameAI/deploy-pipeline
-          ref: e27e7b04c144fd95251696be20971c66ab3c0652
+          repository: kamalyes/deploy-pipeline
+          ref: master
           path: _deploy-workflows
 
       # ============================================
@@ -436,7 +436,7 @@ jobs:
           echo "============================================="
           echo "资源清单内容:"
           echo "============================================="
-          for file in ${DEPLOY_DIR}/*.yaml; do
+          for file in "${DEPLOY_DIR}"/*.yaml; do
             echo ""
             echo "--- $(basename "$file") ---"
             if [ "$(basename "$file")" = "configmap.yaml" ]; then
@@ -519,7 +519,7 @@ jobs:
 
             # 只检查新 ReplicaSet 的 Pod，忽略正在终止的旧 Pod
             if [ -n "$NEW_RS_HASH" ]; then
-              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH} \
+              PROBLEM_PODS=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l "app=${{ inputs.app-name }},pod-template-hash=${NEW_RS_HASH}" \
                 -o json | jq -r '.items[] | select(
                   (.status.containerStatuses[]?.restartCount // 0) > 3 or
                   (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
@@ -536,7 +536,7 @@ jobs:
               echo "警告: 新 ReplicaSet 中发现问题 Pod"
               for pod in $PROBLEM_PODS; do
                 echo "--- Pod: $pod ---"
-                kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=30 2>&1 || true
+                kubectl logs "$pod" -n "${{ env.NAMESPACE }}" --tail=30 2>&1 || true
               done
             fi
 
@@ -655,8 +655,8 @@ jobs:
       - name: 📥 Checkout Deploy Workflows (for scripts)
         uses: actions/checkout@v6
         with:
-          repository: HitGameAI/deploy-pipeline
-          ref: e27e7b04c144fd95251696be20971c66ab3c0652
+          repository: kamalyes/deploy-pipeline
+          ref: master
           path: _deploy-workflows
 
       # 通知是独立 job，GITHUB_ENV 不跨 job，所以这里要再解析一次，
@@ -664,7 +664,7 @@ jobs:
       # [EN] Notification is its own job and GITHUB_ENV does not cross jobs, so the same YAML is
       # resolved again here, which keeps the reported namespace and port from drifting
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
           sections: ports kube notify
           secret-sections: notify

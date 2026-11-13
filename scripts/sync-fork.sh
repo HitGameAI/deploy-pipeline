@@ -71,8 +71,31 @@ owner_of() {
     | cut -d/ -f1
 }
 
+# 仓库名也要取：替换必须是 <org>/<repo> 这个整体，不能只换裸组织名
+#
+# 只换裸组织名会连带改掉内容里正当的同组织引用 本仓库的
+# docs/12-dependency-graph.md 与 scripts/dep-graph.py 里就有
+# github.com/<org>/go-dbsync 这类真实模块路径，dep-graph.py 的 startswith 判断
+# 更是功能性的 —— 一刀切换完，依赖图会去扫一个不存在的组织，而且不报错
+#
+# [EN] The repository name is taken as well, because the replacement has to be the whole
+# <org>/<repo> and not the bare organization name: swapping the bare name also rewrites
+# legitimate same-organization references in the content, such as the real module paths
+# github.com/<org>/go-dbsync in docs/12-dependency-graph.md and scripts/dep-graph.py, whose
+# startswith test is functional rather than cosmetic, so a blanket swap silently points the
+# dependency graph at an organization that does not exist
+repo_of() {
+  local url
+  url="$(cd "$1" && git remote get-url origin 2>/dev/null || true)"
+  printf '%s\n' "${url}" \
+    | sed -E 's|^git@[^:]+:||; s|^https?://[^/]+/||; s|\.git$||' \
+    | cut -d/ -f2
+}
+
 FROM_ORG="$(owner_of "${SRC}")"
 TO_ORG="$(owner_of "${DEST}")"
+FROM_REF="${FROM_ORG}/$(repo_of "${SRC}")"
+TO_REF="${TO_ORG}/$(repo_of "${DEST}")"
 if [ -z "${FROM_ORG}" ] || [ -z "${TO_ORG}" ]; then
   exit 1
 fi
@@ -83,7 +106,7 @@ fi
 
 echo "📦 来源 : ${SRC}  (${FROM_ORG})"
 echo "📦 去向 : ${DEST}  (${TO_ORG})"
-echo "🔁 改写 : ${FROM_ORG} → ${TO_ORG}"
+echo "🔁 改写 : ${FROM_REF} → ${TO_REF}"
 [ -n "${FORCE}" ] && echo "💣 强制 : 对面多出来的文件会被删掉"
 [ -n "${CHECK_ONLY}" ] && echo "👀 模式 : 只检查，不落盘"
 echo ""
@@ -99,18 +122,87 @@ if [ "${#targets[@]}" -eq 0 ]; then
   exit 1
 fi
 
+# 两份有意不同的文件：不同步，也不当成「漏了」
+#
+# 这两份副本只有「自引用的组织前缀」该不同 —— 曾经是这样 现在多了一条：
+# 一份保留旧式单个 vars / secrets 这套兼容入口，另一份已经砍掉、只认聚合配置
+# 下面这几个文件正是承载这个差异的地方
+#
+# 为什么必须显式列出来：整份覆盖会把兼容层一起抹掉，而每一步都是成功的 ——
+# 真发生过一次，一次同步删掉了 schema 里 116 个旧键名、resolve-config 的旧解析层
+# 和 action 的 config-file 入参，--check 的输出里只看到「~ 已更新」三个字
+#
+# 这张清单怎么来的：逐个比对两份不同的文件，数 vars.XXX / secrets.XXX / 旧式 / config-file
+# 的出现次数，哪边多就说明兼容信息在哪边 —— 当前是 18 个文件在 kamalyes 那侧更多
+# 以后要复核就重跑这个口径，别凭印象增删
+#
+# 代价是这些文件以后要手工把对应改动搬到两边，脚本不再替你做
+# 还能自动同步的是真正共用的那部分：k8s 模板、notify.sh、send-email.py、make-config.py、
+# 配置页面，以及 05 / 07 / 10 / 12 这几篇文档
+#
+# [EN] Files the two copies differ in on purpose: not synced, and not reported as missing. The
+# copies were once identical apart from the organization prefix in their self-references; now one
+# keeps the legacy per-key vars/secrets entry points while the other recognizes only the
+# aggregate document, and the files below are where that difference lives. They must be listed
+# explicitly because a wholesale copy would erase the compatibility layer with every step
+# reporting success -- which happened: one sync removed 116 legacy key names from the schema, the
+# legacy resolution layers from resolve-config and the config-file input from the action, and
+# --check showed nothing but "~ updated". The cost is that changes to these files must be carried
+# to both copies by hand.
+KEEP_DIVERGENT=(
+  # 配置解析本身：一份认旧式单个 vars / secrets 与 action 的 config-file 入参，
+  # 另一份只认聚合配置 schema 里那一百多个旧键名也在这里
+  "scripts/config/schema.yaml"
+  "scripts/resolve-config.py"
+  ".github/actions/resolve-config/action.yml"
+  "scripts/self-test.py"
+
+  # 工作流：inputs 的描述里写着「overrides vars.XXX」，指向的正是旧式单个变量这条入口
+  ".github/workflows/backend-build-binary.yml"
+  ".github/workflows/backend-build-docker.yml"
+  ".github/workflows/backend-deploy-k8s.yml"
+  ".github/workflows/branch-cut.yml"
+  ".github/workflows/branch-recycle.yml"
+  ".github/workflows/cleanup-artifacts.yml"
+  ".github/workflows/code-quality.yml"
+  ".github/workflows/frontend-build-docker.yml"
+  ".github/workflows/frontend-deploy-k8s.yml"
+  ".github/workflows/pr-merged-notify.yml"
+  ".github/workflows/pr-opened-notify.yml"
+  "templates/golib/trigger-downstream.yml"
+
+  # 文档：成段讲旧式单个变量怎么配、哪些仍然有效
+  "docs/02-workflows.md"
+  "docs/03-configuration.md"
+  "docs/09-composite-actions.md"
+  "docs/11-self-check.md"
+)
+
+is_divergent() {
+  local rel="$1" keep
+  for keep in "${KEEP_DIVERGENT[@]}"; do
+    [ "${rel}" = "${keep}" ] && return 0
+  done
+  return 1
+}
+
 changed=0
 added=0
+skipped=()
 for rel in "${targets[@]}"; do
   src_file="${SRC}/${rel}"
   [ -f "${src_file}" ] || continue
+  if is_divergent "${rel}"; then
+    skipped+=("${rel}")
+    continue
+  fi
   dest_file="${DEST}/${rel}"
 
   # 只对文本文件换前缀，其它按字节复制
   # [EN] The prefix swap applies to text files; everything else is copied byte for byte
   case "${rel}" in
     *.yml|*.yaml|*.md|*.sh|*.py|*.json|*.txt)
-      new_content="$(sed "s|${FROM_ORG}|${TO_ORG}|g" "${src_file}")"
+      new_content="$(sed "s|${FROM_REF}|${TO_REF}|g" "${src_file}")"
       ;;
     *)
       new_content="$(cat "${src_file}")"
@@ -140,6 +232,12 @@ echo ""
 echo "📊 新增 ${added} 个，更新 ${changed} 个"
 echo ""
 
+if [ "${#skipped[@]}" -gt 0 ]; then
+  echo ""
+  echo "⏭️  已跳过 ${#skipped[@]} 个（两份有意不同，见脚本顶部 KEEP_DIVERGENT）:"
+  printf '   %s\n' "${skipped[@]}"
+fi
+
 # 对面多出来的文件：默认只列出来，--force 才删
 # [EN] Files only on the other side are listed by default and deleted only under --force
 only_dest="$(
@@ -162,18 +260,24 @@ else
   echo "✅ 两边文件集合一致"
 fi
 
-# 换前缀漏网检查：同步完对面不该再出现来源组织名
-# [EN] After the swap, the source organization must not appear on the other side
+# 换前缀漏网检查：同步完对面不该再出现指向来源仓库的自引用
+#
+# 查的是 <org>/<repo> 而不是裸组织名：后者会把内容里正当的同组织引用也判成残留，
+# 逼着替换一刀切 —— 校验和缺陷互相掩护，两边一起错
+#
+# [EN] The check looks for <org>/<repo> rather than the bare organization name, which would
+# flag legitimate same-organization references as residue and force the blanket swap that
+# causes the corruption, the check and the defect covering for each other
 if [ -z "${CHECK_ONLY}" ]; then
   echo ""
-  leftover="$(cd "${DEST}" && grep -rln "${FROM_ORG}" --exclude-dir=.git . || true)"
+  leftover="$(cd "${DEST}" && grep -rln "${FROM_REF}" --exclude-dir=.git . || true)"
   if [ -n "${leftover}" ]; then
-    echo "❌ ${DEST} 里还残留 ${FROM_ORG}：" >&2
+    echo "❌ ${DEST} 里还残留 ${FROM_REF}：" >&2
     printf '     %s\n' ${leftover} >&2
     echo "二进制文件或没列进扩展名白名单的文件会漏，检查一下那几个" >&2
     exit 1
   fi
-  echo "✅ 对面已无 ${FROM_ORG} 残留"
+  echo "✅ 对面已无 ${FROM_REF} 残留"
   echo ""
   echo "下一步：cd ${DEST} && git diff --stat && git add -A && git commit"
 fi

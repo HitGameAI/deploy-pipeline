@@ -72,7 +72,7 @@ jobs:
       # [EN] Not actions/checkout: under workflow_call it checks out the calling repository,
       # which does not contain scripts/
       - name: 📥 Fetch Pipeline Assets (scripts)
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
         with:
           assets: scripts
 
@@ -91,6 +91,11 @@ jobs:
           cd _deploy-workflows
           mkdir -p out
 
+          # shellcheck disable=SC2086
+          # SECTIONS 是空格分隔的节名清单，必须让 shell 拆成多个参数
+          # 加引号会把 "ports docker kube" 当成一个节名传进去，直接报未知配置节
+          # [EN] SECTIONS is a space-separated list of section names and has to word-split;
+          # quoting it would pass the whole list as one name and be rejected as unknown
           python3 scripts/resolve-config.py --print-example ${SECTIONS} > out/pipeline-config.yaml
           python3 scripts/resolve-config.py --print-example --secrets > out/pipeline-secrets.yaml
 
@@ -157,7 +162,14 @@ jobs:
             echo "✅ 按总表校验通过" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          for s in ports docker kube builder cleanup service branch notify; do
+          # 节名从配置表读，不写死：写死过一次，漏了 golib 与 env 两节，
+          # 于是贴 golib 配置进来会报「不匹配任何一节」，而它其实完全合法
+          # [EN] The section names come from the schema rather than a literal list: the literal
+          # list had drifted and omitted two sections, so pasting a valid body for either was
+          # rejected as matching no section at all
+          sections="$(python3 -c 'import yaml,sys; print(" ".join(yaml.safe_load(open("scripts/config/schema.yaml"))["sections"]))')"
+          echo "逐节试：${sections}"
+          for s in ${sections}; do
             if python3 scripts/resolve-config.py --check to-check.yaml --section "$s" >/dev/null 2>&1; then
               echo "✅ 按 \`$s\` 节校验通过（贴的是分节变量的内容）" >> "$GITHUB_STEP_SUMMARY"
               python3 scripts/resolve-config.py --check to-check.yaml --section "$s"

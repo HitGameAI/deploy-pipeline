@@ -307,7 +307,7 @@ jobs:
       # [EN] Every setting goes through this step first
       - name: ⚙️ Resolve Pipeline Config
         id: config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
           sections: cleanup
           vars-json: ${{ toJSON(vars) }}

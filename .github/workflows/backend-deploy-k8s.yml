@@ -302,18 +302,31 @@ jobs:
       # [EN] Every setting goes through this step first: the YAML is validated, the layers are
       # merged and the result is exported through GITHUB_ENV for the steps that follow
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
-          sections: ports docker kube
-          secret-sections: kube app
+          sections: ports docker kube service
+          secret-sections: kube app go config
           vars-json: ${{ toJSON(vars) }}
           inputs-json: ${{ toJSON(inputs) }}
           secrets-json: ${{ toJSON(secrets) }}
           summary: 'true'
 
+
+      # create-github-app-token 的 owner 与 repositories 要分开传，所以在这里拆
+      # [EN] create-github-app-token takes the owner and the repository separately
+      - name: Split Config Repo
+        if: ${{ env.CONFIG_REPO != '' }}
+        run: |
+          set -uo pipefail
+          case "${CONFIG_REPO}" in
+            */*) : ;;
+            *) echo "::error::service.config_repo 要写成 owner/name，当前是 ${CONFIG_REPO}" >&2; exit 1 ;;
+          esac
+          echo "CONFIG_REPO_OWNER=${CONFIG_REPO%%/*}" >> "$GITHUB_ENV"
+          echo "CONFIG_REPO_NAME=${CONFIG_REPO##*/}" >> "$GITHUB_ENV"
       - name: Normalize Docker Image Name
         id: image-name
-        uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
         with:
           image-name: ${{ inputs.image-name }}
 
@@ -345,14 +358,681 @@ jobs:
       # [EN] Not actions/checkout: inside a reusable workflow GITHUB_TOKEN is scoped to the
       # calling repository and cannot read this private one, and GitHub answers 404 rather than
       # 403, so the error reads as a missing repository when it is a permission
+
+      # 不用 actions/checkout 取本仓库：复用工作流里 GITHUB_TOKEN 的作用域是调用方仓库，
+      # 对本私有仓库没有读权限，GitHub 返回 404 而不是 403，报错是
+      # "remote: Repository not found."，看着像仓库不存在其实是没权限
+      # 详见 .github/actions/fetch-pipeline-assets/action.yml 的说明
+      # [EN] Not actions/checkout: inside a reusable workflow GITHUB_TOKEN is scoped to the
+      # calling repository and cannot read this private one, and GitHub answers 404 rather than
+      # 403, so the error reads as a missing repository when it is a permission
+      # 配置仓库要用 App token，不能用 GITHUB_TOKEN
+      #
+      # 复用工作流里 GITHUB_TOKEN 的作用域是**调用方仓库**，对配置仓库没有读权限
+      # 而 GitHub 对无权访问的私有仓库返回 404 而不是 403（避免泄漏仓库是否存在），
+      # 所以失败信息是 "remote: Repository not found."，看起来像仓库名写错了
+      # Settings → Actions → General → Access 只放开 uses: 对私有 workflow/action 的引用，
+      # 不给 checkout 提供凭据，开了也修不掉这一步 —— 与 fetch-pipeline-assets 同一个结论
+      #
+      # [EN] The config repository needs an App token rather than GITHUB_TOKEN, which inside a
+      # reusable workflow is scoped to the calling repository and cannot read it. GitHub answers
+      # 404 instead of 403 for a private repository you cannot see, so the failure reads
+      # "Repository not found" and looks like a wrong name. The Access setting only grants uses:
+      # references and supplies no credentials to checkout, so enabling it does not help --
+      # the same conclusion as in fetch-pipeline-assets
+      - name: 🔑 Mint Token For Config Repo
+        id: config-token
+        if: ${{ env.CONFIG_REPO != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ env.CONFIG_REPO_OWNER }}
+          repositories: ${{ env.CONFIG_REPO_NAME }}
+          # 明确要 contents:read，把「App 权限不够」挪到这一步暴露
+          #
+          # 「装到仓库上」与「读得到文件」是两件事，在 GitHub 后台也是两个页面：
+          # Install App → Repository access 决定 App 覆盖哪些仓库，
+          # App 设置 → Repository permissions → Contents 决定能不能读文件
+          # 只给前者不给后者时，mint 照样成功，发出来的 token 只有 metadata，
+          # git clone 于是报 "Repository not found" —— 与「App 没装」的报错一字不差，
+          # 照着「把仓库加进清单」改永远改不好，因为清单本来就是对的
+          # 把权限写进 token 申请之后，App 没有 contents 权限时 GitHub 直接回 422，
+          # 失败点落在 mint 这一步，报错里也会写明是权限而不是仓库
+          #
+          # [EN] Ask for contents:read explicitly so an under-permissioned App fails here.
+          # Being installed on a repository and being able to read its files are two separate
+          # settings on two separate pages: Install App -> Repository access decides which
+          # repositories the App covers, while the App's Repository permissions -> Contents
+          # decides whether files can be read. With the former but not the latter the mint still
+          # succeeds and hands out a metadata-only token, so git clone answers "Repository not
+          # found" -- byte for byte the error of an App that is not installed, and editing the
+          # repository list never fixes it because that list was already right. Requesting the
+          # permission makes GitHub answer 422 at mint time and name the permission
+          permission-contents: read
+      # 换不到 App token 时给一句能直接动手的提示
+      #
+      # create-github-app-token 失败时只抛一个裸状态码，从里面看不出要去哪里修，
+      # 而两种原因在 GitHub 后台是两个不同的页面，指错了会一直改不对：
+      #   404  GET /repos/<owner>/<repo>/installation —— App 没覆盖这个仓库
+      #        GitHub 对「App 没覆盖该仓库」返回 404 而不是 403（不泄漏仓库是否存在），
+      #        所以它读起来像仓库名写错了
+      #   422  POST /app/installations/<id>/access_tokens —— App 没有上面申请的
+      #        contents 权限，或者权限改过但这次安装还没批准
+      # 下面那步 checkout 的提示本来写了第一条，但 mint 这一步先挂，那句提示来不及打出来
+      #
+      # [EN] An actionable hint when the App token cannot be minted. create-github-app-token
+      # throws only a bare status code, which says nothing about where to fix it, while the two
+      # causes live on two different pages of the GitHub UI and aiming at the wrong one never
+      # fixes anything: a 404 from GET /repos/<owner>/<repo>/installation means the App does not
+      # cover the repository, and GitHub answers 404 rather than 403 there so it reads like a
+      # wrong name; a 422 from POST /app/installations/<id>/access_tokens means the App lacks the
+      # contents permission requested above, or its permissions changed and this installation has
+      # not approved them yet. The checkout step below carries the first hint already, but
+      # minting fails first and that hint never prints.
+      - name: 🧭 换不到 token 时怎么修
+        if: ${{ failure() && steps.config-token.outcome == 'failure' }}
+        run: |
+          echo "::error::换不到访问 ${CONFIG_REPO} 的 App token" >&2
+          echo "::error::看上面那步抛的状态码：404 是 App 没装到该仓库，422 是 App 没有 Contents 权限 —— 都不是仓库名写错" >&2
+          echo "::error::404 的修法：GitHub App 设置页 → Install App → 把 ${CONFIG_REPO_NAME} 加进仓库清单" >&2
+          echo "::error::422 的修法：同一个 App 的设置页 → Permissions → Repository permissions → Contents 给 Read-only，改完要在组织里批准这次权限变更" >&2
+          echo "::error::注意要装的是 PIPELINE_SECRETS 里 go.app_id 那个 App，不是别的" >&2
+          {
+            echo "## 🧭 换不到配置仓库的 App token"
+            echo ""
+            echo "两种原因，看上面那步抛的状态码分："
+            echo ""
+            echo "| 状态码 | 出处 | 原因 |"
+            echo "| --- | --- | --- |"
+            echo "| 404 | \`GET /repos/${CONFIG_REPO}/installation\` | App 没覆盖这个仓库 |"
+            echo "| 422 | \`POST /app/installations/<id>/access_tokens\` | App 没有 Contents 权限 |"
+            echo ""
+            echo "GitHub 对「App 没覆盖该仓库」返回 **404 而不是 403**，"
+            echo "所以这个报错读起来像仓库不存在 —— 但 \`${CONFIG_REPO}\` 是存在的，"
+            echo "只是这个 App 看不到它"
+            echo ""
+            echo "### 404 的修法：把仓库加进清单"
+            echo ""
+            echo "1. 打开 \`go.app_id\` 对应那个 GitHub App 的设置页"
+            echo "2. Install App → 选 \`${CONFIG_REPO_OWNER}\`"
+            echo "3. Repository access 里把 \`${CONFIG_REPO_NAME}\` 加进去"
+            echo ""
+            echo "### 422 的修法：把 Contents 权限给上"
+            echo ""
+            echo "1. 同一个 App 的设置页 → Permissions → Repository permissions"
+            echo "2. **Contents** 选 **Read-only**（只读就够，流水线只克隆不回写）"
+            echo "3. 保存后组织里会多一条待批准的权限变更，批了才对已有安装生效"
+            echo ""
+            echo "> 这两件事是分开的：仓库加进清单只决定 App 看得见哪些仓库，"
+            echo "> 看得见不等于读得到文件 —— 读文件要的是 Contents 权限"
+            echo ""
+            echo "> 装的必须是同一个 App 换个 App 装上去也不行 ——"
+            echo "> 流水线用的是 \`go.app_id\` / \`go.app_private_key\` 这一对"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+      - name: 📥 Fetch Service Config
+        if: ${{ env.CONFIG_REPO != '' }}
+        env:
+          GH_TOKEN: ${{ steps.config-token.outputs.token }}
+          # 带出实际用的是哪个 App：提示里反复强调「必须是 go.app_id 那个 App」，
+          # 可日志里一直查不到用的到底是哪个，只能回去翻 secret 对 app_id
+          # [EN] Carry out which App was actually used: the hints insist it must be the one in
+          # go.app_id, yet the log never said which one it was
+          APP_SLUG: ${{ steps.config-token.outputs.app-slug }}
+        run: |
+          set -uo pipefail
+          # {name} / {env} 在这里替换，而不是让调用方自己拼：
+          # 路径约定是 <服务>/<环境>，写在 schema 的默认值里，一处改全局生效
+          # [EN] The placeholders are substituted here rather than by each caller, so the
+          # <service>/<environment> convention lives in one schema default
+          CONFIG_PATH_RESOLVED="${CONFIG_REPO_PATH//\{name\}/${BINARY_NAME}}"
+          CONFIG_PATH_RESOLVED="${CONFIG_PATH_RESOLVED//\{env\}/${{ inputs.environment }}}"
+          echo "配置仓库 ${CONFIG_REPO}@${CONFIG_REF}  目录 ${CONFIG_PATH_RESOLVED}"
+
+          # sparse-checkout 只取要用的那一层，配置仓库大了也不会拖慢每次部署
+          # [EN] A sparse checkout takes only the directory in use, so a large config repository
+          # does not slow every deploy
+          if ! git clone --depth 1 --branch "${CONFIG_REF}" --filter=blob:none --sparse \
+               "https://x-access-token:${GH_TOKEN}@github.com/${CONFIG_REPO}.git" \
+               "${RUNNER_TEMP}/service-config" 2>"${RUNNER_TEMP}/clone.err"; then
+            sed 's/^/    /' "${RUNNER_TEMP}/clone.err" >&2 || true
+            echo "::error::拉不到配置仓库 ${CONFIG_REPO}@${CONFIG_REF}" >&2
+
+            # 用同一个 token 问两个问题，把三种原因分开
+            #
+            # git 对「仓库不在 App 的清单里」和「App 没有 Contents 权限」都只说
+            # Repository not found，一个字都不差，而这两件事的修法是 GitHub 后台
+            # 两个不同的页面 —— 原来这里一句话断定是前者，于是给了把仓库加进清单的指引，
+            # 清单本来就是对的那次就会卡死在这里，改多少遍都没用
+            # 上面 mint 那步已经申请了 contents:read，权限不够正常会在那里先挂，
+            # 这里兜住的是 token 换好之后权限才被改掉、以及分支压根不存在那两种
+            #   /installation/repositories  只要 metadata 权限就能列，列不到 → 不在清单里
+            #   /repos/<repo>/contents/     列到了却读不了 → Contents 权限没给
+            #   两个都正常                  → 凭据没问题，按 git 原文查（多半是分支不存在）
+            #
+            # [EN] Ask the same token two questions to tell the three causes apart. git answers
+            # "Repository not found" word for word both for a repository outside the App's list
+            # and for an App without the Contents permission, yet the two are fixed on two
+            # different pages of the GitHub UI -- this used to assert the former and hand out
+            # instructions to add the repository to the list, so a run whose list was already
+            # right got stuck here no matter how many times it was edited. The mint step above
+            # already requests contents:read, so a missing permission normally fails there;
+            # what is caught here is a permission revoked after the token was minted, and a ref
+            # that simply does not exist. Listing /installation/repositories needs only metadata,
+            # so a repository missing from it is outside the list; one that is listed but whose
+            # contents cannot be read means the Contents permission was never granted; both
+            # answering normally means the credential is fine and the git message is the lead
+            api() {
+              curl -sS -o "$2" -w '%{http_code}' \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "https://api.github.com/$1" || true
+            }
+            LIST_CODE=$(api "installation/repositories?per_page=100" "${RUNNER_TEMP}/probe-list.json")
+            READ_CODE=$(api "repos/${CONFIG_REPO}/contents/" "${RUNNER_TEMP}/probe-read.json")
+            echo "::notice::token 自检：App ${APP_SLUG}，列安装清单 ${LIST_CODE}，读仓库内容 ${READ_CODE}"
+
+            if [ "${READ_CODE}" = "200" ]; then
+              echo "::error::这个 token 读得到 ${CONFIG_REPO} 的内容，所以凭据和权限都没问题" >&2
+              echo "::error::按上面 git 的原文查：报 Remote branch not found 就是 service.config_ref 写的 ${CONFIG_REF} 这个分支不存在" >&2
+              FIX="ref"
+            elif tr -d ' \n' < "${RUNNER_TEMP}/probe-list.json" | grep -Fq "\"full_name\":\"${CONFIG_REPO}\""; then
+              echo "::error::${CONFIG_REPO} 已经在这个 App 的仓库清单里了 —— 所以不是「没装」，Install App 那页不用再改" >&2
+              echo "::error::缺的是读文件的权限：App 设置页 → Permissions → Repository permissions → Contents 给 Read-only" >&2
+              echo "::error::改完组织里会多一条待批准的权限变更，批准了才对已经装好的安装生效" >&2
+              FIX="contents"
+            else
+              echo "::error::这个 token 的仓库清单里没有 ${CONFIG_REPO} —— App 没覆盖这个仓库" >&2
+              echo "::error::修法：GitHub App 设置页 → Install App → Repository access 里把 ${CONFIG_REPO_NAME} 加进去" >&2
+              echo "::error::注意要装的是 PIPELINE_SECRETS 里 go.app_id 那个 App，不是别的" >&2
+              FIX="install"
+            fi
+
+            {
+              echo "## ❌ 拉不到配置仓库 \`${CONFIG_REPO}@${CONFIG_REF}\`"
+              echo ""
+              echo "git 的原文："
+              echo ""
+              echo '```'
+              cat "${RUNNER_TEMP}/clone.err"
+              echo '```'
+              echo ""
+              echo "令牌来自 App \`${APP_SLUG}\` —— 要改权限就改这一个，换个 App 改了不算"
+              echo ""
+              echo "用同一个 token 自检：列安装清单 \`${LIST_CODE}\`，读仓库内容 \`${READ_CODE}\`"
+              echo ""
+              case "${FIX}" in
+                ref)
+                  echo "### 凭据没问题，是 ref 不对"
+                  echo ""
+                  echo "token 读得到这个仓库的内容，所以 App 装好了、权限也给了"
+                  echo "把 \`service.config_ref\`（当前 \`${CONFIG_REF}\`）改成配置仓库里真实存在的分支"
+                  ;;
+                contents)
+                  echo "### 仓库装好了，缺 Contents 权限"
+                  echo ""
+                  echo "\`${CONFIG_REPO}\` 已经在这个 App 的仓库清单里，**Install App 那页不用再改**"
+                  echo "缺的是读文件的权限 —— 这是另一个页面："
+                  echo ""
+                  echo "1. \`go.app_id\` 对应那个 GitHub App 的设置页 → Permissions"
+                  echo "2. Repository permissions → **Contents** 选 **Read-only**（只读就够，流水线只克隆不回写）"
+                  echo "3. 保存后组织里会多一条待批准的权限变更，批了才对已有安装生效"
+                  echo ""
+                  echo "> 「装到仓库上」和「读得到文件」是两件事："
+                  echo "> 前者决定 App 看得见哪些仓库，后者决定看得见的能不能读"
+                  echo "> 没有 Contents 权限时 token 只有 metadata，git 的回答就是 Repository not found ——"
+                  echo "> 与「App 没装」一字不差，所以这个报错以前一直被当成装没装的问题"
+                  ;;
+                *)
+                  echo "### App 没覆盖这个仓库"
+                  echo ""
+                  echo "这个 token 的仓库清单里没有 \`${CONFIG_REPO}\`"
+                  echo ""
+                  echo "1. 打开 \`go.app_id\` 对应那个 GitHub App 的设置页"
+                  echo "2. Install App → 选 \`${CONFIG_REPO_OWNER}\`"
+                  echo "3. Repository access 里把 \`${CONFIG_REPO_NAME}\` 加进去"
+                  ;;
+              esac
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git -C "${RUNNER_TEMP}/service-config" sparse-checkout set "${CONFIG_PATH_RESOLVED}"
+
+          DIR="${RUNNER_TEMP}/service-config/${CONFIG_PATH_RESOLVED}"
+          if [ ! -d "${DIR}" ]; then
+            echo "::error::配置仓库里没有 ${CONFIG_PATH_RESOLVED} 这个目录" >&2
+            echo "::error::目录约定是 <服务>/<环境>；服务名取 service.binary_name（当前 ${BINARY_NAME}），环境取本次部署的 ${{ inputs.environment }}" >&2
+            exit 1
+          fi
+          echo "CONFIGMAP_DIR=${DIR}" >> "$GITHUB_ENV"
+          echo "取到 $(find "${DIR}" -maxdepth 1 -type f | wc -l | tr -d ' ') 个文件"
+
+      # 配置仓库里的密文在这里解开：sops + age，私钥只以 0600 落在 runner 的临时目录
+      #
+      # 为什么用 sops 而不是自己写一套：age 公钥可以明文写进配置仓库的 .sops.yaml，
+      # 谁都能加密、只有持私钥的 pipeline 能解；且 sops 只加密值、保留键名，
+      # 配置仓库的 diff 仍然看得出改了哪一项 —— 整份文件 base64 之后就只剩「变了」
+      #
+      # 明文一律落在 ${RUNNER_TEMP}/config-plain（700），绝不写回配置目录：
+      # 配置目录里的文件会被后面整进 ConfigMap，而 ConfigMap 在集群里是明文可读的，
+      # 把解开的东西放回去，这一层加密就白做了
+      #
+      # 两类密文分两条路：
+      #   secrets.enc.yaml  扁平的 KEY: value，走环境变量（并进业务 Secret，secretKeyRef 引用）
+      #   其余 *.enc.*      按文件挂载，走单独的 Secret（与 ConfigMap 一起 projected 到同一目录）
+      #
+      # [EN] Ciphertext from the config repository is decrypted here with sops + age, the private
+      # key living only in a 0600 file on the runner. sops is used rather than a hand-rolled
+      # scheme because an age public key can sit in the repository's .sops.yaml so anyone can
+      # encrypt while only the pipeline can decrypt, and because sops encrypts values while
+      # keeping key names, so the repository's diffs still show which setting changed. Plaintext
+      # goes to a 0700 directory and is never written back next to the ciphertext, since files in
+      # the config directory are swept into the ConfigMap, which is readable in plaintext
+      # in-cluster. secrets.enc.yaml, a flat KEY: value map, becomes environment variables in the
+      # service Secret; every other *.enc.* file is mounted as a file from a Secret of its own,
+      # projected into the same directory as the ConfigMap.
+      - name: 🔓 Decrypt Service Config
+        if: ${{ env.CONFIGMAP_DIR != '' }}
+        env:
+          # 固定版本：解密是部署的硬依赖，latest 哪天改了行为会让所有服务一起起不来
+          # [EN] Pinned: decryption is a hard dependency of every deploy, and a behavior change
+          # in a floating latest would break all services at once
+          SOPS_VERSION: v3.9.1
+          AGE_KEY: ${{ env.CONFIG_AGE_KEY }}
+          APP_SECRETS_FILE: ${{ env.PIPELINE_APP_SECRETS_FILE }}
+        run: |
+          set -uo pipefail
+
+          # 明文配置里的 *Env: 声明要在这里补扫，而且与「有没有密文」无关
+          #
+          # setup 侧扫的是**服务仓库**里那份配置 配置搬进配置仓库之后它看不到这些声明，
+          # 不生成 secretKeyRef，容器就拿不到那些环境变量 —— 而服务会带着空值起来，
+          # 表现是运行期认证失败，不是部署失败，排查要翻到服务日志里才看得见
+          #
+          # 口径与 service-vars.sh 第 3 节完全一致：yaml 里以 Env 结尾的配置项，
+          # 它的值是**环境变量的名字**，代码再 os.Getenv 去取
+          #
+          # [EN] The *Env: declarations in the plaintext config are rescanned here regardless of
+          # whether anything is encrypted. The setup side scans the copy in the service
+          # repository, so once the config moved to the config repository it no longer sees these
+          # declarations, emits no secretKeyRef, and the container never receives those variables
+          # -- and the service starts with empty values, which surfaces as a runtime
+          # authentication failure rather than a failed deploy, visible only in the service log.
+          # The rule matches section 3 of service-vars.sh: a yaml setting whose name ends in Env
+          # holds the name of an environment variable that the code resolves with os.Getenv.
+          secrets_json=""
+          names_file="${RUNNER_TEMP}/plain-env-names"
+          : > "${names_file}"
+          while IFS= read -r cfg; do
+            case "$(basename "${cfg}")" in
+              .*) continue ;;
+              *.enc.*) continue ;;
+            esac
+            grep -oE "^[[:space:]]*[A-Za-z]+Env:[[:space:]]*[A-Z_][A-Z0-9_]*" "${cfg}" 2>/dev/null \
+              | awk '{print $NF}' >> "${names_file}" || true
+          done < <(find "${CONFIGMAP_DIR}" -maxdepth 1 -type f | sort)
+          sort -u -o "${names_file}" "${names_file}"
+          plain_count="$(grep -c . "${names_file}" || true)"
+          if [ "${plain_count}" -gt 0 ]; then
+            echo "配置仓库的明文配置里扫出 ${plain_count} 个密钥环境变量："
+            sed 's/^/  /' "${names_file}"
+          fi
+
+          mapfile -t enc < <(find "${CONFIGMAP_DIR}" -maxdepth 1 -type f -name '*.enc.*' | sort)
+          if [ "${#enc[@]}" -eq 0 ]; then
+            echo "配置目录里没有 *.enc.* 密文，不解密"
+          else
+          echo "待解密 ${#enc[@]} 个："
+          printf '  %s\n' "${enc[@]##*/}"
+
+          # 先挡住「名字带 .enc. 但根本没加密」这一种
+          #
+          # 不挡的话它会走进下面的解密循环，报「解不开」，而那句提示指向「不是用这把公钥
+          # 加密的」，会把人带去查配置仓库的 .sops.yaml —— 方向完全错了
+          # 更要紧的是这种情况不只是部署失败：内容已经以明文进过 git，
+          # 光在本机加密回去不够，对应的密钥必须换掉
+          #
+          # 判定只看形态（有没有 sops 元数据块），不需要私钥，所以这一步比 AGE_KEY 检查更早
+          #
+          # [EN] Files whose name says .enc. but which were never encrypted are rejected first.
+          # Otherwise they reach the decryption loop and fail with "cannot decrypt", whose hint
+          # points at a public-key mismatch and sends the reader to the config repository's
+          # .sops.yaml -- entirely the wrong direction. More importantly this is not merely a
+          # failed deploy: the content already reached git as plaintext, so re-encrypting locally
+          # is not enough and the secrets themselves must be rotated. The test is shape only -- is
+          # the sops metadata block present -- so it needs no key and runs before the AGE_KEY check
+          notenc=()
+          for f in "${enc[@]}"; do
+            # 内层展开要单独加引号（SC2295）：不加的话 CONFIGMAP_DIR 里的 glob 字符
+            # 会被当成模式去匹配，前缀裁剪的结果就不是想要的那个
+            # [EN] The inner expansion is quoted separately (SC2295): otherwise glob characters in
+            # CONFIGMAP_DIR are treated as a pattern and the prefix is stripped incorrectly
+            grep -qE '^(sops:|[[:space:]]*"sops":)' "${f}" 2>/dev/null || notenc+=("${f#"${CONFIGMAP_DIR}"/}")
+          done
+          if [ "${#notenc[@]}" -gt 0 ]; then
+            for f in "${notenc[@]}"; do
+              echo "::error::${f} 名字带 .enc. 但内容是明文，没有 sops 元数据块" >&2
+            done
+            echo "::error::在配置仓库本机跑 scripts/secrets.sh encrypt 加密后重新提交" >&2
+            echo "::error::这些内容已经以明文进过 git —— 光加密不够，对应的密钥要换掉" >&2
+            {
+              echo "## 🚨 配置仓库里有未加密的密钥文件"
+              echo ""
+              # sed 里的 $ 是行尾锚点，不是 shell 展开 —— SC2016 在这里是误判
+              # [EN] The $ belongs to sed as an end-of-line anchor, not a shell expansion
+              # shellcheck disable=SC2016
+              printf '%s\n' "${notenc[@]}" | sed 's/^/- `/; s/$/`/'
+              echo ""
+              echo "名字带 \`.enc.\` 的文件必须是 sops 密文 这几份是明文 ——"
+              echo "常见原因是用编辑器直接打开保存，把密文覆盖回去了"
+              echo ""
+              echo '```bash'
+              echo "scripts/secrets.sh encrypt      # 在配置仓库里跑"
+              echo "scripts/secrets.sh status       # 确认全是密文"
+              echo '```'
+              echo ""
+              echo "> 这些内容已经以明文进过 git，**对应的密钥要换掉** ——"
+              echo "> 光加密不够，历史里那一版还在"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [ -z "${AGE_KEY}" ]; then
+            echo "::error::配置仓库里有密文，但没配解密私钥 —— 在 PIPELINE_SECRETS 的 config 节填 age_key（AGE-SECRET-KEY- 开头那一行）" >&2
+            exit 1
+          fi
+
+          # umask 放在子 shell 里：直接 umask 会影响本步骤后面所有写文件的命令
+          # [EN] The umask is set inside a subshell; setting it directly would affect every later
+          # file this step writes
+          ( umask 077; printf '%s\n' "${AGE_KEY}" > "${RUNNER_TEMP}/age.key" )
+          mkdir -p "${RUNNER_TEMP}/config-plain"
+          chmod 700 "${RUNNER_TEMP}/config-plain"
+
+          sops_bin="${RUNNER_TEMP}/sops"
+          if ! curl -fsSL --retry 3 -o "${sops_bin}" \
+               "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64"; then
+            echo "::error::下载 sops ${SOPS_VERSION} 失败" >&2
+            exit 1
+          fi
+          chmod +x "${sops_bin}"
+
+          export SOPS_AGE_KEY_FILE="${RUNNER_TEMP}/age.key"
+          fail=0
+          for f in "${enc[@]}"; do
+            base="$(basename "${f}")"
+            # config.dev.enc.yaml → config.dev.yaml：只摘掉 .enc 这一节，扩展名留着
+            # [EN] Only the .enc segment is dropped, the real extension is kept
+            plain_name="$(printf '%s' "${base}" | sed 's/\.enc\././')"
+            case "${plain_name}" in
+              secrets.yaml|secrets.yml|secrets.json)
+                # 扁平映射转成 JSON 再解析，这样不依赖 PyYAML
+                # [EN] Converted to JSON so the parsing below needs no PyYAML
+                out="${RUNNER_TEMP}/config-plain/secrets.json"
+                args=(--output-type json)
+                secrets_json="${out}"
+                ;;
+              *)
+                out="${RUNNER_TEMP}/config-plain/${plain_name}"
+                args=()
+                ;;
+            esac
+            if ! ( umask 077; "${sops_bin}" --decrypt "${args[@]}" "${f}" > "${out}" ) 2>"${RUNNER_TEMP}/sops.err"; then
+              sed 's/^/    /' "${RUNNER_TEMP}/sops.err" >&2 || true
+              echo "::error::解不开 ${base}" >&2
+              echo "::error::最常见的原因是这份密文不是用 config 节那把私钥对应的公钥加密的 —— 核对配置仓库 .sops.yaml 里的 age 收件人" >&2
+              fail=1
+              continue
+            fi
+            echo "  ${base} → ${plain_name}"
+            # 密文从配置目录删掉，否则会被当成普通文件塞进 ConfigMap
+            # [EN] The ciphertext is removed so it is not swept into the ConfigMap as a plain file
+            rm -f "${f}"
+          done
+          [ "${fail}" -eq 0 ] || exit 1
+
+          # 解开的配置文件也要扫 *Env: —— 它们落在 config-plain 下，不在 CONFIGMAP_DIR 里，
+          # 上面那一轮（跳过 *.enc.*）看不到它们
+          # 整份加密的配置里一样可以写 *Env: 声明，漏扫的表现和明文那边一样：
+          # secretKeyRef 不生成，容器拿不到那个变量，而服务是带着空值起来的
+          # [EN] The decrypted config files must be scanned as well: they land under config-plain
+          # rather than CONFIGMAP_DIR, so the pass above, which skips *.enc.*, cannot see them. A
+          # fully encrypted config may declare *Env: just the same, and missing it has the same
+          # consequence -- no secretKeyRef, no variable, and a service that starts with an empty
+          # value
+          while IFS= read -r cfg; do
+            [ "$(basename "${cfg}")" = "secrets.json" ] && continue
+            grep -oE "^[[:space:]]*[A-Za-z]+Env:[[:space:]]*[A-Z_][A-Z0-9_]*" "${cfg}" 2>/dev/null \
+              | awk '{print $NF}' >> "${names_file}" || true
+          done < <(find "${RUNNER_TEMP}/config-plain" -maxdepth 1 -type f | sort)
+          sort -u -o "${names_file}" "${names_file}"
+          fi
+
+          # Secret 名与 setup 侧算出来的那个必须一致，否则 secretKeyRef 指向一个不存在的 Secret。
+          # resolve-config 不展开占位符（它只做校验与合并），所以 {name}/{env} 在这里展开
+          # [EN] The Secret name must match the one the setup side computed, or the secretKeyRef
+          # points at a Secret that does not exist. resolve-config only validates and merges, so
+          # the placeholders are expanded here
+          secret_name="${K8S_SECRET_NAME//\{name\}/${BINARY_NAME}}"
+          secret_name="${secret_name//\{env\}/${{ inputs.environment }}}"
+
+          # MERGE_PY 无条件跑：没有密文时它只负责把明文扫出来的名字补成 secretKeyRef
+          # [EN] Run unconditionally: with no ciphertext it still emits the secretKeyRef entries
+          # for the names scanned out of the plaintext config
+          SECRETS_JSON="${secrets_json}" SECRET_NAME="${secret_name}" \
+          PLAIN_ENV_NAMES_FILE="${names_file}" \
+          python3 -I - <<'MERGE_PY'
+          import json
+          import os
+          import sys
+
+          # 要补出 secretKeyRef 的环境变量名，两个来源：
+          #   1. 明文配置里的 *Env: 声明 —— 只有名字，值在 GitHub Secrets 或 app 节里
+          #   2. 解开的 secrets.enc.yaml —— 键名是变量名，值还要并进业务密钥文件
+          # [EN] Names needing a secretKeyRef come from two places: the *Env: declarations in the
+          # plaintext config, which carry only a name, and the decrypted secrets.enc.yaml, whose
+          # keys are names and whose values must also be merged into the service secrets file
+          names = []
+          plain_file = os.environ.get("PLAIN_ENV_NAMES_FILE") or ""
+          if plain_file and os.path.isfile(plain_file):
+              with open(plain_file, encoding="utf-8") as fh:
+                  for line in fh:
+                      name = line.strip()
+                      if name and name not in names:
+                          names.append(name)
+
+          flat = {}
+          secrets_json = os.environ.get("SECRETS_JSON") or ""
+          if secrets_json and os.path.isfile(secrets_json):
+              with open(secrets_json, encoding="utf-8") as fh:
+                  try:
+                      decrypted = json.load(fh)
+                  except json.JSONDecodeError as exc:
+                      sys.exit("::error::解开后的 secrets 不是合法映射（%s）" % exc)
+
+              if not isinstance(decrypted, dict):
+                  sys.exit("::error::secrets.enc.yaml 必须是扁平的 KEY: value 映射")
+
+              # 嵌套结构当场挡住：环境变量只能是字符串，让它静默变成 "{'a': 1}" 注进容器，
+              # 服务会拿着一个看着像配置的垃圾值跑起来，比在这里失败难查得多
+              # [EN] A nested value is rejected here: an environment variable can only be a string,
+              # and silently injecting "{'a': 1}" would start the service with a plausible-looking
+              # garbage value, far harder to diagnose than failing now
+              bad = []
+              for key, value in decrypted.items():
+                  if isinstance(value, (dict, list)):
+                      bad.append(key)
+                  elif isinstance(value, bool):
+                      flat[key] = "true" if value else "false"
+                  elif value is None:
+                      flat[key] = ""
+                  else:
+                      flat[key] = str(value)
+              if bad:
+                  sys.exit("::error::这些项的值是嵌套结构，不能当环境变量注入：%s"
+                           % " ".join(sorted(bad)))
+
+              # 解开的值要打码，否则后面任何一步不小心回显就留在日志里
+              # GitHub 按行打码，所以多行值逐行加
+              # [EN] Decrypted values are masked, since GitHub masks line by line and any later
+              # step echoing one would otherwise leave it in the log
+              for value in flat.values():
+                  for line in value.split("\n"):
+                      if len(line) >= 4:
+                          print("::add-mask::%s" % line)
+
+              # 并进 resolve-config 留下的那份业务密钥；没有 app 节时这里自己建一份
+              # [EN] Merged into the file resolve-config left behind, or created here when there
+              # is no app section
+              path = os.environ.get("APP_SECRETS_FILE") or ""
+              existing = {}
+              if path and os.path.isfile(path):
+                  with open(path, encoding="utf-8") as fh:
+                      existing = json.load(fh)
+              else:
+                  path = os.path.join(os.environ.get("RUNNER_TEMP") or "/tmp",
+                                      "pipeline-app-secrets.json")
+
+              # 撞名直接失败，不猜哪边该赢：同一个密钥在 PIPELINE_SECRETS 的 app 节和配置仓库
+              # 里各写一份，两边迟早会不一致，而不一致时服务拿到哪个值完全取决于这里的默认，
+              # 排查时根本看不出来
+              # [EN] A clash fails instead of picking a winner: the same secret written both in
+              # the app section and in the config repository will drift, and which value the
+              # service receives would then depend on a default that is invisible while debugging
+              clash = sorted(set(existing) & set(flat))
+              if clash:
+                  sys.exit("::error::这些密钥在 PIPELINE_SECRETS 的 app 节和配置仓库里都有，"
+                           "删掉其中一处：%s" % " ".join(clash))
+
+              existing.update(flat)
+              old = os.umask(0o077)
+              try:
+                  with open(path, "w", encoding="utf-8") as fh:
+                      json.dump(existing, fh)
+              finally:
+                  os.umask(old)
+              os.chmod(path, 0o600)
+
+              for key in sorted(flat):
+                  if key not in names:
+                      names.append(key)
+
+          if not names:
+              sys.exit(0)
+
+          entries = []
+          for key in names:
+              entries.append("- name: %s\n  valueFrom:\n    secretKeyRef:\n      name: %s\n"
+                             "      key: %s\n      optional: true"
+                             % (key, os.environ["SECRET_NAME"], key))
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write("EXTRA_SECRET_ENV_BLOCK<<EOF_SECRET_ENV_BLOCK\n")
+              fh.write("\n".join(entries) + "\n")
+              fh.write("EOF_SECRET_ENV_BLOCK\n")
+          print("配置仓库补出 %d 个密钥环境变量 → Secret %s"
+                % (len(entries), os.environ["SECRET_NAME"]), file=sys.stderr)
+          MERGE_PY
+          if [ -n "${secrets_json}" ]; then
+            echo "PIPELINE_APP_SECRETS_FILE=${APP_SECRETS_FILE:-${RUNNER_TEMP}/pipeline-app-secrets.json}" >> "$GITHUB_ENV"
+          fi
+
+          # 按文件挂载的那批：交给下面的步骤同步成 Secret
+          # [EN] The files mounted as files: handed to the step below that syncs them into a Secret
+          if find "${RUNNER_TEMP}/config-plain" -maxdepth 1 -type f ! -name secrets.json | grep -q .; then
+            echo "CONFIG_FILES_DIR=${RUNNER_TEMP}/config-plain" >> "$GITHUB_ENV"
+            echo "CONFIG_FILES_SECRET=${secret_name}-files" >> "$GITHUB_ENV"
+          fi
+
+      # setup 传来的那份 env 块，加上上一步从配置仓库补出来的那份，按名字去重后给后面所有
+      # 消费方用。为什么要单独一步写进 GITHUB_ENV，而不是在渲染那步里本地合并：
+      # 同步 Secret、核对注入值两步各自解析这个块拿密钥名单，它们是独立的步骤、读不到
+      # 别的步骤 shell 里的变量；合并结果只留在渲染步里，这两步就只看得见服务仓库那份 ——
+      # 只在配置仓库声明的密钥会被 secretKeyRef 引用、却从没被写进 Secret，
+      # Pod 直接卡在 CreateContainerConfigError
+      #
+      # [EN] The block from setup plus the one the previous step rescanned from the config
+      # repository, de-duplicated by name, for every consumer downstream. It is its own step
+      # writing to GITHUB_ENV rather than a local merge inside the render step because the secret
+      # sync and the injection check parse this block for the key list in steps of their own,
+      # which cannot see another step's shell variables. Keeping the merged result inside the
+      # render step would leave those two seeing only the service repository's half, so a secret
+      # declared solely in the config repository would be referenced by a secretKeyRef and never
+      # written into the Secret, leaving the Pod in CreateContainerConfigError.
+      - name: 🧩 Merge Env Block
+        run: |
+          set -uo pipefail
+          export RAW="${RUNNER_TEMP}/env-block.raw"
+          printf '%s\n%s\n' "$EXTRA_ENV_BLOCK_INPUT" "${EXTRA_SECRET_ENV_BLOCK:-}" > "$RAW"
+          # 去重用 heredoc 喂 python，而不是 python3 -c '多行程序'：run: | 是 YAML 块标量，
+          # -c 里的程序会按本块缩进原样带进去，顶格的 import 一出现就跳出块、整份 workflow
+          # 解析失败；heredoc 的体由 YAML 统一剥离到 0 缩进
+          # [EN] The de-duplication is fed through a heredoc rather than python3 -c with a
+          # multi-line program: run: | is a YAML block scalar, so the program's lines keep this
+          # block's indentation and the first column-zero import breaks out of the scalar and
+          # fails the whole workflow. A heredoc body is dedented by YAML
+          python3 -I - > "${RUNNER_TEMP}/env-block.yaml" <<'DEDUP_PY'
+          import os
+          import sys
+
+          raw = open(os.environ["RAW"], encoding="utf-8").read()
+          entries, cur = [], []
+          for line in raw.split("\n"):
+              if line.startswith("- name: "):
+                  if cur:
+                      entries.append(cur)
+                  cur = [line]
+              elif cur:
+                  cur.append(line)
+          if cur:
+              entries.append(cur)
+
+          # 撞名以先出现的为准，也就是服务仓库那份压配置仓库那份。
+          # 两份都是指向同一个 Secret 的 secretKeyRef，取哪份结果一样，
+          # 要的只是「结果稳定」：按字典序或按后来者会让同一份配置在两次部署间漂
+          # [EN] On a clash the first occurrence wins, which is the service repository's half over
+          # the config repository's. Both are secretKeyRef entries pointing at the same Secret so
+          # the outcome is identical either way; what matters is that it is deterministic, since
+          # ordering by name or letting the later one win would let the same configuration drift
+          # between two deploys
+          seen, kept = set(), []
+          for entry in entries:
+              name = entry[0][len("- name: "):].strip()
+              if not name or name in seen:
+                  continue
+              seen.add(name)
+              kept.append("\n".join(l for l in entry if l.strip()))
+          sys.stdout.write("\n".join(kept))
+          DEDUP_PY
+          {
+            echo "MERGED_ENV_BLOCK<<EOF_MERGED_ENV_BLOCK"
+            cat "${RUNNER_TEMP}/env-block.yaml"
+            echo ""
+            echo "EOF_MERGED_ENV_BLOCK"
+          } >> "$GITHUB_ENV"
+          echo "容器 env 条目 $(grep -c '^- name: ' "${RUNNER_TEMP}/env-block.yaml" || true) 个"
       - name: 📥 Fetch Pipeline Assets (templates)
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
         with:
           assets: templates
 
       - name: 📝 Generate K8s Manifests
         id: manifests
         run: |
+          # 下面用 printf 拼 YAML 片段的那些赋值拆成两行
+          #
+          # 不是因为 printf 会失败（它不会），而是 shellcheck 的 SC2155 在 actionlint 的
+          # 调用下只对紧随其后的一条命令生效、不是文件级，要压掉就得写十七个 disable 注释，
+          # 那比拆开更难读
+          # 只拆带命令替换的那些，export VAR="字面量" 一律不动
+          #
+          # [EN] The printf-built assignments below are split in two. Not because printf can
+          # fail, which it cannot, but because under actionlint a shellcheck directive applies
+          # only to the command that follows rather than the whole script, so suppressing these
+          # would take seventeen separate comments, which reads worse. Only assignments with a
+          # command substitution are touched; a plain literal is left alone
           echo "Generating Kubernetes manifests for: ${{ inputs.binary-name }}"
           echo "  Namespace: ${{ env.NAMESPACE }}"
           echo "  Image: ${{ steps.image-name.outputs.image-name }}"
@@ -371,8 +1051,10 @@ jobs:
 
           # HTTP 端口可选：部分服务（如纯 WS/gRPC 服务）无 HTTP 端口，设为空/0/none 则跳过
           if [ -n "${{ env.HTTP_PORT }}" ] && [ "${{ env.HTTP_PORT }}" != "0" ] && [ "${{ env.HTTP_PORT }}" != "none" ]; then
-            export DEPLOY_HTTP_PORT_BLOCK=$(printf '        - name: http\n          containerPort: %s\n          protocol: TCP\n' "${{ env.HTTP_PORT }}")
-            export SVC_HTTP_PORT_BLOCK=$(printf '    - name: http\n      port: %s\n      protocol: TCP\n      targetPort: http\n' "${{ env.HTTP_PORT }}")
+            export DEPLOY_HTTP_PORT_BLOCK
+            DEPLOY_HTTP_PORT_BLOCK=$(printf '        - name: http\n          containerPort: %s\n          protocol: TCP\n' "${{ env.HTTP_PORT }}")
+            export SVC_HTTP_PORT_BLOCK
+            SVC_HTTP_PORT_BLOCK=$(printf '    - name: http\n      port: %s\n      protocol: TCP\n      targetPort: http\n' "${{ env.HTTP_PORT }}")
           else
             export DEPLOY_HTTP_PORT_BLOCK=""
             export SVC_HTTP_PORT_BLOCK=""
@@ -380,8 +1062,10 @@ jobs:
 
           # RPC 端口可选：gateway 类服务无 gRPC 端口，设为空/0/none 则跳过
           if [ -n "${{ env.RPC_PORT }}" ] && [ "${{ env.RPC_PORT }}" != "0" ] && [ "${{ env.RPC_PORT }}" != "none" ]; then
-            export DEPLOY_RPC_PORT_BLOCK=$(printf '        - name: rpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.RPC_PORT }}")
-            export SVC_RPC_PORT_BLOCK=$(printf '    - name: rpc\n      port: %s\n      protocol: TCP\n      targetPort: rpc\n' "${{ env.RPC_PORT }}")
+            export DEPLOY_RPC_PORT_BLOCK
+            DEPLOY_RPC_PORT_BLOCK=$(printf '        - name: rpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.RPC_PORT }}")
+            export SVC_RPC_PORT_BLOCK
+            SVC_RPC_PORT_BLOCK=$(printf '    - name: rpc\n      port: %s\n      protocol: TCP\n      targetPort: rpc\n' "${{ env.RPC_PORT }}")
           else
             export DEPLOY_RPC_PORT_BLOCK=""
             export SVC_RPC_PORT_BLOCK=""
@@ -389,8 +1073,10 @@ jobs:
 
           # WebSocket 端口可选：部分服务需要 WebSocket 支持，设为空/0/none 则跳过
           if [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
-            export DEPLOY_WS_PORT_BLOCK=$(printf '        - name: ws\n          containerPort: %s\n          protocol: TCP\n' "${{ env.WS_PORT }}")
-            export SVC_WS_PORT_BLOCK=$(printf '    - name: ws\n      port: %s\n      protocol: TCP\n      targetPort: ws\n' "${{ env.WS_PORT }}")
+            export DEPLOY_WS_PORT_BLOCK
+            DEPLOY_WS_PORT_BLOCK=$(printf '        - name: ws\n          containerPort: %s\n          protocol: TCP\n' "${{ env.WS_PORT }}")
+            export SVC_WS_PORT_BLOCK
+            SVC_WS_PORT_BLOCK=$(printf '    - name: ws\n      port: %s\n      protocol: TCP\n      targetPort: ws\n' "${{ env.WS_PORT }}")
           else
             export DEPLOY_WS_PORT_BLOCK=""
             export SVC_WS_PORT_BLOCK=""
@@ -398,8 +1084,10 @@ jobs:
 
           # Pprof 端口可选：部分服务不需要 pprof，设为空/0/none 则跳过
           if [ -n "${{ env.PPROF_PORT }}" ] && [ "${{ env.PPROF_PORT }}" != "0" ] && [ "${{ env.PPROF_PORT }}" != "none" ]; then
-            export DEPLOY_PPROF_PORT_BLOCK=$(printf '        - name: pprof\n          containerPort: %s\n          protocol: TCP\n' "${{ env.PPROF_PORT }}")
-            export SVC_PPROF_PORT_BLOCK=$(printf '    - name: pprof\n      port: %s\n      protocol: TCP\n      targetPort: pprof\n' "${{ env.PPROF_PORT }}")
+            export DEPLOY_PPROF_PORT_BLOCK
+            DEPLOY_PPROF_PORT_BLOCK=$(printf '        - name: pprof\n          containerPort: %s\n          protocol: TCP\n' "${{ env.PPROF_PORT }}")
+            export SVC_PPROF_PORT_BLOCK
+            SVC_PPROF_PORT_BLOCK=$(printf '    - name: pprof\n      port: %s\n      protocol: TCP\n      targetPort: pprof\n' "${{ env.PPROF_PORT }}")
           else
             export DEPLOY_PPROF_PORT_BLOCK=""
             export SVC_PPROF_PORT_BLOCK=""
@@ -407,8 +1095,10 @@ jobs:
 
           # Node gRPC 端口可选：notify 服务多节点部署时启用节点间 gRPC 通信（其他服务默认跳过）
           if [ -n "${{ env.NODE_GRPC_PORT }}" ] && [ "${{ env.NODE_GRPC_PORT }}" != "0" ] && [ "${{ env.NODE_GRPC_PORT }}" != "none" ]; then
-            export DEPLOY_NODE_GRPC_PORT_BLOCK=$(printf '        - name: node-grpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.NODE_GRPC_PORT }}")
-            export SVC_NODE_GRPC_PORT_BLOCK=$(printf '    - name: node-grpc\n      port: %s\n      protocol: TCP\n      targetPort: node-grpc\n' "${{ env.NODE_GRPC_PORT }}")
+            export DEPLOY_NODE_GRPC_PORT_BLOCK
+            DEPLOY_NODE_GRPC_PORT_BLOCK=$(printf '        - name: node-grpc\n          containerPort: %s\n          protocol: TCP\n' "${{ env.NODE_GRPC_PORT }}")
+            export SVC_NODE_GRPC_PORT_BLOCK
+            SVC_NODE_GRPC_PORT_BLOCK=$(printf '    - name: node-grpc\n      port: %s\n      protocol: TCP\n      targetPort: node-grpc\n' "${{ env.NODE_GRPC_PORT }}")
           else
             export DEPLOY_NODE_GRPC_PORT_BLOCK=""
             export SVC_NODE_GRPC_PORT_BLOCK=""
@@ -432,9 +1122,12 @@ jobs:
 
           # 探针块：无可用端口时跳过探针
           if [ -n "${PROBE_PORT_NAME}" ]; then
-            export STARTUP_PROBE_BLOCK=$(printf '        startupProbe:\n          tcpSocket:\n            port: %s\n          failureThreshold: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.STARTUP_FAILURE_THRESHOLD }}" "${{ env.STARTUP_PERIOD }}")
-            export READINESS_PROBE_BLOCK=$(printf '        readinessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.READINESS_DELAY }}" "${{ env.READINESS_PERIOD }}")
-            export LIVENESS_PROBE_BLOCK=$(printf '        livenessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.LIVENESS_DELAY }}" "${{ env.LIVENESS_PERIOD }}")
+            export STARTUP_PROBE_BLOCK
+            STARTUP_PROBE_BLOCK=$(printf '        startupProbe:\n          tcpSocket:\n            port: %s\n          failureThreshold: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.STARTUP_FAILURE_THRESHOLD }}" "${{ env.STARTUP_PERIOD }}")
+            export READINESS_PROBE_BLOCK
+            READINESS_PROBE_BLOCK=$(printf '        readinessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.READINESS_DELAY }}" "${{ env.READINESS_PERIOD }}")
+            export LIVENESS_PROBE_BLOCK
+            LIVENESS_PROBE_BLOCK=$(printf '        livenessProbe:\n          tcpSocket:\n            port: %s\n          initialDelaySeconds: %s\n          periodSeconds: %s\n' "${PROBE_PORT_NAME}" "${{ env.LIVENESS_DELAY }}" "${{ env.LIVENESS_PERIOD }}")
           else
             export STARTUP_PROBE_BLOCK=""
             export READINESS_PROBE_BLOCK=""
@@ -446,7 +1139,8 @@ jobs:
           export METRICS_PORT="${{ env.METRICS_PORT }}"
           export METRICS_PATH="${{ env.METRICS_PATH }}"
           if [ -n "${{ env.METRICS_PORT }}" ] && [ "${{ env.METRICS_PORT }}" != "0" ] && [ "${{ env.METRICS_PORT }}" != "none" ]; then
-            export ANNOTATIONS_BLOCK=$(printf '      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "%s"\n        prometheus.io/path: "%s"\n' "${{ env.METRICS_PORT }}" "${{ env.METRICS_PATH }}")
+            export ANNOTATIONS_BLOCK
+            ANNOTATIONS_BLOCK=$(printf '      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "%s"\n        prometheus.io/path: "%s"\n' "${{ env.METRICS_PORT }}" "${{ env.METRICS_PATH }}")
             echo "Prometheus annotations will be injected (port: ${{ env.METRICS_PORT }}, path: ${{ env.METRICS_PATH }})"
           else
             export ANNOTATIONS_BLOCK=""
@@ -488,32 +1182,42 @@ jobs:
           fi
           export RUN_MODE="${{ inputs.environment }}"
           export CONFIGMAP_NAME="${{ inputs.configmap-name }}"
+          # 解密出来的那份配置的挂载来源；没有密文配置时整段留空，
+          # volume 就退回只有 ConfigMap 一个来源
+          # [EN] The mount source for the decrypted half; left empty when nothing was encrypted,
+          # so the volume falls back to the ConfigMap as its only source
+          if [ -n "${CONFIG_FILES_SECRET:-}" ]; then
+            export CONFIG_FILES_SOURCE_BLOCK
+            CONFIG_FILES_SOURCE_BLOCK="$(printf '          - secret:\n              name: %s\n              optional: true' "${CONFIG_FILES_SECRET}")"
+          else
+            export CONFIG_FILES_SOURCE_BLOCK=""
+          fi
           export CONFIG_MOUNT_PATH="${{ env.DOCKER_RUN_WORKDIR }}/resources"
+          # 容器里的工作目录与数据目录注进 env，让需要绝对路径的代码有唯一来源
+          #
+          # 配置文件里**不要**用它们：三个服务都是裸 conf.MustLoad、没开 UseEnv()，
+          # yaml 里的 ${VAR} 不会被展开 配置里要指镜像内的文件就写相对路径 ——
+          # 进程 cwd 就是 WORKDIR，cmd_args 默认值 `-f resources/{configfile}` 一直这么用
+          #
+          # [EN] The container's workdir and data directory are injected so code needing an
+          # absolute path has one source of truth. Config files must NOT reference them: all three
+          # services call conf.MustLoad without UseEnv(), so ${VAR} in yaml is never expanded; a
+          # config pointing at a file inside the image uses a relative path, since the process cwd
+          # is the WORKDIR -- which is how the cmd_args default `-f resources/{configfile}` works
+          export APP_WORKDIR="${{ env.DOCKER_RUN_WORKDIR }}"
+          export APP_DATA_DIR="${{ env.DOCKER_RUN_WORKDIR }}/data"
           # Extra env block: 自动缩进 8 空格对齐 env 条目，留空则不注入
           # 尾换行必须外挂 $'\n'：$(...) 命令替换会剥掉尾部换行，
           # 模板中本块与 POD_NAME 行同处一行，靠自带收尾换行断行（见 deployment.yaml 拼接处）
-          if [ -n "$EXTRA_ENV_BLOCK_INPUT" ]; then
-            export EXTRA_ENV_BLOCK="$(printf '%s' "$EXTRA_ENV_BLOCK_INPUT" | sed 's/^/        /')"$'\n'
+          # 合并后的那份由上面的 Merge Env Block 一步算好、经 GITHUB_ENV 传过来
+          # [EN] The merged block is computed by the Merge Env Block step above and arrives
+          # through GITHUB_ENV
+          if [ -n "${MERGED_ENV_BLOCK:-}" ]; then
+            export EXTRA_ENV_BLOCK
+            EXTRA_ENV_BLOCK="$(printf '%s' "$MERGED_ENV_BLOCK" | sed 's/^/        /')"$'\n'
           else
             export EXTRA_ENV_BLOCK=""
           fi
-
-          if [ -n "${{ inputs.config-yaml }}" ] && [ -f "${{ inputs.config-yaml }}" ]; then
-            CONFIG_BASENAME=$(basename "${{ inputs.config-yaml }}")
-
-            cat <<CMEOF > ${DEPLOY_DIR}/configmap.yaml
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: ${{ inputs.configmap-name }}
-            namespace: ${{ env.NAMESPACE }}
-          data:
-            ${CONFIG_BASENAME}: |
-          CMEOF
-            sed 's/^/    /' "${{ inputs.config-yaml }}" >> ${DEPLOY_DIR}/configmap.yaml
-            echo "ConfigMap generated"
-          fi
-
           : ${REPLICAS:=1}
           : ${REVISION_HISTORY_LIMIT:=10}
           : ${IMAGE_PULL_POLICY:=IfNotPresent}
@@ -570,13 +1274,14 @@ jobs:
             esac
             goml_mib=$((mem_mib * 10#$goml_pct / 100))
             if [ "$mem_mib" -ge 10 ] && [ "$goml_mib" -ge 1 ]; then
-              export GOMEMLIMIT_ENV_BLOCK="$(printf '        - name: GOMEMLIMIT\n          value: "%dMiB"' "$goml_mib")"$'\n'
+              export GOMEMLIMIT_ENV_BLOCK
+              GOMEMLIMIT_ENV_BLOCK="$(printf '        - name: GOMEMLIMIT\n          value: "%dMiB"' "$goml_mib")"$'\n'
               echo "GOMEMLIMIT injected: ${goml_mib}MiB (${goml_pct}% of ${MEMORY_LIMIT})"
             else
               echo "Warning: GOMEMLIMIT_PERCENT=${goml_pct} but MEMORY_LIMIT '${MEMORY_LIMIT}' unparsable or too small (need <n>Ki/Mi/Gi/Ti, >=10Mi), skip"
             fi
           fi
-          : ${GOMEMLIMIT_ENV_BLOCK:=}
+          : "${GOMEMLIMIT_ENV_BLOCK:=}"
 
           envsubst < _deploy-workflows/templates/k8s/backend/deployment.yaml > ${DEPLOY_DIR}/deployment.yaml
           echo "Deployment generated"
@@ -610,7 +1315,13 @@ jobs:
             # 必须置于主 route 之前，Traefik 按声明顺序匹配，更具体的 PathPrefix 优先
             if [ -n "${{ env.HTTP_PORT }}" ] && [ "${{ env.HTTP_PORT }}" != "0" ] && [ "${{ env.HTTP_PORT }}" != "none" ] \
                && [ -n "${{ env.WS_PORT }}" ] && [ "${{ env.WS_PORT }}" != "0" ] && [ "${{ env.WS_PORT }}" != "none" ]; then
-              export INGRESS_WS_ROUTE_BLOCK=$(printf '  - match: Host(`%s`) && PathPrefix(`/ws`)\n    kind: Rule\n    services:\n    - name: %s\n      port: %s\n' "${{ env.INGRESS_HOST }}" "${APP_NAME}" "${{ env.WS_PORT }}")
+              export INGRESS_WS_ROUTE_BLOCK
+              # shellcheck disable=SC2016
+          # 格式串必须用单引号：%s 要留给 printf 替换，\n 要保持转义，
+          # Traefik 规则里的反引号也必须原样进 YAML，换双引号会让 shell 先去展开
+          # [EN] The format must stay single-quoted: %s is printf's to substitute, \n must
+          # stay escaped, and the backticks in the Traefik rule go into the YAML verbatim
+          INGRESS_WS_ROUTE_BLOCK=$(printf '  - match: Host(`%s`) && PathPrefix(`/ws`)\n    kind: Rule\n    services:\n    - name: %s\n      port: %s\n' "${{ env.INGRESS_HOST }}" "${APP_NAME}" "${{ env.WS_PORT }}")
             else
               export INGRESS_WS_ROUTE_BLOCK=""
             fi
@@ -667,7 +1378,7 @@ jobs:
           echo "============================================="
           echo "Manifest contents:"
           echo "============================================="
-          for file in ${DEPLOY_DIR}/*.yaml; do
+          for file in "${DEPLOY_DIR}"/*.yaml; do
             echo ""
             echo "--- $(basename "$file") ---"
             if [ "$(basename "$file")" = "configmap.yaml" ]; then
@@ -676,6 +1387,138 @@ jobs:
               cat "$file"
             fi
           done
+      # ConfigMap 单独成一步，不是风格问题：GitHub 对「含 ${{ }} 的标量」有 21000 字符上限，
+      # 渲染那一步本来就有 138 处插值、21577 字符，加上这段 ConfigMap 生成直接越线，
+      # 报的是 Invalid workflow file / Exceeded max expression length —— 整个工作流不给跑
+      #
+      # 所以这一步的 run 体里一个 ${{ }} 都不留：要用的值走 env: 声明（每条都是独立的小标量），
+      # 不含表达式的标量根本不会被当模板，也就没有这个上限
+      #
+      # [EN] The ConfigMap is a step of its own for a hard reason: GitHub caps a scalar containing
+      # ${{ }} at 21000 characters, and the render step already had 138 interpolations across
+      # 21577 characters, so appending this generator pushed it over and the whole workflow was
+      # rejected with "Exceeded max expression length". This step's run body therefore contains no
+      # ${{ }} at all: the values it needs arrive through env:, each its own small scalar, and a
+      # scalar with no expression is never treated as a template and has no such limit.
+      - name: 📦 Generate ConfigMap
+        env:
+          CONFIG_YAML_INPUT: ${{ inputs.config-yaml }}
+          CONFIGMAP_NAME_INPUT: ${{ inputs.configmap-name }}
+          DEPLOY_DIR_INPUT: ${{ inputs.binary-source-dir }}
+        run: |
+          set -uo pipefail
+          DEPLOY_DIR="${DEPLOY_DIR_INPUT}"
+          mkdir -p "${DEPLOY_DIR}"
+
+          # ConfigMap 由 python 生成，不用 heredoc + sed 拼
+          #
+          # data 的每个值都是 YAML 块标量，正文每一行都要缩进到同一层
+          # 一份配置还能靠 sed 's/^/    /' 对付，但 service.configmap_dir 下的文件
+          # 行数与缩进都不可控，而拼错的现象是 kubectl 报键名不合规或整份 apply 失败，
+          # 报错里看不出是哪个文件写出来的
+          # [EN] The ConfigMap is generated with python rather than a heredoc and sed. Every data
+          # value is a YAML block scalar needing a uniform body indent; one config file can be
+          # handled with sed, but the files under service.configmap_dir have no predictable lines
+          # or indentation, and a mistake surfaces as kubectl rejecting a key or the whole apply
+          if [ -n "${CONFIG_YAML_INPUT}" ] || [ -n "${CONFIGMAP_DIR:-}" ]; then
+            CONFIG_YAML_PATH="${CONFIG_YAML_INPUT}" \
+            CONFIGMAP_NAME="${CONFIGMAP_NAME_INPUT}" \
+            CONFIGMAP_NAMESPACE="${NAMESPACE}" \
+            OUT="${DEPLOY_DIR}/configmap.yaml" \
+            python3 - <<'PYEOF'
+          import os, sys
+
+          out = os.environ["OUT"]
+          data, seen = {}, {}
+
+          def add(path):
+              with open(path, encoding="utf-8") as fh:
+                  body = fh.read()
+              name = os.path.basename(path)
+              # 明文 ConfigMap 里不许有私钥：命名空间里有读权限的人都能看
+              #
+              # 硬挡而不是警告 —— 警告会被忽略，而 ConfigMap 一旦 apply 上去，
+              # 撤回也救不了已经泄露的私钥 密钥该走 secrets 侧的 app 节，
+              # 渲染成 secretKeyRef，值只存在集群的 Secret 里
+              # 公钥证书（BEGIN CERTIFICATE）不受影响，它本来就是公开的
+              #
+              # [EN] No private key may enter a plaintext ConfigMap, readable by anyone with read
+              # access to the namespace. A hard stop rather than a warning: warnings get ignored,
+              # and once applied, removing the ConfigMap does not unleak the key. Credentials go
+              # through the secrets side's app section and exist only in the in-cluster Secret.
+              # A public certificate is unaffected
+              if "PRIVATE KEY-----" in body:
+                  sys.exit("::error::%s 里有私钥块，而 ConfigMap 是明文的 —— "
+                           "密钥请配到 secrets 的 app 节，会渲染成 secretKeyRef | "
+                           "a private key must not go into a plaintext ConfigMap" % path)
+              if name in seen and seen[name] != path:
+                  sys.exit("::error::ConfigMap 里出现同名文件 %s：%s 与 %s —— "
+                           "data 的键名是文件名，重名会互相覆盖 | duplicate file name"
+                           % (name, seen[name], path))
+              seen[name] = path
+              data[name] = body
+
+          # 服务自己那份配置
+          # [EN] The service's own config file
+          own = os.environ.get("CONFIG_YAML_PATH", "")
+          if own and os.path.isfile(own):
+              add(own)
+
+          # service.configmap_dir 下的文件：只取第一层，不递归
+          #
+          # 不递归是刻意的：ConfigMap 的 data 键名是扁平的文件名，子目录里的文件
+          # 一进来就只剩 basename，层级信息丢掉，还会和同名文件撞上
+          # 需要分层的话用 subPath 挂载，那是另一件事
+          #
+          # [EN] Only the top level, deliberately: a ConfigMap's data keys are flat file names,
+          # so a file in a subdirectory arrives as its basename alone, losing the hierarchy and
+          # colliding with same-named files. Layered layouts need subPath mounts instead
+          cmdir = os.environ.get("CONFIGMAP_DIR", "").strip()
+          if cmdir:
+              if not os.path.isdir(cmdir):
+                  sys.exit("::error::service.configmap_dir 指向的 %s 不是目录 | not a directory"
+                           % cmdir)
+              for name in sorted(os.listdir(cmdir)):
+                  # 点文件是仓库自己的东西（.gitkeep / .sops.yaml 之类），不是配置
+                  # 带目录结构就得有占位文件，而 ConfigMap 的键名就是文件名，
+                  # 不跳过的话容器的 resources/ 下会凭空多出一个 .gitkeep
+                  # [EN] Dotfiles belong to the repository (.gitkeep, .sops.yaml), not to the
+                  # service: a placeholder is needed to carry the directory structure, and since
+                  # a ConfigMap key is the file name, not skipping them would invent a .gitkeep
+                  # inside the container's resources/
+                  if name.startswith("."):
+                      continue
+                  path = os.path.join(cmdir, name)
+                  if os.path.isfile(path):
+                      add(path)
+
+          if not data:
+              sys.exit(0)
+
+          lines = [
+              "apiVersion: v1",
+              "kind: ConfigMap",
+              "metadata:",
+              "  name: %s" % os.environ["CONFIGMAP_NAME"],
+              "  namespace: %s" % os.environ["CONFIGMAP_NAMESPACE"],
+              "data:",
+          ]
+          for name in sorted(data):
+              body = data[name]
+              # | 保住原文的尾换行，|- 不凭空加一个
+              # 有的解析器要求配置文件以换行结尾，两头都不能乱动
+              # [EN] | keeps the source's trailing newline and |- avoids inventing one; some
+              # parsers require a config file to end with a newline, so neither may be altered
+              lines.append("  %s: %s" % (name, "|" if body.endswith("\n") else "|-"))
+              for line in body.rstrip("\n").split("\n"):
+                  lines.append("    " + line if line else "")
+          with open(out, "w", encoding="utf-8") as fh:
+              fh.write("\n".join(lines) + "\n")
+          print("ConfigMap generated: %d 个文件 | %d file(s) — %s"
+                % (len(data), len(data), " ".join(sorted(data))))
+          PYEOF
+          fi
+
 
       # 把 GitHub Secrets 同步成集群里的 K8s Secret，再由 Deployment 的 secretKeyRef 引用
       # 密钥来源两处：secrets.PIPELINE_SECRETS 的 app 节（优先）与同名的单个 GitHub Secret
@@ -693,10 +1536,10 @@ jobs:
       # in GitHub Secrets the step is skipped without touching the cluster, so a hand-created
       # Secret is not emptied by a declarative apply.
       - name: 🔐 Sync Secrets to Cluster
-        if: ${{ inputs.extra-env-block != '' }}
+        if: ${{ env.MERGED_ENV_BLOCK != '' }}
         env:
           ALL_SECRETS: ${{ toJSON(secrets) }}
-          EXTRA_ENV_BLOCK: ${{ inputs.extra-env-block }}
+          EXTRA_ENV_BLOCK: ${{ env.MERGED_ENV_BLOCK }}
           NAMESPACE: ${{ env.NAMESPACE }}
           # resolve-config 从 PIPELINE_SECRETS 的 app 节解析出的业务密钥，落在 0600 的文件里；
           # 没配 app 节时这个变量为空，整段逻辑退回只认单个 GitHub Secret
@@ -803,6 +1646,95 @@ jobs:
           rm -f "${RUNNER_TEMP}/secret.yaml"
 
 
+
+
+      # 解开的配置文件同步成单独的 Secret，再与 ConfigMap 一起 projected 挂到同一个目录，
+      # 容器侧路径与文件名都不变 —— 服务不需要知道这份配置是明文来的还是解密来的
+      #
+      # 为什么不与业务密钥共用一个 Secret：那个 Secret 的键是环境变量名，整份 projected
+      # 进来会在 resources/ 下凭空多出一堆以变量名命名的文件；改用 items: 挑键，
+      # 又要让 manifest 知道哪些键是文件、哪些是变量，把两件独立的事绑在一起
+      #
+      # 为什么不进 ConfigMap：ConfigMap 在集群里是明文可读的（任何能 get configmap 的人都能看），
+      # 把解开的配置放进去，配置仓库那层加密就只剩「传输时是密文」这一点作用
+      #
+      # 值不进命令行参数（runner 上 ps 看得见），只经文件交给 kubectl
+      #
+      # [EN] The decrypted config files are synced into a Secret of their own and projected into
+      # the same directory as the ConfigMap, so the container-side path and file names are
+      # unchanged and the service need not know whether its config arrived in plaintext or
+      # encrypted. It is not the service secret because that Secret's keys are variable names,
+      # which projected whole would invent a file per variable under resources/, while selecting
+      # with items: would couple the manifest to knowing which keys are files. It is not the
+      # ConfigMap because a ConfigMap is readable in plaintext by anyone who can get configmaps,
+      # which would reduce the repository's encryption to transport only. Values reach kubectl
+      # through a file, never as command line arguments, which are visible to ps on the runner.
+      - name: 🔐 Sync Config Files to Cluster
+        if: ${{ env.CONFIG_FILES_DIR != '' }}
+        run: |
+          umask 077
+          # 必须用 || status=$? 承接退出码：run: 是 bash -e，python 非零退出会立刻中断整步，
+          # 后面的 status 判断根本执行不到（exit 3 的「跳过」会变成 job 失败）
+          # [EN] The exit code must be captured with || status=$?: run: uses bash -e, so a
+          # non-zero python exit aborts the step before the checks below run, turning the intended
+          # skip into a failed job
+          status=0
+          python3 -I - > "${RUNNER_TEMP}/config-secret.json" <<'FILES_PY' || status=$?
+          import base64
+          import hashlib
+          import json
+          import os
+          import sys
+
+          cmdir = os.environ["CONFIG_FILES_DIR"]
+          data, listing = {}, []
+          for name in sorted(os.listdir(cmdir)):
+              path = os.path.join(cmdir, name)
+              # secrets.json 是上一步转出来的中间产物，它的内容已经进了业务 Secret 当环境变量，
+              # 再挂成文件等于把同一批密钥多暴露一份
+              # [EN] secrets.json is the previous step's intermediate form; its contents already
+              # went into the service Secret as variables, and mounting it as a file as well would
+              # expose the same secrets a second time
+              if not os.path.isfile(path) or name == "secrets.json":
+                  continue
+              with open(path, "rb") as fh:
+                  raw = fh.read()
+              data[name] = base64.b64encode(raw).decode()
+              listing.append((name, len(raw), hashlib.sha256(raw).hexdigest()[:8]))
+
+          if not data:
+              sys.exit(3)
+
+          # 不打印内容，只打印长度与 sha256 前 8 位：足够核对「挂进去的是不是那一版」，
+          # 又不把解开的配置留在日志里。本地算同样的指纹对照：
+          #   shasum -a 256 <文件> | cut -c1-8
+          # [EN] Contents are never printed, only length and the first 8 hex of sha256, enough to
+          # confirm which revision landed without leaving the decrypted config in the log
+          print("::group::配置文件同步清单", file=sys.stderr)
+          print("Secret: %s/%s" % (os.environ.get("NAMESPACE", "default"),
+                                   os.environ["CONFIG_FILES_SECRET"]), file=sys.stderr)
+          for name, size, digest in listing:
+              print("  %-40s %6d B  sha256=%s" % (name, size, digest), file=sys.stderr)
+          print("::endgroup::", file=sys.stderr)
+
+          print(json.dumps({
+              "apiVersion": "v1",
+              "kind": "Secret",
+              "metadata": {"name": os.environ["CONFIG_FILES_SECRET"],
+                           "namespace": os.environ.get("NAMESPACE", "default")},
+              "type": "Opaque",
+              "data": data,
+          }))
+          FILES_PY
+          if [ "${status}" = "3" ]; then
+            rm -f "${RUNNER_TEMP}/config-secret.json"
+            echo "::warning::没有要挂载的配置文件，跳过同步"
+            exit 0
+          fi
+          [ "${status}" = "0" ] || exit "${status}"
+          kubectl apply --server-side --force-conflicts --validate=false \
+            -n "${NAMESPACE}" -f "${RUNNER_TEMP}/config-secret.json"
+          rm -f "${RUNNER_TEMP}/config-secret.json"
       - name: 🚀 Apply Kubernetes Resources
         id: apply
         run: |
@@ -863,10 +1795,10 @@ jobs:
       # reconstructs the secret. Values shorter than 12 characters are hidden entirely, since four
       # characters at each end would expose too large a share of them.
       - name: 🔍 Verify Injected Secrets
-        if: ${{ inputs.extra-env-block != '' }}
+        if: ${{ env.MERGED_ENV_BLOCK != '' }}
         continue-on-error: true
         env:
-          EXTRA_ENV_BLOCK: ${{ inputs.extra-env-block }}
+          EXTRA_ENV_BLOCK: ${{ env.MERGED_ENV_BLOCK }}
           NAMESPACE: ${{ env.NAMESPACE }}
         run: |
           synced_name="$(python3 -I -c '
@@ -934,7 +1866,7 @@ jobs:
 
             # 只检查新 ReplicaSet 的 Pod，忽略正在终止的旧 Pod
             if [ -n "$NEW_RS_HASH" ]; then
-              PROBLEM_PODS=$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ inputs.binary-name }},pod-template-hash=${NEW_RS_HASH} \
+              PROBLEM_PODS=$(kubectl get pods -n "${{ env.NAMESPACE }}" -l "app=${{ inputs.binary-name }},pod-template-hash=${NEW_RS_HASH}" \
                 -o json | jq -r '.items[] | select(
                   (.status.containerStatuses[]?.restartCount // 0) > 3 or
                   (.status.phase != "Running" and .status.phase != "Succeeded" and .status.phase != "Pending")
@@ -951,7 +1883,7 @@ jobs:
               echo "Warning: Found problematic pods in new ReplicaSet"
               for pod in $PROBLEM_PODS; do
                 echo "--- Pod: $pod ---"
-                kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=30 2>&1 || true
+                kubectl logs "$pod" -n "${{ env.NAMESPACE }}" --tail=30 2>&1 || true
               done
             fi
 
@@ -1083,7 +2015,7 @@ jobs:
       # calling repository and cannot read this private one, and GitHub answers 404 rather than
       # 403, so the error reads as a missing repository when it is a permission
       - name: 📥 Fetch Pipeline Assets (scripts)
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
         with:
           assets: scripts
 
@@ -1094,7 +2026,7 @@ jobs:
       # configuration is resolved again here from the same YAML the deploy job used, which is
       # what keeps the reported namespace and ports from drifting apart
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
           sections: ports kube notify
           secret-sections: notify

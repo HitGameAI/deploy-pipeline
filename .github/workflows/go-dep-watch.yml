@@ -1,0 +1,141 @@
+# 盯指定三方模块的升级，并给出内容 diff
+#
+# 为什么 dependabot 不够：它只说「v1.2.3 → v1.2.4」，而各仓库的 automerge 把 minor 与
+# patch 直接合掉，没人看过里面改了什么 对多数依赖这没问题，对少数不行 ——
+# 典型是把对端协议版本写死在代码里的那种，上游一个 patch 改掉那个常量，行为就全变了
+#
+# 这里做三件事，全由 PIPELINE_CONFIG 的 golib 节驱动，工作流与脚本都不认识任何具体模块：
+#   pinned 版本 vs 上游最新版本
+#   内容 diff：优先只看**本仓库 import 到的包**，再加上配置指定的重点文件全文 diff
+#   值探针：按正则从源码里抠一个值，比较两版之间变没变
+#
+# 自己不排期：由调用方仓库的 schedule 触发，这样每个仓库可以各自决定频率
+#
+# [EN] Watches specified third-party modules and reports a content diff, because dependabot only
+# reports version numbers while automerge lands minor and patch without anyone reading the change.
+# Everything is driven by the golib section of PIPELINE_CONFIG, and neither this workflow nor the
+# script knows about any specific module. It carries no schedule of its own: the calling repository
+# triggers it, so each repository picks its own cadence.
+name: 🔭 依赖版本漂移预警
+
+on:
+  workflow_call:
+    inputs:
+      watch:
+        description: '要盯的模块，YAML 列表（overrides PIPELINE_CONFIG 的 golib.watch）'
+        required: false
+        type: string
+      notify-on-clean:
+        description: '没有漂移时也通知；默认只在有事时通知'
+        required: false
+        type: string
+        default: 'false'
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    name: 依赖版本漂移
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: golib notify
+          secret-sections: go notify
+          inputs-json: |
+            {
+              "watch": ${{ toJSON(inputs.watch) }}
+            }
+          secrets-json: |
+            {
+              "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }}
+            }
+
+      # 没配就整个跳过：这个能力是按需开的，没开的仓库不该因此多跑一个 job
+      # [EN] Skipped entirely when unconfigured: this is opt-in and must not cost a job elsewhere
+      - name: 🔎 有没有要盯的
+        id: gate
+        run: |
+          if [ -z "${GOLIB_WATCH//[[:space:]]/}" ]; then
+            echo "golib.watch 为空，跳过"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 🔑 Generate GitHub App Token
+        id: app_token
+        if: steps.gate.outputs.enabled == 'true' && env.APP_ID != '' && env.APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 📥 Checkout Repository
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+
+      # go list 要解析完整模块图，私有模块拉不到就整条链断掉
+      # [EN] go list resolves the whole module graph, which fails entirely without private access
+      - name: ⚙️ Configure Git For Private Modules
+        if: steps.gate.outputs.enabled == 'true' && steps.app_token.outputs.token != ''
+        env:
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${APP_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: 🛠️ Set up Go
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 📥 Fetch Pipeline Assets (scripts)
+        if: steps.gate.outputs.enabled == 'true'
+        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        with:
+          assets: scripts
+
+      - name: 🔭 比对版本与内容
+        id: watch
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          # 必须用 || status=$? 承接退出码：run: 是 bash -e，脚本用 2 表示「有事要报」，
+          # 不接住的话整步直接失败，后面的汇总与通知都跑不到
+          # [EN] The exit code must be captured: run: uses bash -e and the script signals "something
+          # to report" with 2, which would otherwise abort the step before the summary and notify
+          status=0
+          bash _deploy-workflows/scripts/dep-watch.sh "${RUNNER_TEMP}/dep-watch" | tee "${RUNNER_TEMP}/watch.log" || status=$?
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          [ "${status}" != "1" ] || exit 1
+
+      - name: 📊 汇总
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          report="${RUNNER_TEMP}/dep-watch/report.md"
+          [ -f "${report}" ] || exit 0
+          if [ "${{ steps.watch.outputs.status }}" = "2" ]; then
+            echo "## 🔭 依赖版本漂移" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ✅ 依赖版本没有漂移" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat "${report}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 通知
+        if: steps.gate.outputs.enabled == 'true' && (steps.watch.outputs.status == '2' || inputs.notify-on-clean == 'true')
+        uses: kamalyes/deploy-pipeline/.github/actions/notify@master
+        with:
+          provider: ${{ env.NOTIFICATION_PROVIDER }}
+          status: ${{ steps.watch.outputs.status == '2' && 'warning' || 'success' }}
+          title: ${{ steps.watch.outputs.status == '2' && format('🔭 {0} 有依赖版本漂移', github.repository) || format('✅ {0} 依赖版本正常', github.repository) }}
+          message: |
+            仓库 `${{ github.repository }}`
+
+            ${{ steps.watch.outputs.status == '2' && '有需要关注的依赖变化，详情见运行记录的 Summary' || '盯住的依赖都是最新，且探针值未变' }}
+
+            [查看详情](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})

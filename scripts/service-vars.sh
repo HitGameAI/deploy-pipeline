@@ -35,6 +35,7 @@ DOCKER_NAMESPACE="${DOCKER_NAMESPACE:-}"
 ALLOWED_ENVS="${ALLOWED_ENVS:-}"
 DEPLOY_BRANCHES="${DEPLOY_BRANCHES:-}"
 CONFIG_PATH_TEMPLATE="${CONFIG_PATH_TEMPLATE:-}"
+CONFIG_REPO="${CONFIG_REPO:-}"
 CMD_ARGS_TEMPLATE="${CMD_ARGS_TEMPLATE:-}"
 # 带花括号的默认值不能写进 ${VAR:-默认} —— 默认值里的 } 会被当成展开式的结尾，
 # 于是 "{name}-secrets" 被切成 "{name" + 字面量 "-secrets}"，拼出来的名字是错的
@@ -112,17 +113,51 @@ K8S_CONFIGMAP_NAME=""
 CMD_ARGS=""
 if [ -n "${CONFIG_PATH_TEMPLATE}" ]; then
   K8S_CONFIG_YAML="$(expand "${CONFIG_PATH_TEMPLATE}")"
-  if [ ! -f "${K8S_CONFIG_YAML}" ]; then
-    echo "::error::缺少配置文件 ${K8S_CONFIG_YAML}，无法为 ${DEPLOY_ENV} 生成 ConfigMap | config file not found"
-    exit 1
-  fi
   K8S_CONFIGMAP_NAME="$(expand "${CONFIGMAP_NAME_TEMPLATE}")"
   # 容器启动参数：ConfigMap 挂在 <工作目录>/resources/ 下、文件名不变，
   # 而 Dockerfile 的 WORKDIR 就是工作目录，所以相对路径即可
+  # 只用到文件名，与这份配置来自哪个仓库无关 —— 所以放在「文件是否存在」判断之前算
   # [EN] The ConfigMap mounts under <workdir>/resources/ keeping the file name, and the
-  # Dockerfile's WORKDIR is that workdir, so a relative path works
+  # Dockerfile's WORKDIR is that workdir, so a relative path works. Only the name is used,
+  # regardless of which repository the file comes from, so it is computed before the existence
+  # check below
   [ -n "${CMD_ARGS_TEMPLATE}" ] && CMD_ARGS="$(expand "${CMD_ARGS_TEMPLATE}" "$(basename "${K8S_CONFIG_YAML}")")"
-  echo "配置文件    : ${K8S_CONFIG_YAML} → ConfigMap ${K8S_CONFIGMAP_NAME}"
+
+  # 判定顺序是「先看有没有配置仓库」，不是「先看本仓库有没有这份文件」
+  #
+  # 配了 config_repo 就以它为唯一来源，本仓库那份即使还在也不参与：两份都当来源会撞名，
+  # 而 ConfigMap 的 data 键名就是文件名，撞名是硬错误、部署直接失败
+  # 文件名仍然有用：ConfigMap 名与启动参数都从它推出来，容器侧路径与搬之前一样
+  #
+  # 为什么不是报错让人先删掉本仓库那份：搬迁过渡期两边都在很正常，本地开发也还要用它
+  # 但「还在、却不生效」是个陷阱，所以用 ::warning:: 在 run 页面上一直提示到删掉为止
+  #
+  # 这里原先写成 if 本仓库有文件 / elif 有配置仓库，漏了「两者都成立」这一种组合，
+  # 于是两份都传给部署那一步，撞在 ConfigMap 的同名检查上
+  #
+  # [EN] The order is config-repo first, not local-file first. With config_repo set it is the only
+  # source and the copy in this repository does not take part, because two sources collide and a
+  # ConfigMap data key is the file name, so a collision fails the deploy. The name is still needed,
+  # since the ConfigMap name and the container argument derive from it. Leaving the local copy in
+  # place is normal during migration and for local development, so this warns rather than fails --
+  # but a file that is present yet ignored is a trap, hence a warning on every run until removed.
+  # The previous form tested the local file first and had no branch for both being true, so both
+  # were passed on and hit the duplicate-name check
+  if [ -n "${CONFIG_REPO}" ]; then
+    if [ -f "${K8S_CONFIG_YAML}" ]; then
+      echo "::warning::本仓库的 ${K8S_CONFIG_YAML} 不会生效 —— 配了 service.config_repo 就以配置仓库 ${CONFIG_REPO} 为准，这份建议删掉以免误改 | ignored in favour of the config repository"
+      echo "配置文件    : <本仓库的 ${K8S_CONFIG_YAML} 被忽略，以配置仓库 ${CONFIG_REPO} 为准> → ConfigMap ${K8S_CONFIGMAP_NAME}"
+    else
+      echo "配置文件    : <本仓库无 ${K8S_CONFIG_YAML}，由配置仓库 ${CONFIG_REPO} 提供> → ConfigMap ${K8S_CONFIGMAP_NAME}"
+    fi
+    K8S_CONFIG_YAML=""
+  elif [ -f "${K8S_CONFIG_YAML}" ]; then
+    echo "配置文件    : ${K8S_CONFIG_YAML} → ConfigMap ${K8S_CONFIGMAP_NAME}"
+  else
+    echo "::error::缺少配置文件 ${K8S_CONFIG_YAML}，无法为 ${DEPLOY_ENV} 生成 ConfigMap | config file not found"
+    echo "::error::若这份配置已经搬到中心仓库，要同时配上 service.config_repo，否则这里不知道它去哪了"
+    exit 1
+  fi
   echo "启动参数    : ${CMD_ARGS:-<无>}"
 else
   echo "配置文件    : <service.config_path 为空，跳过 ConfigMap>"

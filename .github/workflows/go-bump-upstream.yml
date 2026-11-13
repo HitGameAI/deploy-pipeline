@@ -1,0 +1,499 @@
+name: 📦 Go Bump Upstream
+
+# 上游发版后，下游跟着升 go.mod 的那一步
+#
+# 为什么要有这个文件：原先三十来个仓库各自手写一份，逻辑是
+#   go get -> go mod tidy -> commit -> push
+# 中间一次 go build 都没有
+#
+# 实际发生过的失效：bump 把一个直接依赖往前提，最小版本选择顺带把一个传递依赖也拉高，
+# 而第三个模块还钉在旧版本、用着改名前的符号，编译当场就坏，自动化照推默认分支
+# 事后 CI 又被测试步骤的 continue-on-error 掩盖，于是报了 success，没人发现
+#
+# 这里加的闸门：升完先 build + vet + test，过了才允许碰默认分支；没过就开分支提 PR 并判红，
+# 坏版本既进不了主干，也不会悄悄丢掉
+#
+# [EN] The downstream half of the release chain. The hand-written copies ran go get, go mod
+# tidy, commit and push with no build in between, which is how one repository's default branch
+# stopped compiling: the bump raised a direct dependency, minimal version selection pulled a
+# transitive one forward, and a third module still pinned to an older release no longer compiled
+# against it. Here a bump must build, vet and test before it may touch the default branch;
+# otherwise it becomes a branch and a pull request and the job fails
+
+on:
+  workflow_call:
+    inputs:
+      run-tests:
+        description: '推送前是否跑测试。build 与 vet 两道闸门关不掉'
+        required: false
+        type: boolean
+        default: true
+      build-tags:
+        description: 'build tag，留空则不传 -tags'
+        required: false
+        type: string
+        default: ''
+      test-flags:
+        description: '传给 go test 的参数'
+        required: false
+        type: string
+        default: ''
+      test-timeout:
+        description: 'go test 的 -timeout'
+        required: false
+        type: string
+        default: ''
+      gotestsum-version:
+        description: 'gotestsum 版本'
+        required: false
+        type: string
+        default: ''
+      allow-create-tag:
+        description: '是否允许按上游版本跨度生成下游 tag；还要上游 dispatch 的 create_tag 同时为真'
+        required: false
+        type: boolean
+        default: true
+      timeout-minutes:
+        description: 'job 超时（分钟）'
+        required: false
+        type: number
+        default: 30
+    secrets:
+      # 凭证按 App > PAT > GITHUB_TOKEN 取，解析走 resolve-config 的 go 节，
+      # 所以既可以配单个 secret，也可以统一写在 PIPELINE_SECRETS 的 go 节里
+      # [EN] Credentials are taken App first, then PAT, then GITHUB_TOKEN, resolved through the
+      # go section so they may be set individually or together in one aggregate secret
+      PIPELINE_SECRETS:
+        description: '聚合密钥 YAML，go 节可写 app_id / app_private_key / gpa_token'
+        required: false
+      APP_ID:
+        required: false
+      APP_PRIVATE_KEY:
+        required: false
+      GH_GPA_TOKEN:
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    name: 📦 Bump
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: ⚙️ Resolve Pipeline Config
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        with:
+          sections: golib
+          secret-sections: go
+          vars-json: ${{ toJSON(vars) }}
+          inputs-json: ${{ toJSON(inputs) }}
+          secrets-json: >-
+            {
+              "PIPELINE_SECRETS": ${{ toJSON(secrets.PIPELINE_SECRETS) }},
+              "APP_ID": ${{ toJSON(secrets.APP_ID) }},
+              "APP_PRIVATE_KEY": ${{ toJSON(secrets.APP_PRIVATE_KEY) }},
+              "GH_GPA_TOKEN": ${{ toJSON(secrets.GH_GPA_TOKEN) }}
+            }
+
+      # secrets 上下文在 step 的 if: 里不可用，所以凭证先过 resolve-config 落到 env 再判断
+      # [EN] The secrets context is unavailable in a step's if condition, so the credentials are
+      # resolved into env first and tested there
+      - name: 🔑 Generate GitHub App Token
+        id: app_token
+        if: env.APP_ID != '' && env.APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 🧾 Report Credential In Use
+        env:
+          APP_TOKEN_SET: ${{ steps.app_token.outputs.token != '' }}
+        run: |
+          if [ "$APP_TOKEN_SET" = "true" ]; then
+            echo "::notice title=凭证 | Credential::GitHub App token，推送会正常触发本仓库 CI"
+          elif [ -n "${GH_GPA_TOKEN:-}" ]; then
+            echo "::notice title=凭证 | Credential::PAT，建议迁到 GitHub App"
+          else
+            echo "::warning title=凭证缺失 | No credential::既没有 App 凭证也没有 PAT，将回落到 GITHUB_TOKEN，而用它推的提交不会触发本仓库任何 workflow，bump 的结果无人校验，请配上 APP_ID 与 APP_PRIVATE_KEY"
+          fi
+
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token || env.GH_GPA_TOKEN || github.token }}
+
+      - name: 🛠️ Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: ⬆️ Bump Dependency
+        id: bump
+        env:
+          MODULE: ${{ github.event.client_payload.module }}
+          VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          if [ -z "$MODULE" ] || [ -z "$VERSION" ]; then
+            echo "::error title=载荷不完整 | Incomplete payload::client_payload 缺少 module 或 version"
+            exit 1
+          fi
+          old="$(go list -m -f '{{.Version}}' "$MODULE" 2>/dev/null || true)"
+          echo "old-version=${old}" >> "$GITHUB_OUTPUT"
+          echo "把 ${MODULE} 从 ${old:-无} 升到 ${VERSION}"
+
+          go get "${MODULE}@${VERSION}"
+          go mod tidy
+
+          level="patch"
+          o="${old#v}"; o="${o%%-*}"
+          n="${VERSION#v}"; n="${n%%-*}"
+          IFS='.' read -r om omi _ <<< "$o"
+          IFS='.' read -r nm nmi _ <<< "$n"
+          if [[ "$om" =~ ^[0-9]+$ && "$nm" =~ ^[0-9]+$ && "$omi" =~ ^[0-9]+$ && "$nmi" =~ ^[0-9]+$ ]]; then
+            if (( nm > om )); then
+              level="major"
+            elif (( nm == om && nmi > omi )); then
+              level="minor"
+            fi
+          fi
+          echo "bump-level=${level}" >> "$GITHUB_OUTPUT"
+
+          if git diff --quiet -- go.mod go.sum; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=无变化 | No change::go.mod 与 go.sum 都没动，跳过"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ===== 闸门 =====
+      # 三步都挂 continue-on-error，是为了把结论收到 Collect Gate Verdict 一处判，
+      # 好让失败时走「开分支提 PR」而不是直接中断 —— 不是为了掩盖失败
+      # [EN] The three gates tolerate their own failure only so the verdict can be decided in one
+      # place and a failure can be routed to a pull request instead of aborting; nothing is masked
+      - name: 🔨 Build
+        id: gate_build
+        if: steps.bump.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          if [ -n "${GOLIB_BUILD_TAGS}" ]; then
+            go build -tags="${GOLIB_BUILD_TAGS}" ./...
+          else
+            go build ./...
+          fi
+
+      - name: 🔍 Vet
+        id: gate_vet
+        if: steps.bump.outputs.changed == 'true' && steps.gate_build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          if [ -n "${GOLIB_BUILD_TAGS}" ]; then
+            go vet -tags="${GOLIB_BUILD_TAGS}" ./...
+          else
+            go vet ./...
+          fi
+
+      - name: 📦 Install gotestsum
+        if: >-
+          steps.bump.outputs.changed == 'true'
+          && steps.gate_vet.outcome == 'success'
+          && env.GOLIB_BUMP_RUN_TESTS == 'true'
+        run: go install "gotest.tools/gotestsum@${GOTESTSUM_VERSION}"
+
+      - name: 🧪 Test
+        id: gate_test
+        if: >-
+          steps.bump.outputs.changed == 'true'
+          && steps.gate_vet.outcome == 'success'
+          && env.GOLIB_BUMP_RUN_TESTS == 'true'
+        continue-on-error: true
+        run: |
+          tags_flag=""
+          if [ -n "${GOLIB_BUILD_TAGS}" ]; then
+            tags_flag="-tags=${GOLIB_BUILD_TAGS}"
+          fi
+          # shellcheck disable=SC2086
+          # 这两个必须不加引号：tags_flag 为空时要整个消失，GOLIB_TEST_FLAGS 形如
+          # -race -count=1 -shuffle=on，加引号会被当成单个参数传给 go test 并报错
+          # [EN] Both must stay unquoted: tags_flag has to vanish entirely when empty, and the
+          # test flags are several arguments that quoting would collapse into one
+          gotestsum -f testname -- $tags_flag ./... ${GOLIB_TEST_FLAGS} -timeout="${GOLIB_TEST_TIMEOUT}"
+
+      - name: 🧮 Collect Gate Verdict
+        id: verdict
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          BUILD: ${{ steps.gate_build.outcome }}
+          VET: ${{ steps.gate_vet.outcome }}
+          TEST: ${{ steps.gate_test.outcome }}
+        run: |
+          echo "build=${BUILD} vet=${VET} test=${TEST:-skipped}"
+
+          # 用 if 而不是 [ ... ] && x=y
+          #
+          # 后者在 set -e 下不会中断脚本（AND-list 的非末位命令被豁免），
+          # 但一旦它成为最后一条语句，条件不成立时整步就以退出码 1 判失败
+          # 现在后面跟着别的语句所以侥幸没事，离出问题只差一次编辑
+          #
+          # [EN] An if rather than a test-and-assign list: the latter does not abort under
+          # set -e while other statements follow it, but the moment it becomes the final
+          # statement a false condition makes the whole step exit non-zero. The current form
+          # only works by accident of ordering
+          failed=""
+          if [ "$BUILD" = "failure" ]; then failed="build"; fi
+          if [ "$VET" = "failure" ]; then failed="${failed:+$failed }vet"; fi
+          if [ "$TEST" = "failure" ]; then failed="${failed:+$failed }test"; fi
+
+          if [ -n "$failed" ]; then
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "failed-gates=${failed}" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 闸门没过时，先问一句「升级之前它是绿的吗」
+      #
+      # 不加这一步的话，仓库里本来就有的失败会被算到这次升级头上：
+      # 实测过一次 —— 某个库在 -shuffle=3 下有个指针解引用的 panic，
+      # 与被升级的依赖毫无关系，却让 bump 判红、开出一个无从下手的 PR
+      #
+      # 只在闸门已经红了的时候才跑，所以正常的绿色路径一点不多花时间
+      # go.mod 与 go.sum 的改动还在工作区没提交，checkout 回去就是升级前的状态
+      #
+      # [EN] When a gate fails, ask first whether it was green before the bump. Without this a
+      # failure that already lived in the repository is charged to the upgrade: one library had
+      # a pointer-dereference panic under a particular shuffle seed, unrelated to the dependency
+      # being raised, and it turned the bump red and opened a pull request nobody could act on.
+      # This runs only once a gate is already red, so the green path costs nothing. The changes
+      # to go.mod and go.sum are still uncommitted, so checking them out restores the prior state
+      - name: 🧪 Baseline Before The Bump
+        id: baseline
+        if: steps.bump.outputs.changed == 'true' && steps.verdict.outputs.passed == 'false'
+        continue-on-error: true
+        run: |
+          cp go.mod "$RUNNER_TEMP/bumped.go.mod"
+          [ -f go.sum ] && cp go.sum "$RUNNER_TEMP/bumped.go.sum"
+
+          git checkout -- go.mod
+          [ -f go.sum ] && git checkout -- go.sum
+          echo "已还原到升级前：$(go list -m "$MODULE" 2>/dev/null || echo '读不到')"
+
+          tags_flag=""
+          if [ -n "${GOLIB_BUILD_TAGS}" ]; then
+            tags_flag="-tags=${GOLIB_BUILD_TAGS}"
+          fi
+
+          baseline_failed=""
+          # shellcheck disable=SC2086
+          # tags_flag 为空时必须整个消失，所以不能加引号
+          # [EN] tags_flag has to vanish entirely when empty, so it stays unquoted
+          go build $tags_flag ./... || baseline_failed="build"
+          if [ -z "$baseline_failed" ]; then
+            # shellcheck disable=SC2086
+            go vet $tags_flag ./... || baseline_failed="vet"
+          fi
+          if [ -z "$baseline_failed" ] && [ "${GOLIB_BUMP_RUN_TESTS}" = "true" ]; then
+            # gotestsum 不一定装过：上面那个安装步骤的条件是「vet 通过」，
+            # 所以这次失败在 build 或 vet 时它根本没跑
+            # 不先确认就直接调，会得到 command not found，被下面的 || 当成「基线测试失败」，
+            # 于是一次真的破坏了构建的升级会被误判成「升级前就红」而放行 —— 正好放过该拦的
+            #
+            # [EN] gotestsum may not be installed: the install step above is conditioned on vet
+            # passing, so it never ran when this failure was in build or vet. Calling it blindly
+            # yields command not found, which the || below would read as a failing baseline test
+            # and let through precisely the upgrade that should have been stopped
+            if ! command -v gotestsum >/dev/null 2>&1; then
+              echo "基线需要 gotestsum，补装一次"
+              go install "gotest.tools/gotestsum@${GOTESTSUM_VERSION}"
+            fi
+            # shellcheck disable=SC2086
+            # GOLIB_TEST_FLAGS 形如 -race -count=1 -shuffle=on，必须拆词
+            # [EN] The test flags are several arguments and must word-split
+            gotestsum -f testname -- $tags_flag ./... ${GOLIB_TEST_FLAGS} -timeout="${GOLIB_TEST_TIMEOUT}" \
+              || baseline_failed="test"
+          fi
+
+          cp "$RUNNER_TEMP/bumped.go.mod" go.mod
+          [ -f "$RUNNER_TEMP/bumped.go.sum" ] && cp "$RUNNER_TEMP/bumped.go.sum" go.sum
+
+          if [ -n "$baseline_failed" ]; then
+            echo "already-red=true" >> "$GITHUB_OUTPUT"
+            echo "baseline-failed=${baseline_failed}" >> "$GITHUB_OUTPUT"
+            echo "升级前就红：${baseline_failed}"
+          else
+            echo "already-red=false" >> "$GITHUB_OUTPUT"
+            echo "升级前是绿的，所以这次是升级导致的"
+          fi
+        env:
+          MODULE: ${{ github.event.client_payload.module }}
+
+      # 最终裁决：闸门全过、或者闸门红但升级前就红，都放行
+      # [EN] The final verdict: proceed when the gates passed, or when they failed in a way that
+      # the repository already failed before the bump
+      - name: 🧮 Final Verdict
+        id: final
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          PASSED: ${{ steps.verdict.outputs.passed }}
+          FAILED_GATES: ${{ steps.verdict.outputs.failed-gates }}
+          ALREADY_RED: ${{ steps.baseline.outputs.already-red }}
+          BASELINE_FAILED: ${{ steps.baseline.outputs.baseline-failed }}
+        run: |
+          if [ "$PASSED" = "true" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=闸门全过 | All gates green::build / vet / test 都通过，照常推默认分支"
+            exit 0
+          fi
+
+          if [ "$ALREADY_RED" = "true" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=升级前就红 | Already failing before the bump::这次升级的闸门里 ${FAILED_GATES} 没过，但把依赖还原到升级前之后 ${BASELINE_FAILED} 同样没过 —— 失败不是这次升级带来的，所以照常推送。请另开工单修这个仓库自身的问题，否则它会挡住后续每一次升级的判定"
+            {
+              echo "## ⚠️ 这个仓库在升级前就是红的"
+              echo
+              echo "| 项 | 值 |"
+              echo "|---|---|"
+              echo "| 升级后没过的闸门 | \`${FAILED_GATES}\` |"
+              echo "| 升级前没过的闸门 | \`${BASELINE_FAILED}\` |"
+              echo "| 处理 | 判定为与本次升级无关，已照常推送 |"
+              echo
+              echo "本次升级没有引入新的失败，但这个仓库自身有问题需要单独修"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "proceed=false" >> "$GITHUB_OUTPUT"
+          echo "::error title=升级导致闸门失败 | The bump broke the gates::${FAILED_GATES} 没过，而把依赖还原到升级前之后这些闸门是绿的 —— 失败确实由这次升级引入"
+
+      - name: ⚙️ Configure Git Identity
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # 闸门全过：照旧推默认分支，上游联动行为不变
+      # [EN] All gates green: push to the default branch exactly as before
+      - name: ✅ Commit and Push
+        id: push
+        if: steps.bump.outputs.changed == 'true' && steps.final.outputs.proceed == 'true'
+        env:
+          COMMIT_MESSAGE: ${{ github.event.client_payload.commit_message }}
+          MODULE: ${{ github.event.client_payload.module }}
+          VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          git add go.mod
+          [ -f go.sum ] && git add go.sum
+          if [ -n "$COMMIT_MESSAGE" ]; then
+            printf '%s\n' "$COMMIT_MESSAGE" > "$RUNNER_TEMP/bump_msg.txt"
+            git commit -F "$RUNNER_TEMP/bump_msg.txt"
+          else
+            git commit -m "📦 deps: 同步上游依赖 ${VERSION}" \
+                       -m "- 📦 更新 ${MODULE} 到 ${VERSION} (go.mod, go.sum)" \
+                       -m "- ✅ build / vet / test 通过后才推送 (go-bump-upstream.yml)"
+          fi
+          git push
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # 闸门没过：绝不碰默认分支，改成分支 + PR，让红色 CI 去说明问题
+      # [EN] A gate failed: the default branch is left alone and the bump becomes a pull request
+      - name: 🚧 Open Pull Request Instead
+        if: steps.bump.outputs.changed == 'true' && steps.final.outputs.proceed == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token || env.GH_GPA_TOKEN || github.token }}
+          MODULE: ${{ github.event.client_payload.module }}
+          VERSION: ${{ github.event.client_payload.version }}
+          FAILED: ${{ steps.verdict.outputs.failed-gates }}
+          OLD_VERSION: ${{ steps.bump.outputs.old-version }}
+        run: |
+          slug="$(printf '%s' "$MODULE" | tr '/.' '--')"
+          branch="chore/bump-${slug}-${VERSION}"
+          git checkout -b "$branch"
+          git add go.mod
+          [ -f go.sum ] && git add go.sum
+          git commit -m "📦 deps: 同步上游依赖 ${VERSION}，闸门未通过" \
+                     -m "- 📦 更新 ${MODULE} 从 ${OLD_VERSION:-无} 到 ${VERSION} (go.mod, go.sum)" \
+                     -m "- ⚠️ 未通过的闸门：${FAILED}，故未推默认分支 (go-bump-upstream.yml)"
+          git push --force-with-lease origin "$branch"
+
+          # shellcheck disable=SC2016
+          # 下面整组 printf 的格式串都必须用单引号：%s 要留给 printf 替换，
+          # \n 要保持转义，反引号是写进 PR 正文的 markdown 代码标记，不能被 shell 展开
+          # 指令放在 { 之前，覆盖整个复合组
+          # [EN] Every printf format in this group must stay single-quoted: %s is printf's to
+          # substitute, \n must stay escaped, and the backticks are markdown going into the
+          # pull request body. The directive precedes the brace so it covers the whole group
+          {
+            printf '上游 `%s` 发布了 `%s`，自动升级后**未通过闸门**，所以没有推到默认分支\n\n' "$MODULE" "$VERSION"
+            printf -- '- 未通过的闸门：`%s`\n' "$FAILED"
+            printf -- '- 原版本：`%s`\n' "${OLD_VERSION:-无}"
+            printf -- '- 新版本：`%s`\n\n' "$VERSION"
+            printf '这通常意味着上游有不兼容改动，需要人工改调用处，而不是直接合入\n\n'
+            printf '[EN] The automatic bump did not pass its gates, so the default branch was left untouched\n'
+          } > "$RUNNER_TEMP/pr_body.md"
+
+          existing="$(gh pr list --head "$branch" --state open --json number -q '.[0].number' || true)"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --body-file "$RUNNER_TEMP/pr_body.md"
+            echo "::notice title=已更新 PR | PR updated::#${existing}"
+          else
+            gh pr create --head "$branch" \
+              --title "📦 deps: ${MODULE} ${VERSION} 升级未通过闸门" \
+              --body-file "$RUNNER_TEMP/pr_body.md"
+          fi
+
+          echo "::error title=bump 未通过闸门 | Bump failed its gates::${MODULE} ${VERSION} 升级后 ${FAILED} 失败，已开分支 ${branch} 提 PR，默认分支未改动"
+          exit 1
+
+      - name: 🏷️ Create Downstream Tag
+        if: >-
+          steps.push.outputs.pushed == 'true'
+          && inputs.allow-create-tag
+          && github.event.client_payload.create_tag == true
+        env:
+          MODULE: ${{ github.event.client_payload.module }}
+          VERSION: ${{ github.event.client_payload.version }}
+          LEVEL: ${{ steps.bump.outputs.bump-level }}
+        run: |
+          git fetch --tags
+          latest="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+          if [ -z "$latest" ]; then
+            tag="v0.1.0"
+            [ "$LEVEL" = "major" ] && tag="v1.0.0"
+          else
+            v="${latest#v}"
+            IFS='.' read -r maj min pat <<< "$v"
+            case "$LEVEL" in
+              major) tag="v$((maj + 1)).0.0" ;;
+              minor) tag="v${maj}.$((min + 1)).0" ;;
+              *)     tag="v${maj}.${min}.$((pat + 1))" ;;
+            esac
+          fi
+
+          # v2 起模块路径必须带 /vN 后缀，否则 tag 发出去也没人 go get 得到
+          # [EN] From v2 on the module path needs its /vN suffix, or the tag is unusable
+          current_module="$(go list -m)"
+          tag_major="${tag#v}"; tag_major="${tag_major%%.*}"
+          if (( tag_major >= 2 )) && [[ ! "$current_module" =~ /v${tag_major}$ ]]; then
+            echo "::error title=缺少主版本后缀 | Missing major suffix::要发 ${tag} 得先把模块路径 ${current_module} 改成 /v${tag_major} 结尾"
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::notice title=tag 已存在 | Tag exists::${tag} 已经有了，跳过"
+            exit 0
+          fi
+
+          git tag -a "$tag" \
+            -m "🔄 sync: 发布下游依赖联动版本 ${tag}" \
+            -m "- 📦 同步 ${MODULE} 到 ${VERSION} (go.mod, go.sum)" \
+            -m "- 🔄 按上游版本跨度生成下游 ${LEVEL} tag (go-bump-upstream.yml)"
+          git push origin "refs/tags/${tag}"

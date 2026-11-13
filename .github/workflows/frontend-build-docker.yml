@@ -132,7 +132,7 @@ jobs:
       # [EN] Every setting goes through this step first
       - name: ⚙️ Resolve Pipeline Config
         id: config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
         with:
           # 要 ports 节：nginx 的 listen / EXPOSE 和 deploy 用的 Service 端口必须是同一个值，
           # 两边都从 ports.http 取就不会一边改了另一边忘改
@@ -160,7 +160,7 @@ jobs:
           fetch-depth: 1
 
       - name: 🖥️ Print Runner Info
-        uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
 
       # ============================================
       # 步骤2：下载前端构建产物
@@ -180,7 +180,6 @@ jobs:
           BUILD_OUTPUT_DIR="${{ inputs.build-output-dir }}"
           APP_NAME="${{ inputs.app-name }}"
           BASE_IMAGE="${{ inputs.base-image }}"
-          TIMEZONE="${{ env.TIMEZONE }}"
           HTTP_PORT="${{ env.HTTP_PORT }}"
           NGINX_CONFIG_PATH="${{ inputs.nginx-config-path }}"
 
@@ -253,7 +252,7 @@ jobs:
 
       - name: Normalize Docker Image Names
         id: image-names
-        uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@e27e7b04c144fd95251696be20971c66ab3c0652
+        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
         with:
           image-base: ${{ inputs.image-base }}
           image-name: ${{ inputs.image-name }}
@@ -335,7 +334,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: read # 发布单收集 PR 明细需要
-    uses: ./.github/workflows/release-note.yml
+    uses: kamalyes/deploy-pipeline/.github/workflows/release-note.yml@master
     with:
       image-name: ${{ inputs.image-name }}
       platform: ${{ needs.build-docker.outputs.platform }}

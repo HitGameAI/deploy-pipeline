@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<!--
+  邮件外壳：所有场景共用这一份，场景片段注入 {{CONTENT}}
+  [EN] The shared shell for every scenario; the scenario fragment is injected at {{CONTENT}}
+
+  邮件 HTML 不能照网页写，这里的写法都是为了兼容性，不是啰嗦：
+    - 表格布局 + 内联样式：Gmail 会剥掉 <head> 里的 <style>，class 选择器不可依赖
+    - 600px 居中：Outlook 桌面版的渲染宽度上限
+    - role="presentation"：告诉读屏软件这些表格是排版用的，不是数据表
+    - 预览文字（preheader）：收件箱列表里标题后面跟的那段，不写的话会把正文开头截进去
+    - 深色模式只在 Apple Mail / iOS 生效，所以浅色配色必须本身就可读，不能依赖它
+  [EN] Email HTML is not web HTML. Tables and inline styles are required because Gmail strips
+  <head> styles, 600px is Outlook's practical ceiling, role="presentation" keeps layout tables
+  out of screen-reader data-table mode, the preheader controls the inbox preview line, and the
+  dark-mode block only applies in Apple Mail and iOS, so the light palette must stand alone.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>{{TITLE}}</title>
+<style>
+  /* 只有部分客户端会读这段；浅色配色不依赖它 */
+  @media (prefers-color-scheme: dark) {
+    .bg      { background: #15181c !important; }
+    .card    { background: #1d2126 !important; border-color: #2f353d !important; }
+    .ink     { color: #e4e8ed !important; }
+    .ink-sub { color: #9aa5b2 !important; }
+    .rule    { border-color: #2f353d !important; }
+    .kv-key  { color: #9aa5b2 !important; }
+    .code    { background: #15181c !important; color: #d7dde4 !important; border-color: #2f353d !important; }
+  }
+  @media (max-width: 620px) {
+    .px { padding-left: 20px !important; padding-right: 20px !important; }
+    .kv-key, .kv-val { display: block !important; width: auto !important; padding-left: 0 !important; }
+    .kv-key { padding-bottom: 2px !important; }
+    .kv-val { padding-bottom: 12px !important; }
+  }
+</style>
+</head>
+<body class="bg" style="margin:0;padding:0;background:#f4f6f8;">
+
+<!-- 收件箱预览文字，正文里不可见 -->
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">{{PREHEADER}}</div>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="bg" style="background:#f4f6f8;">
+  <tr>
+    <td align="center" style="padding:32px 12px;">
+
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" class="card" style="width:600px;max-width:600px;background:#ffffff;border:1px solid #e2e6ea;border-radius:12px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;">
+
+        <!-- 状态色条：一眼看出成功还是失败，不依赖读文字 -->
+        <tr><td style="height:4px;background:{{ACCENT}};line-height:4px;font-size:0;">&nbsp;</td></tr>
+
+        <!-- 标题区 -->
+        <tr>
+          <td class="px" style="padding:28px 36px 20px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="font-size:30px;line-height:1;width:44px;vertical-align:top;">{{ICON}}</td>
+                <td style="vertical-align:top;">
+                  <div class="ink" style="font-size:20px;font-weight:600;color:#1b2027;line-height:1.4;">{{TITLE}}</div>
+                  <div class="ink-sub" style="font-size:13px;color:#6b7684;padding-top:4px;">{{SUBTITLE}}</div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- 场景正文 -->
+        {{CONTENT}}
+
+        <!-- 页脚 -->
+        <tr>
+          <td class="px rule" style="padding:18px 36px 24px;border-top:1px solid #e2e6ea;">
+            <div class="ink-sub" style="font-size:12px;color:#8a95a3;line-height:1.7;">
+              {{FOOTER_TEXT}}
+            </div>
+          </td>
+        </tr>
+
+      </table>
+
+      <div class="ink-sub" style="font-size:11px;color:#9aa5b2;padding-top:14px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;">
+        本邮件由 CI 流水线自动发送，请勿直接回复
+      </div>
+
+    </td>
+  </tr>
+</table>
+
+</body>
+</html>
