@@ -72,7 +72,7 @@ jobs:
       # [EN] Not actions/checkout: under workflow_call it checks out the calling repository,
       # which does not contain scripts/
       - name: 📥 Fetch Pipeline Assets (scripts)
-        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@e27e7b04c144fd95251696be20971c66ab3c0652
         with:
           assets: scripts
 

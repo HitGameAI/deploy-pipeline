@@ -302,7 +302,7 @@ jobs:
       # [EN] Every setting goes through this step first: the YAML is validated, the layers are
       # merged and the result is exported through GITHUB_ENV for the steps that follow
       - name: ⚙️ Resolve Pipeline Config
-        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@e27e7b04c144fd95251696be20971c66ab3c0652
         with:
           sections: ports docker kube
           secret-sections: kube app
@@ -313,7 +313,7 @@ jobs:
 
       - name: Normalize Docker Image Name
         id: image-name
-        uses: kamalyes/deploy-pipeline/.github/actions/normalize-image-name@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@e27e7b04c144fd95251696be20971c66ab3c0652
         with:
           image-name: ${{ inputs.image-name }}
 
@@ -346,7 +346,7 @@ jobs:
       # calling repository and cannot read this private one, and GitHub answers 404 rather than
       # 403, so the error reads as a missing repository when it is a permission
       - name: 📥 Fetch Pipeline Assets (templates)
-        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@e27e7b04c144fd95251696be20971c66ab3c0652
         with:
           assets: templates
 
@@ -1083,7 +1083,7 @@ jobs:
       # calling repository and cannot read this private one, and GitHub answers 404 rather than
       # 403, so the error reads as a missing repository when it is a permission
       - name: 📥 Fetch Pipeline Assets (scripts)
-        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@e27e7b04c144fd95251696be20971c66ab3c0652
         with:
           assets: scripts
 
@@ -1094,7 +1094,7 @@ jobs:
       # configuration is resolved again here from the same YAML the deploy job used, which is
       # what keeps the reported namespace and ports from drifting apart
       - name: ⚙️ Resolve Pipeline Config
-        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@e27e7b04c144fd95251696be20971c66ab3c0652
         with:
           sections: ports kube notify
           secret-sections: notify
