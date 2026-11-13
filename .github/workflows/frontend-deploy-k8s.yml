@@ -296,12 +296,11 @@ jobs:
       # ============================================
       # 步骤3：检出部署工作流仓库（获取模板）
       # ============================================
-      - name: 📥 Checkout Deploy Workflows (for templates)
-        uses: actions/checkout@v6
+      - name: 📥 Fetch Deploy Workflows (for templates)
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
         with:
-          repository: HitGameAI/deploy-pipeline
-          ref: v1.0.0
           path: _deploy-workflows
+          assets: templates
 
       # ============================================
       # 步骤4：生成 K8s 资源清单（使用模板）
@@ -652,12 +651,11 @@ jobs:
     if: always() && inputs.notification-provider != 'none'
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout Deploy Workflows (for scripts)
-        uses: actions/checkout@v6
+      - name: 📥 Fetch Deploy Workflows (for scripts)
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
         with:
-          repository: HitGameAI/deploy-pipeline
-          ref: v1.0.0
           path: _deploy-workflows
+          assets: scripts
 
       # 通知是独立 job，GITHUB_ENV 不跨 job，所以这里要再解析一次，
       # 和 deploy job 读的是同一份 YAML，报出来的命名空间与端口不会两边不一致
