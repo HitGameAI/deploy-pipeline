@@ -188,7 +188,7 @@ jobs:
   deploy:
     steps:
       - name: ⚙️ Resolve Pipeline Config
-        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
         with:
           sections: ports docker kube
           secret-sections: kube notify app

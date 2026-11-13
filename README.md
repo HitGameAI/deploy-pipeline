@@ -19,7 +19,7 @@
 | Go 库自动通知下游、升级依赖 | App、上下游入口、仓库安装范围 | 不需要 K8s、镜像仓库 | [Go 库联动](docs/05-go-library-pipeline.md) |
 
 示例中的 `your-org`、`your-service` 换成自己的组织与业务仓库名
-当前公共入口是 `kamalyes/deploy-pipeline@master`，迁移后应指向自己的流水线仓库
+当前公共入口是 `HitGameAI/deploy-pipeline@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e`，迁移后应指向自己的流水线仓库
 
 ## 1. 准备仓库，放开流水线引用
 
@@ -114,7 +114,7 @@ your-service → Settings → Secrets and variables → Actions
 
 ### 先运行现有配置生成工作流
 
-打开流水线仓库的 [Actions → ⚙️ Generate Pipeline Config](https://github.com/kamalyes/deploy-pipeline/actions/workflows/generate-config.yml)：
+打开流水线仓库的 [Actions → ⚙️ Generate Pipeline Config](https://github.com/HitGameAI/deploy-pipeline/actions/workflows/generate-config.yml)：
 
 1. 点击 Run workflow，选择已发布的分支，mode 选 generate
 2. sections 留空生成全部节；只看后端服务时填 `ports docker kube builder service notify env`
@@ -224,7 +224,7 @@ Setup → Build Binary → Build Docker → Deploy K8s
 
 调用示例的 permissions 中 contents: write / packages: write / pull-requests: read 分别供内嵌发布单、镜像推送、PR 明细读取使用
 不要因 dev 暂时不生成发布单而删权限：复用工作流声明的权限也受调用方上限限制
-迁移后确认调用示例里每个 kamalyes/deploy-pipeline 都已替换，且引用的 master 分支存在
+迁移后确认调用示例里每个 HitGameAI/deploy-pipeline 都已替换，且引用的 master 分支存在
 
 ## 7. 校验配置，完成第一次部署
 
@@ -375,7 +375,7 @@ your-service 对应 service.binary_name，默认取业务仓库名
 不要直接用 sync-fork.sh 初始化空仓库：它有 KEEP_DIVERGENT 跳过清单，包含配置解析器及核心工作流
 
 ```bash
-git clone --branch master https://github.com/kamalyes/deploy-pipeline.git ../deploy-pipeline-new
+git clone --branch master https://github.com/HitGameAI/deploy-pipeline.git ../deploy-pipeline-new
 git -C ../deploy-pipeline-new remote set-url origin https://github.com/your-org/deploy-pipeline.git
 
 # 只替换流水线自身的 owner/repo 引用，不全局替换组织名
@@ -385,7 +385,7 @@ from pathlib import Path
 import subprocess
 
 repo = Path('../deploy-pipeline-new')
-source = 'kamalyes/deploy-pipeline'
+source = 'HitGameAI/deploy-pipeline'
 target = 'your-org/deploy-pipeline'
 paths = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z'])
 for name in paths.decode().split('\0'):

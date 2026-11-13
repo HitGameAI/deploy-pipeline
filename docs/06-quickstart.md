@@ -69,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - id: vars
-        uses: kamalyes/deploy-pipeline/.github/actions/resolve-service-vars@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-service-vars@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
         with:
           environment: ${{ inputs.environment || 'dev' }}
           vars-json: ${{ toJSON(vars) }}
@@ -80,7 +80,7 @@ jobs:
 
   build-binary:
     needs: setup
-    uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/backend-build-binary.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       environment: ${{ needs.setup.outputs.deploy-environment }}
       binary-name: ${{ needs.setup.outputs.binary-name }}
@@ -96,7 +96,7 @@ jobs:
   build-docker:
     needs: [setup, build-binary]
     if: ${{ needs.setup.outputs.should-build-docker == 'true' }}
-    uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-docker.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/backend-build-docker.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       environment: ${{ needs.setup.outputs.deploy-environment }}
       binary-name: ${{ needs.setup.outputs.binary-name }}
@@ -112,7 +112,7 @@ jobs:
   deploy-k8s:
     needs: [setup, build-docker]
     if: ${{ needs.setup.outputs.should-deploy-k8s == 'true' }}
-    uses: kamalyes/deploy-pipeline/.github/workflows/backend-deploy-k8s.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/backend-deploy-k8s.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       environment: ${{ needs.setup.outputs.deploy-environment }}
       image-name: ${{ needs.setup.outputs.image-name }}
@@ -149,7 +149,7 @@ on:
 
 jobs:
   build-frontend:
-    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-build-frontend.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/frontend-build-frontend.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       node-version: ${{ vars.NODE_VERSION || '20' }}
       package-manager: 'pnpm'
@@ -162,7 +162,7 @@ jobs:
 
   build-docker:
     needs: [build-frontend]
-    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-build-docker.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/frontend-build-docker.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       app-name: 'frontend-app'
       version: '${{ github.sha }}'
@@ -175,7 +175,7 @@ jobs:
 
   deploy-dev:
     needs: [build-docker]
-    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-deploy-k8s.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/frontend-deploy-k8s.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       environment: 'dev'
       image-name: '${{ vars.IMAGE_PREFIX }}/frontend-app:${{ github.sha }}'
@@ -216,7 +216,7 @@ env:
 
 jobs:
   build:
-    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-build-frontend.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/frontend-build-frontend.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       node-version: ${{ env.NODE_VERSION }}
       pnpm-version: ${{ env.PNPM_VERSION }}
@@ -230,7 +230,7 @@ jobs:
 
   docker:
     needs: [build]
-    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-build-docker.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/frontend-build-docker.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       app-name: 'my-project-app-a'
       version: '${{ github.sha }}'
@@ -246,7 +246,7 @@ jobs:
 
   deploy:
     needs: [docker]
-    uses: kamalyes/deploy-pipeline/.github/workflows/frontend-deploy-k8s.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/frontend-deploy-k8s.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       environment: ${{ inputs.environment || 'dev' }}
       image-name: '${{ env.IMAGE_PREFIX }}/my-project-app-a:${{ github.sha }}'
@@ -282,14 +282,14 @@ K8s 集群同时含 amd64 与 arm64 节点时，镜像 manifest 必须标记正�
 ```yaml
 jobs:
   build-arm64:
-    uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/backend-build-binary.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       binary-name: your-service
       arch: arm64         # 👈 关键：Go 交叉编译 linux/arm64 二进制
       # ...其他参数
   docker-arm64:
     needs: build-arm64
-    uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-docker.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/backend-build-docker.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       binary-name: your-service
       arch: arm64         # 👈 关键：与 build-binary 一致，manifest 标记为 linux/arm64

@@ -125,7 +125,7 @@ jobs:
           fetch-depth: 1
 
       - name: 🖥️ Print Runner Info
-        uses: kamalyes/deploy-pipeline/.github/actions/print-runner-info@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
 
       # ============================================
       # 步骤2：检出部署工作流仓库（获取脚本）
@@ -133,8 +133,8 @@ jobs:
       - name: 📥 Checkout Deploy Workflows (for scripts)
         uses: actions/checkout@v6
         with:
-          repository: kamalyes/deploy-pipeline
-          ref: master
+          repository: HitGameAI/deploy-pipeline
+          ref: 0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
           path: _deploy-workflows
           fetch-depth: 1
 

@@ -64,7 +64,7 @@ flowchart LR
 ```yaml
 jobs:
   test:
-    uses: kamalyes/deploy-pipeline/.github/workflows/go-library-test.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/go-library-test.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 ```
@@ -95,18 +95,18 @@ App 怎么建、要勾哪些权限项、安装范围怎么选，全在
 
 ```bash
 # 1. 先体检，只读不改（schedule 每周一也会自动跑一次）
-gh workflow run golib-bootstrap.yml -R kamalyes/deploy-pipeline -f mode=audit
+gh workflow run golib-bootstrap.yml -R HitGameAI/deploy-pipeline -f mode=audit
 
 # 2. 看 job summary 里的表，确认范围无误后空跑一遍
-gh workflow run golib-bootstrap.yml -R kamalyes/deploy-pipeline \
+gh workflow run golib-bootstrap.yml -R HitGameAI/deploy-pipeline \
   -f mode=secrets -f dry-run=true
 
 # 3. 真的下发
-gh workflow run golib-bootstrap.yml -R kamalyes/deploy-pipeline \
+gh workflow run golib-bootstrap.yml -R HitGameAI/deploy-pipeline \
   -f mode=secrets -f dry-run=false
 
 # 4. 给还没接入的新库补齐三份瘦入口（模板在 templates/golib/）
-gh workflow run golib-bootstrap.yml -R kamalyes/deploy-pipeline \
+gh workflow run golib-bootstrap.yml -R HitGameAI/deploy-pipeline \
   -f mode=workflows -f dry-run=false
 ```
 

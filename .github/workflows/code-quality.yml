@@ -67,7 +67,7 @@ jobs:
       # [EN] Every setting goes through this step first
       - name: ⚙️ Resolve Pipeline Config
         id: config
-        uses: kamalyes/deploy-pipeline/.github/actions/resolve-config@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
         with:
           sections: builder
           secret-sections: go
@@ -139,7 +139,7 @@ jobs:
       # checked.
       - name: 📥 Fetch Pipeline Assets (scripts)
         if: env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
-        uses: kamalyes/deploy-pipeline/.github/actions/fetch-pipeline-assets@master
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
         with:
           assets: scripts
 

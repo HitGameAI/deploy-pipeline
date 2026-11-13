@@ -5,7 +5,7 @@ description: '把本仓库自带的 scripts/ 与 templates/ 复制到工作区�
 #
 # 复用工作流要用到本仓库的 scripts/ 与 templates/，原先的做法是
 #   uses: actions/checkout@v6
-#   with: { repository: kamalyes/deploy-pipeline, ref: master }
+#   with: { repository: HitGameAI/deploy-pipeline, ref: 0c70ed9ef8fd8b81bad3423612fdb99be418ef2e }
 # 但复用工作流运行时，GITHUB_TOKEN 的作用域是「调用方仓库」，对本仓库没有读权限。
 # GitHub 对无权访问的私有仓库返回 404 而不是 403（避免泄漏仓库是否存在），
 # 所以报错是 "remote: Repository not found."，看起来像仓库不存在，实际是没权限。

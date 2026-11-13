@@ -1,6 +1,6 @@
 name: Trigger Downstream
 
-# 实际流程全在 kamalyes/deploy-pipeline 的 go-trigger-downstream.yml 里，所有 Go 库共用一份
+# 实际流程全在 HitGameAI/deploy-pipeline 的 go-trigger-downstream.yml 里，所有 Go 库共用一份
 #
 # 下游清单**不需要配置**：共用流水线直接从真实依赖图推导出谁的 go.mod 直接 require 了
 # 本模块，所以漏通知在机制上不可能发生
@@ -49,7 +49,7 @@ permissions:
 
 jobs:
   trigger:
-    uses: kamalyes/deploy-pipeline/.github/workflows/go-trigger-downstream.yml@master
+    uses: HitGameAI/deploy-pipeline/.github/workflows/go-trigger-downstream.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
     with:
       version: ${{ inputs.version }}
       only-repos: ${{ inputs.only_repos }}

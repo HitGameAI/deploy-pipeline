@@ -119,14 +119,14 @@ sequenceDiagram
 ```yaml
 # 只清理 artifacts
 cleanup:
-  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     cleanup-artifacts: true
     keep-days: '7'
 
 # 同时清理 artifacts + 指定镜像
 cleanup:
-  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     cleanup-artifacts: true
     keep-days: '7'
@@ -137,7 +137,7 @@ cleanup:
 
 # 扫描清理所有镜像（image-name 留空）
 cleanup:
-  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     cleanup-images: true
     project-owner: 'your-org'
@@ -146,7 +146,7 @@ cleanup:
 
 # 清理多个指定镜像（逗号分隔）
 cleanup:
-  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     cleanup-images: true
     project-owner: 'your-org'
@@ -165,7 +165,7 @@ cleanup:
 ```yaml
 # 只清理 dev/uat/sit 前缀的旧镜像，其他前缀（prod/master 等）不动
 cleanup:
-  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     cleanup-images: true
     project-owner: 'your-org'
@@ -174,7 +174,7 @@ cleanup:
 
 # 反向：清理所有旧镜像，但 prod/master 前缀的版本永不清理
 cleanup:
-  uses: kamalyes/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/cleanup-artifacts.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     cleanup-images: true
     project-owner: 'your-org'
@@ -269,7 +269,7 @@ notify:
 ```yaml
 # 单仓库自助模式（在业务仓库 pipeline.yml 中，用自己 GITHUB_TOKEN）
 branch-recycle:
-  uses: kamalyes/deploy-pipeline/.github/workflows/branch-recycle.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/branch-recycle.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     clean-features: true
     dry-run: false
@@ -390,7 +390,7 @@ bash scripts/branch-ops.sh cut                # 切分支模式
 ```yaml
 # 推荐：App Token 方式
 build-binary:
-  uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/backend-build-binary.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     binary-name: 'my-service'
     goprivate: 'github.com/my-org/*'
@@ -401,7 +401,7 @@ build-binary:
 
 # Legacy：SSH 方式
 build-binary:
-  uses: kamalyes/deploy-pipeline/.github/workflows/backend-build-binary.yml@master
+  uses: HitGameAI/deploy-pipeline/.github/workflows/backend-build-binary.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
   with:
     binary-name: 'my-service'
     goprivate: 'github.com/my-org/*'
@@ -855,7 +855,7 @@ jobs:
 
 | 判定 | 含义 |
 |------|------|
-| 共用 | 文件里出现 `kamalyes/deploy-pipeline/.github/workflows/go-`，即已接入 |
+| 共用 | 文件里出现 `HitGameAI/deploy-pipeline/.github/workflows/go-`，即已接入 |
 | 自写 | 文件存在但没引用共用流水线 |
 | 缺 | 文件不存在 |
 
