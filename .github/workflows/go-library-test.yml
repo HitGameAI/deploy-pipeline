@@ -138,7 +138,7 @@ jobs:
       gofmt-check: ${{ steps.out.outputs.gofmt-check }}
     steps:
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
         with:
           sections: golib
           vars-json: ${{ toJSON(vars) }}
@@ -261,7 +261,7 @@ jobs:
         shell: bash
     steps:
       - name: ⚙️ Resolve Credentials
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
         with:
           secret-sections: go
           vars-json: ${{ toJSON(vars) }}
@@ -355,7 +355,7 @@ jobs:
       # checked.
       - name: 📥 Fetch Pipeline Assets (scripts)
         if: env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@d3798f49355acd52c79c0fc85fc74b31ece20f6d
         with:
           assets: scripts
 

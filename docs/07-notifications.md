@@ -34,7 +34,7 @@ on:
 jobs:
   notify:
     if: github.event_name == 'pull_request'
-    uses: HitGameAI/deploy-pipeline/.github/workflows/pr-opened-notify.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+    uses: HitGameAI/deploy-pipeline/.github/workflows/pr-opened-notify.yml@d3798f49355acd52c79c0fc85fc74b31ece20f6d
     with:
       provider: wecom   # 可选，默认 feishu；feishu | wecom | telegram | all
     secrets: inherit    # 需对应渠道的 webhook secret
@@ -49,7 +49,7 @@ on:
 jobs:
   notify:
     if: github.event.pull_request.merged == true
-    uses: HitGameAI/deploy-pipeline/.github/workflows/pr-merged-notify.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+    uses: HitGameAI/deploy-pipeline/.github/workflows/pr-merged-notify.yml@d3798f49355acd52c79c0fc85fc74b31ece20f6d
     with:
       provider: wecom   # 可选，默认 feishu
     secrets: inherit
@@ -63,7 +63,7 @@ jobs:
 
 ```yaml
 - name: Notify
-  uses: HitGameAI/deploy-pipeline/.github/actions/notify@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+  uses: HitGameAI/deploy-pipeline/.github/actions/notify@d3798f49355acd52c79c0fc85fc74b31ece20f6d
   with:
     provider: all        # feishu | wecom | telegram | all | none（all 只发已配置的渠道）
     status: success      # success | failure | warning | info
@@ -208,7 +208,7 @@ proto 仓库 master 更新后，业务仓库一键升级 `go.mod` 中 proto 模�
 
 ```yaml
 - name: Update proto mod
-  uses: HitGameAI/deploy-pipeline/.github/actions/update-proto-mod@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+  uses: HitGameAI/deploy-pipeline/.github/actions/update-proto-mod@d3798f49355acd52c79c0fc85fc74b31ece20f6d
   with:
     token: ${{ secrets.GH_PAT }}
     proto-repo: 'your-org/demo-share-proto'

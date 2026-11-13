@@ -31,7 +31,7 @@
 ```yaml
 - name: ⚙️ Resolve Pipeline Config
   id: config
-  uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+  uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
   with:
     sections: ports docker kube
     secret-sections: kube notify app
@@ -98,7 +98,7 @@
 
 ```yaml
 - id: img
-  uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+  uses: HitGameAI/deploy-pipeline/.github/actions/normalize-image-name@d3798f49355acd52c79c0fc85fc74b31ece20f6d
   with:
     image-base: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
     image-name: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.ref_name }}
@@ -115,7 +115,7 @@
 （架构与预期不符）、`go build` 被 OOM kill（内存不够）、磁盘写满导致 docker build 失败
 
 ```yaml
-- uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+- uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@d3798f49355acd52c79c0fc85fc74b31ece20f6d
 ```
 
 ### notify
@@ -148,7 +148,7 @@
 
 ```yaml
 - uses: actions/checkout@v6
-  with: { repository: HitGameAI/deploy-pipeline, ref: 0c70ed9ef8fd8b81bad3423612fdb99be418ef2e }
+  with: { repository: HitGameAI/deploy-pipeline, ref: d3798f49355acd52c79c0fc85fc74b31ece20f6d }
 ```
 
 但在复用工作流里，`GITHUB_TOKEN` 的作用域是**调用方仓库**，对本仓库没有读权限

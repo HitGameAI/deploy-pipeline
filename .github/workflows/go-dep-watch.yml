@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
         with:
           sections: golib notify
           secret-sections: go notify
@@ -96,7 +96,7 @@ jobs:
 
       - name: 📥 Fetch Pipeline Assets (scripts)
         if: steps.gate.outputs.enabled == 'true'
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@d3798f49355acd52c79c0fc85fc74b31ece20f6d
         with:
           assets: scripts
 
@@ -128,7 +128,7 @@ jobs:
 
       - name: 📤 通知
         if: steps.gate.outputs.enabled == 'true' && (steps.watch.outputs.status == '2' || inputs.notify-on-clean == 'true')
-        uses: HitGameAI/deploy-pipeline/.github/actions/notify@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+        uses: HitGameAI/deploy-pipeline/.github/actions/notify@d3798f49355acd52c79c0fc85fc74b31ece20f6d
         with:
           provider: ${{ env.NOTIFICATION_PROVIDER }}
           status: ${{ steps.watch.outputs.status == '2' && 'warning' || 'success' }}

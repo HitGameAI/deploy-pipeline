@@ -64,7 +64,7 @@ flowchart LR
 ```yaml
 jobs:
   test:
-    uses: HitGameAI/deploy-pipeline/.github/workflows/go-library-test.yml@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+    uses: HitGameAI/deploy-pipeline/.github/workflows/go-library-test.yml@d3798f49355acd52c79c0fc85fc74b31ece20f6d
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 ```

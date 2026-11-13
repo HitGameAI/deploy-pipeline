@@ -117,7 +117,7 @@ jobs:
       # the standalone secrets are the fallback. The result reaches the next step through
       # GITHUB_ENV, so its if: condition still skips silently when no channel is configured
       - name: ⚙️ Resolve Pipeline Config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@d3798f49355acd52c79c0fc85fc74b31ece20f6d
         with:
           secret-sections: notify
           # vars 在可复用 workflow 里不需要调用方传递就能取到（与 secrets 不同），
@@ -149,7 +149,7 @@ jobs:
       # 所选渠道的 webhook 未配置（调用方仓库无此 secret）时静默跳过，不红 job
       - name: 📢 Notify
         if: ${{ env.FEISHU_WEBHOOK_URL != '' || env.WECOM_WEBHOOK_URL != '' || env.WECOM_WEBHOOK_KEY != '' || env.TELEGRAM_BOT_TOKEN != '' }}
-        uses: HitGameAI/deploy-pipeline/.github/actions/notify@0c70ed9ef8fd8b81bad3423612fdb99be418ef2e
+        uses: HitGameAI/deploy-pipeline/.github/actions/notify@d3798f49355acd52c79c0fc85fc74b31ece20f6d
         with:
           provider: ${{ inputs.provider }}
           status: info
