@@ -440,7 +440,7 @@ def acquire(args):
         blocked=sorted({x['path'].split('/')[1] for x in lock['modules'] if 'replacement' in x}|{x['path'].split('/')[1] for x in spec['modules']})
         require(owner.lower() not in {x.lower() for x in blocked},'organization_cannot_be_blocked')
         prefixes=['github.com/'+owner+'/*']+['github.com/'+x+'/*' for x in blocked]
-        policy={'GOMODCACHE':str(cache),'GOCACHE':str(root/'build-cache'),'GOPATH':str(root/'gopath'),'GOENV':'off','GOAUTH':'off','GOWORK':'off','GOTOOLCHAIN':'local',
+        policy={'GOMODCACHE':str(cache),'GOCACHE':str(root/'build-cache'),'GOPATH':str(root/'gopath'),'GOBIN':'','GOENV':'off','GOAUTH':'off','GOWORK':'off','GOTOOLCHAIN':'local',
                 'GOPRIVATE':prefixes[0],'GONOPROXY':','.join(prefixes),'GONOSUMDB':','.join(prefixes),
                 'GOVCS':','.join(x+':off' for x in prefixes[1:])+','+prefixes[0]+':git,public:git|hg,private:off'}|execution_git_policy()
         env.update(policy,GOSUMDB='sum.golang.org',GOPROXY=os.environ.get('GOPROXY') or 'https://proxy.golang.org,direct')
@@ -519,7 +519,7 @@ def acquire(args):
     # Keep only the namespace denial wrapper: it has no credential material.
     export(state['policy']|{'MODULE_CUSTODY_REAL_GIT':state['real_git'],'MODULE_CUSTODY_BLOCKED_OWNERS':json.dumps(state['blocked_owners'])})
     require(os.environ.get('GITHUB_PATH'),'github_path_file_missing')
-    with open(os.environ['GITHUB_PATH'],'a') as handle:handle.write(str(root/'bin')+'\n')
+    with open(os.environ['GITHUB_PATH'],'a') as handle:handle.write(str(root/'gopath'/'bin')+'\n'+str(root/'bin')+'\n')
     print('Module custody acquisition and token revocation passed')
 
 def prepare(args):
