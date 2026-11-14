@@ -254,7 +254,7 @@ jobs:
 
       - name: 🔒 Prepare Module Custody
         if: inputs.module-custody-lock != ''
-        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@7da5e8d622e81eebb0005f5c25612d7aab890ab2
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@3f79f2aa384e7ef3eda729c9f45201d773f23542
         with:
           mode: prepare
           lock: ${{ inputs.module-custody-lock }}
@@ -292,7 +292,7 @@ jobs:
 
       - name: 🔒 Verify Module Custody Before Execution
         if: inputs.module-custody-lock != ''
-        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@7da5e8d622e81eebb0005f5c25612d7aab890ab2
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@3f79f2aa384e7ef3eda729c9f45201d773f23542
         with:
           mode: guard
 
@@ -359,7 +359,7 @@ jobs:
 
       - name: 🧹 Verify and Clean Module Custody
         if: always() && inputs.module-custody-lock != ''
-        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@7da5e8d622e81eebb0005f5c25612d7aab890ab2
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@3f79f2aa384e7ef3eda729c9f45201d773f23542
         with:
           mode: cleanup
 
