@@ -3,6 +3,11 @@ name: 🔍 Code Quality Check
 on:
   workflow_call:
     inputs:
+      module-custody-lock:
+        description: 'Optional data-only module custody lock path relative to the caller workspace; empty preserves legacy behavior'
+        required: false
+        type: string
+        default: ''
       # ============================================
       # 可覆盖的静态配置（优先读 vars）
       # ============================================
@@ -67,7 +72,7 @@ jobs:
       # [EN] Every setting goes through this step first
       - name: ⚙️ Resolve Pipeline Config
         id: config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@013c0e1efc2b97819ca13f44fe5432be79f58867
         with:
           sections: builder
           secret-sections: go
@@ -82,9 +87,11 @@ jobs:
 
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
+        with:
+          persist-credentials: ${{ inputs.module-custody-lock == '' }}
 
       - name: 🔑 Generate GitHub App Token
-        if: env.GO_AUTH_METHOD == 'app-token'
+        if: inputs.module-custody-lock == '' && env.GO_AUTH_METHOD == 'app-token'
         id: app_token
         uses: actions/create-github-app-token@v1
         with:
@@ -93,7 +100,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: ⚙️ Configure Git for App Token Auth
-        if: env.GO_AUTH_METHOD == 'app-token'
+        if: inputs.module-custody-lock == '' && env.GO_AUTH_METHOD == 'app-token'
         run: |
           git config --global url."https://x-access-token:${{ steps.app_token.outputs.token }}@github.com/".insteadOf "https://github.com/"
           if [ -n "${GOPRIVATE}" ]; then
@@ -101,13 +108,13 @@ jobs:
           fi
 
       - name: 🔑 Setup SSH Key for Private Modules
-        if: env.GO_AUTH_METHOD == 'ssh'
+        if: inputs.module-custody-lock == '' && env.GO_AUTH_METHOD == 'ssh'
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ env.GIT_SSH_PRIVATE_KEY }}
 
       - name: ⚙️ Configure Git for SSH Auth
-        if: env.GO_AUTH_METHOD == 'ssh'
+        if: inputs.module-custody-lock == '' && env.GO_AUTH_METHOD == 'ssh'
         run: |
           git config --global url."git@github.com:".insteadOf "https://github.com/"
           if [ -n "${GOPRIVATE}" ]; then
@@ -118,7 +125,14 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          cache: ${{ inputs.module-custody-lock == '' }}
+
+      - name: 🔒 Prepare Module Custody
+        if: inputs.module-custody-lock != ''
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@6a6bd6b1bcf81eb8a70d2f5f84b7ff61c14b6562
+        with:
+          mode: prepare
+          lock: ${{ inputs.module-custody-lock }}
 
       # 私有依赖到底看不看得见 —— 在 go mod download 之前先问清楚
       #
@@ -138,13 +152,13 @@ jobs:
       # invisible and nonexistent look identical. Only the repositories matched by GOPRIVATE are
       # checked.
       - name: 📥 Fetch Pipeline Assets (scripts)
-        if: env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
+        if: inputs.module-custody-lock == '' && env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@013c0e1efc2b97819ca13f44fe5432be79f58867
         with:
           assets: scripts
 
       - name: 🧭 私有依赖可达性预检
-        if: env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
+        if: inputs.module-custody-lock == '' && env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: bash _deploy-workflows/scripts/check-private-modules.sh go.mod
@@ -156,6 +170,12 @@ jobs:
             export GOPRIVATE="${{ env.GOPRIVATE }}"
           fi
           go mod download
+
+      - name: 🔒 Verify Module Custody Before Execution
+        if: inputs.module-custody-lock != ''
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@6a6bd6b1bcf81eb8a70d2f5f84b7ff61c14b6562
+        with:
+          mode: guard
 
       - name: ✨ Format Check (gofmt)
         run: |
@@ -191,3 +211,21 @@ jobs:
             coverage
             coverage.html
           retention-days: ${{ inputs.retention-days }}
+
+      - name: 🧹 Verify and Clean Module Custody
+        if: always() && inputs.module-custody-lock != ''
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@6a6bd6b1bcf81eb8a70d2f5f84b7ff61c14b6562
+        with:
+          mode: cleanup
+
+      - name: 📤 Upload Module Custody Evidence
+        if: always() && inputs.module-custody-lock != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-custody-code-quality-evidence-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/module-custody-acquisition.json
+            ${{ runner.temp }}/module-custody-early-failure.json
+            ${{ runner.temp }}/module-custody-cleanup.json
+          if-no-files-found: error
+          retention-days: 7
