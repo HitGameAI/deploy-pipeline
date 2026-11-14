@@ -440,7 +440,7 @@ def acquire(args):
         blocked=sorted({x['path'].split('/')[1] for x in lock['modules'] if 'replacement' in x}|{x['path'].split('/')[1] for x in spec['modules']})
         require(owner.lower() not in {x.lower() for x in blocked},'organization_cannot_be_blocked')
         prefixes=['github.com/'+owner+'/*']+['github.com/'+x+'/*' for x in blocked]
-        policy={'GOMODCACHE':str(cache),'GOCACHE':str(root/'build-cache'),'GOENV':'off','GOAUTH':'off','GOWORK':'off','GOTOOLCHAIN':'local',
+        policy={'GOMODCACHE':str(cache),'GOCACHE':str(root/'build-cache'),'GOPATH':str(root/'gopath'),'GOENV':'off','GOAUTH':'off','GOWORK':'off','GOTOOLCHAIN':'local',
                 'GOPRIVATE':prefixes[0],'GONOPROXY':','.join(prefixes),'GONOSUMDB':','.join(prefixes),
                 'GOVCS':','.join(x+':off' for x in prefixes[1:])+','+prefixes[0]+':git,public:git|hg,private:off'}|execution_git_policy()
         env.update(policy,GOSUMDB='sum.golang.org',GOPROXY=os.environ.get('GOPROXY') or 'https://proxy.golang.org,direct')
