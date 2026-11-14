@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import zipfile
@@ -38,6 +39,101 @@ def stream(raw):
     while raw.strip():
         item,end=decoder.raw_decode(raw.lstrip());items.append(item);raw=raw.lstrip()[end:]
     return items
+
+def download_error_class(text):
+    # Pattern labels aid diagnosis; they do not establish the underlying cause.
+    lower=text.lower()
+    for label,patterns in [
+        ('checksum_mismatch',('checksum mismatch','security error')),
+        ('rate_limited',('429 too many requests','rate limit')),
+        ('authentication',('401 unauthorized','authentication failed','terminal prompts disabled')),
+        ('access_denied',('403 forbidden','access denied','permission denied')),
+        ('not_found_or_access',('404 not found','repository not found')),
+        ('source_policy',('govcs disallows','personal namespace blocked','unsupported protocol')),
+        ('network_transport',('tls handshake timeout','connection reset by peer','unexpected eof','i/o timeout','no such host','dial tcp')),
+        ('version_not_found',('unknown revision','invalid version')),
+    ]:
+        if any(pattern in lower for pattern in patterns):return label
+    return 'unclassified'
+
+def redact_download_error(text, environments):
+    # Only inspect values already available to this process/child. Do not read
+    # credential files, runner logs, or environment-command files for diagnosis.
+    values=set()
+    def leaves(value):
+        if isinstance(value,str) and value:values.add(value)
+        elif isinstance(value,dict):
+            for child in value.values():leaves(child)
+        elif isinstance(value,list):
+            for child in value:leaves(child)
+    for environment in environments:
+        for key in AUTH_ENV:
+            value=environment.get(key)
+            if not isinstance(value,str) or not value:continue
+            values.add(value)
+            if 'PRIVATE_KEY' in key:
+                values.update(line for line in value.splitlines() if line)
+            if key in ('CONFIG_SECRETS_JSON','PIPELINE_SECRETS') and len(value)<=1024*1024:
+                try:leaves(json.loads(value))
+                except (ValueError,RecursionError):pass
+    variants=set()
+    for value in values:
+        variants.update((value,json.dumps(value)[1:-1],urllib.parse.quote(value,safe=''),
+                         urllib.parse.quote_plus(value,safe=''),base64.b64encode(value.encode()).decode(),
+                         base64.b64encode(('x-access-token:'+value).encode()).decode()))
+    for value in sorted(variants,key=len,reverse=True):
+        if value:text=text.replace(value,'[REDACTED]')
+    text=re.sub(r'-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----.*?(?:-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|\Z)',
+                '[REDACTED PRIVATE KEY]',text,flags=re.S)
+    text=re.sub(r'(?i)\b([a-z][a-z0-9+.-]*://)[^/\s?#]*@',r'\1[REDACTED]@',text)
+    text=re.sub(r'(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)','[REDACTED]',text)
+    text=re.sub(r'(?i)(authorization\s*[:=]\s*(?:bearer|basic)\s+)[^\s\"\x27]+',r'\1[REDACTED]',text)
+    text=re.sub(r'(?i)((?:token|password|passwd|client_secret|private_key)\s*[=:]\s*)(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s&,;]+)',r'\1[REDACTED]',text)
+    # Remove terminal controls before truncating, and never truncate a secret
+    # before redaction. JSON still retains readable line boundaries.
+    text=''.join(c if c in '\n\t' or ord(c)>=32 and ord(c)!=127 else '?' for c in text)
+    encoded=text.encode();truncated=len(encoded)>2048
+    if truncated:text=encoded[:2048].decode('utf-8','ignore')+' [TRUNCATED]'
+    return text,truncated
+
+def failed_download_evidence(raw, requests, environment):
+    result={'schema_version':1,'stdout_sha256':digest(raw),'stdout_bytes':len(raw),
+            'requested_module_count':len(requests),'parse_status':'complete','errors':[],
+            'ignored_unknown_module_rows':0,'ignored_non_error_rows':0,'omitted_error_rows':0,
+            'classification_is_pattern_not_root_cause':True,'raw_stdout_or_environment_saved':False}
+    try:
+        if len(raw)>16*1024*1024:
+            result['parse_status']='stdout_size_limit';return result
+        expected={tuple(value.rsplit('@',1)) for value in requests}
+        require(all(len(x)==2 and all(x) for x in expected),'diagnostic_request_set')
+        def pairs(items):
+            row={}
+            for key,value in items:
+                require(key not in row,'diagnostic_duplicate_json_key');row[key]=value
+            return row
+        decoder=json.JSONDecoder(object_pairs_hook=pairs);text=raw.decode('utf-8');count=0
+        while text.strip():
+            count+=1
+            if count>10000:result['parse_status']='json_record_limit';break
+            row,end=decoder.raw_decode(text.lstrip());text=text.lstrip()[end:]
+            if not isinstance(row,dict) or not isinstance(row.get('Path'),str) or not isinstance(row.get('Version'),str):
+                result['ignored_non_error_rows']+=1;continue
+            if (row['Path'],row['Version']) not in expected:
+                result['ignored_unknown_module_rows']+=1;continue
+            error=row.get('Error')
+            if not isinstance(error,str) or not error:
+                result['ignored_non_error_rows']+=1;continue
+            if len(result['errors'])>=512:
+                result['omitted_error_rows']+=1;continue
+            safe,truncated=redact_download_error(error,(os.environ,environment))
+            result['errors'].append({'Path':row['Path'],'Version':row['Version'],'Error':safe,
+                                     'error_sha256':digest(error.encode()),'sanitized_error_sha256':digest(safe.encode()),
+                                     'error_class':download_error_class(error),'error_truncated':truncated})
+    except Exception:
+        # Diagnostic parsing must not replace the existing command failure or
+        # the unconditional token revocation/cleanup path. Never copy raw text.
+        result['parse_status']='unparseable_json_or_redaction_failure'
+    return result
 
 def output(name, value):
     path=os.environ.get('GITHUB_OUTPUT')
@@ -303,6 +399,8 @@ def acquire(args):
     def run(argv,cwd,env,expected=0):
         process=subprocess.run([str(x) for x in argv],cwd=cwd,env=env,capture_output=True,stdin=subprocess.DEVNULL,timeout=1200)
         commands.append({'program':Path(str(argv[0])).name,'operation':argv[1] if len(argv)>1 else '', 'exit_code':process.returncode,'stdout_sha256':digest(process.stdout),'stderr_sha256':digest(process.stderr)})
+        if process.returncode!=expected and Path(str(argv[0])).name=='go' and argv[1:4]==['mod','download','-json']:
+            evidence.setdefault('failed_module_downloads',[]).append(failed_download_evidence(process.stdout,argv[4:],env))
         require(process.returncode==expected,'go_or_git_command_failed')
         return process.stdout.decode()
     try:
