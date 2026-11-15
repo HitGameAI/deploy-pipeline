@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: ''
+      require-test-pass:
+        description: 'Require the Go test step to pass'
+        required: false
+        type: boolean
+        default: false
       # 上传覆盖率那步一直在引用这个输入，但从来没声明过
       # 未声明就求值成空串，upload-artifact 于是回落到仓库默认的 90 天，
       # 而文档里写的是 7 天 —— 文档与实现对不上，且没有任何报错提示
@@ -173,7 +178,7 @@ jobs:
 
       - name: 🧪 Run Tests with Coverage
         run: gotestsum -f testname -- ./... -race -count=1 -coverprofile=coverage -covermode=atomic -shuffle=on
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.require-test-pass }}
 
       - name: 📊 Generate Coverage Report
         if: always()
