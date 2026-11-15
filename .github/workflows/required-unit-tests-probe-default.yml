@@ -1,0 +1,17 @@
+name: Default isolated Go test gate
+on:
+  push:
+    branches:
+      - codex/probe-required-unit-tests-20261115
+permissions:
+  contents: read
+concurrency:
+  group: required-go-unit-test-default-probe-20261115
+  cancel-in-progress: false
+jobs:
+  quality:
+    if: ${{ github.repository == 'HitGameAI/deploy-pipeline' && github.ref == 'refs/heads/codex/probe-required-unit-tests-20261115' && github.actor == 'FJ-Tony' && github.event.created == true && github.run_attempt == '1' }}
+    uses: ./.github/workflows/code-quality.yml
+    with:
+      go-auth-method: none
+      go-version: '1.25.1'
