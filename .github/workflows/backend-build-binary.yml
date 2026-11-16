@@ -3,6 +3,11 @@ name: 🚀 Build Binary
 on:
   workflow_call:
     inputs:
+      module-custody-lock:
+        description: 'Optional data-only module custody lock path relative to the caller workspace; empty preserves legacy behavior'
+        required: false
+        type: string
+        default: ''
       # ============================================
       # 动态值（每次调用不同，必须传入）
       # ============================================
@@ -158,7 +163,7 @@ jobs:
       # [EN] Every setting goes through this step first
       - name: ⚙️ Resolve Pipeline Config
         id: config
-        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@v1.0.0
+        uses: HitGameAI/deploy-pipeline/.github/actions/resolve-config@013c0e1efc2b97819ca13f44fe5432be79f58867
         with:
           sections: builder
           secret-sections: go
@@ -170,9 +175,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
+          persist-credentials: ${{ inputs.module-custody-lock == '' }}
 
       - name: 🖥️ Print Runner Info
-        uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@v1.0.0
+        uses: HitGameAI/deploy-pipeline/.github/actions/print-runner-info@013c0e1efc2b97819ca13f44fe5432be79f58867
 
       # 不用 actions/checkout 取本仓库：复用工作流里 GITHUB_TOKEN 的作用域是调用方仓库，
       # 对本私有仓库没有读权限，GitHub 返回 404 而不是 403，报错是
@@ -182,7 +188,7 @@ jobs:
       # calling repository and cannot read this private one, and GitHub answers 404 rather than
       # 403, so the error reads as a missing repository when it is a permission
       - name: 📥 Fetch Pipeline Assets (scripts)
-        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@v1.0.0
+        uses: HitGameAI/deploy-pipeline/.github/actions/fetch-pipeline-assets@013c0e1efc2b97819ca13f44fe5432be79f58867
         with:
           assets: scripts
 
@@ -203,7 +209,7 @@ jobs:
       # 条件：GO_AUTH_METHOD == 'app-token'（不依赖 GOPRIVATE 是否为空）
       # ============================================
       - name: 🔑 Generate GitHub App Token
-        if: env.GO_AUTH_METHOD == 'app-token'
+        if: inputs.module-custody-lock == '' && env.GO_AUTH_METHOD == 'app-token'
         id: app_token
         uses: actions/create-github-app-token@v1
         with:
@@ -212,7 +218,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: ⚙️ Configure Git for App Token Auth
-        if: env.GO_AUTH_METHOD == 'app-token'
+        if: inputs.module-custody-lock == '' && env.GO_AUTH_METHOD == 'app-token'
         run: |
           git config --global url."https://x-access-token:${{ steps.app_token.outputs.token }}@github.com/".insteadOf "https://github.com/"
           if [ -n "${GOPRIVATE}" ]; then
@@ -225,13 +231,13 @@ jobs:
       # 条件：GO_AUTH_METHOD == 'ssh'（不依赖 GOPRIVATE 是否为空）
       # ============================================
       - name: 🔑 Setup SSH Key for Private Modules
-        if: env.GO_AUTH_METHOD == 'ssh'
+        if: inputs.module-custody-lock == '' && env.GO_AUTH_METHOD == 'ssh'
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ env.GIT_SSH_PRIVATE_KEY }}
 
       - name: ⚙️ Configure Git for SSH Auth
-        if: env.GO_AUTH_METHOD == 'ssh'
+        if: inputs.module-custody-lock == '' && env.GO_AUTH_METHOD == 'ssh'
         run: |
           git config --global url."git@github.com:".insteadOf "https://github.com/"
           if [ -n "${GOPRIVATE}" ]; then
@@ -244,7 +250,14 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           check-latest: false
           # 内置模块缓存：以 go.sum 为 key，自动管理 cache 生命周期，无需手动配置
-          cache: true
+          cache: ${{ inputs.module-custody-lock == '' }}
+
+      - name: 🔒 Prepare Module Custody
+        if: inputs.module-custody-lock != ''
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@3f79f2aa384e7ef3eda729c9f45201d773f23542
+        with:
+          mode: prepare
+          lock: ${{ inputs.module-custody-lock }}
 
       # 私有依赖到底看不看得见 —— 在 go mod download 之前先问清楚
       #
@@ -264,7 +277,7 @@ jobs:
       # invisible and nonexistent look identical. Only the repositories matched by GOPRIVATE are
       # checked.
       - name: 🧭 私有依赖可达性预检
-        if: env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
+        if: inputs.module-custody-lock == '' && env.GOPRIVATE != '' && steps.app_token.outputs.token != ''
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: bash _deploy-workflows/scripts/check-private-modules.sh go.mod
@@ -276,6 +289,12 @@ jobs:
             export GOPRIVATE="${{ env.GOPRIVATE }}"
           fi
           go mod download
+
+      - name: 🔒 Verify Module Custody Before Execution
+        if: inputs.module-custody-lock != ''
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@3f79f2aa384e7ef3eda729c9f45201d773f23542
+        with:
+          mode: guard
 
       # 脚本路径与产物目录都用 ${GITHUB_WORKSPACE} 拼成绝对路径
       #
@@ -337,3 +356,21 @@ jobs:
             ${{ steps.artifact-paths.outputs.buildinfo }}
           if-no-files-found: warn
           retention-days: ${{ inputs.retention-days }}
+
+      - name: 🧹 Verify and Clean Module Custody
+        if: always() && inputs.module-custody-lock != ''
+        uses: HitGameAI/deploy-pipeline/.github/actions/prepare-module-custody@3f79f2aa384e7ef3eda729c9f45201d773f23542
+        with:
+          mode: cleanup
+
+      - name: 📤 Upload Module Custody Evidence
+        if: always() && inputs.module-custody-lock != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-custody-build-binary-evidence-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/module-custody-acquisition.json
+            ${{ runner.temp }}/module-custody-early-failure.json
+            ${{ runner.temp }}/module-custody-cleanup.json
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,90 @@
+name: 'Prepare Module Custody'
+description: 'Validate a data-only lock, acquire verified module content, revoke source credentials, and guard dedicated caches'
+
+inputs:
+  mode:
+    description: 'prepare, guard, or cleanup'
+    required: false
+    default: 'prepare'
+  lock:
+    description: 'Workspace-relative JSON lock, required only for prepare'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Validate mode
+      if: always()
+      shell: bash
+      env:
+        CUSTODY_MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        case "$CUSTODY_MODE" in
+          prepare|guard|cleanup) ;;
+          *) echo '::error::Invalid module custody action mode' >&2; exit 1 ;;
+        esac
+
+    - name: Validate data-only lock
+      if: inputs.mode == 'prepare'
+      id: validate
+      shell: bash
+      env:
+        CUSTODY_LOCK: ${{ inputs.lock }}
+      run: |
+        set -euo pipefail
+        env -u APP_PRIVATE_KEY -u GIT_SSH_PRIVATE_KEY -u PIPELINE_SECRETS \
+          -u GH_TOKEN -u GITHUB_TOKEN -u GH_GPA_TOKEN -u MODULE_GITHUB_TOKEN -u CONFIG_SECRETS_JSON -u SSH_AUTH_SOCK \
+          -u MODULE_CUSTODY_TOKEN -u MODULE_CUSTODY_INSTALLATION_ID -u MODULE_CUSTODY_APP_SLUG \
+          python3 "${GITHUB_ACTION_PATH}/../../../scripts/module-custody/custody.py" \
+          validate --lock "$CUSTODY_LOCK" --state "$RUNNER_TEMP/module-custody/state.json"
+
+    - name: Create narrowly scoped source token
+      if: inputs.mode == 'prepare'
+      id: source-token
+      uses: actions/create-github-app-token@v1
+      with:
+        app-id: ${{ env.APP_ID }}
+        private-key: ${{ env.APP_PRIVATE_KEY }}
+        owner: ${{ steps.validate.outputs.owner }}
+        repositories: ${{ steps.validate.outputs.repositories }}
+        permission-contents: read
+        github-api-url: https://api.github.com
+
+    - name: Acquire verified module content and revoke source token
+      if: inputs.mode == 'prepare'
+      shell: bash
+      env:
+        MODULE_CUSTODY_TOKEN: ${{ steps.source-token.outputs.token }}
+        MODULE_CUSTODY_INSTALLATION_ID: ${{ steps.source-token.outputs.installation-id }}
+        MODULE_CUSTODY_APP_SLUG: ${{ steps.source-token.outputs.app-slug }}
+      run: |
+        set -euo pipefail
+        env -u APP_ID -u APP_PRIVATE_KEY -u GIT_SSH_PRIVATE_KEY -u PIPELINE_SECRETS \
+          -u GH_TOKEN -u GITHUB_TOKEN -u GH_GPA_TOKEN -u MODULE_GITHUB_TOKEN -u CONFIG_SECRETS_JSON -u SSH_AUTH_SOCK \
+          python3 "${GITHUB_ACTION_PATH}/../../../scripts/module-custody/custody.py" \
+          prepare --state "$RUNNER_TEMP/module-custody/state.json"
+
+    - name: Guard verified source and module cache
+      if: inputs.mode == 'guard'
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "${GITHUB_ACTION_PATH}/../../../scripts/module-custody/custody.py" \
+          guard --state "$RUNNER_TEMP/module-custody/state.json"
+
+    - name: Verify and remove dedicated custody resources
+      if: always() && inputs.mode == 'cleanup'
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "${GITHUB_ACTION_PATH}/../../../scripts/module-custody/custody.py" \
+          cleanup --state "$RUNNER_TEMP/module-custody/state.json"
+
+    - name: Clear source authentication environment
+      if: always() && (inputs.mode == 'prepare' || inputs.mode == 'cleanup')
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "${GITHUB_ACTION_PATH}/../../../scripts/module-custody/custody.py" clear-auth

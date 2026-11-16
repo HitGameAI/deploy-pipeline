@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Module custody lock version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "go_version": {
+      "type": "string",
+      "pattern": "^go[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "installation_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": [
+        "id",
+        "installation_id",
+        "slug"
+      ]
+    },
+    "consumer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "base_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "module": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_.~+!/-]+$"
+        },
+        "files": {
+          "type": "object",
+          "minProperties": 2,
+          "maxProperties": 100000,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^[A-Za-z0-9_.@+!/-]+$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "required": [
+        "repository",
+        "repository_id",
+        "base_commit",
+        "module",
+        "files"
+      ]
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repository": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$"
+          },
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "repository",
+          "id"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 500
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_.~+!/-]+$"
+          },
+          "version": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 128,
+            "pattern": "^v[0-9][A-Za-z0-9.+-]*$"
+          },
+          "sum": {
+            "type": "string",
+            "pattern": "^h1:[A-Za-z0-9+/]{43}=$"
+          },
+          "go_mod_sum": {
+            "type": "string",
+            "pattern": "^h1:[A-Za-z0-9+/]{43}=$"
+          },
+          "go_mod_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "files_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "file_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "replacement": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9_.~+!/-]+$"
+              },
+              "version": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 128,
+                "pattern": "^v[0-9][A-Za-z0-9.+-]*$"
+              },
+              "sum": {
+                "type": "string",
+                "pattern": "^h1:[A-Za-z0-9+/]{43}=$"
+              },
+              "commit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              }
+            },
+            "required": [
+              "path",
+              "version",
+              "sum",
+              "commit"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "version",
+          "sum",
+          "go_mod_sum",
+          "go_mod_sha256",
+          "files_digest",
+          "file_count"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 2000
+    },
+    "custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "manifest_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_.@+!/-]+$"
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "blobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[A-Za-z0-9_.@+!/-]+$"
+              },
+              "mode": {
+                "const": "100644"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "git_blob_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "mode",
+              "bytes",
+              "git_blob_sha",
+              "sha256"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 100
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9_.~+!/-]+$"
+              },
+              "version": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 128,
+                "pattern": "^v[0-9][A-Za-z0-9.+-]*$"
+              },
+              "sum": {
+                "type": "string",
+                "pattern": "^h1:[A-Za-z0-9+/]{43}=$"
+              },
+              "go_mod_sum": {
+                "type": "string",
+                "pattern": "^h1:[A-Za-z0-9+/]{43}=$"
+              }
+            },
+            "required": [
+              "path",
+              "version",
+              "sum",
+              "go_mod_sum"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "repository",
+        "repository_id",
+        "commit",
+        "tree",
+        "manifest_path",
+        "manifest_sha256",
+        "blobs",
+        "modules"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "go_version",
+    "app",
+    "consumer",
+    "repositories",
+    "modules",
+    "custody"
+  ]
+}
