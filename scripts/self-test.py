@@ -1616,6 +1616,19 @@ def job_steps(doc):
             yield name, job["steps"]
 
 
+def check_code_quality_test_gate():
+    section("代码质量工作流支持严格单测 | Code quality can require passing tests")
+    doc = parsed_workflow("code-quality.yml") or {}
+    events = doc.get("on", doc.get(True, {}))
+    gate = events.get("workflow_call", {}).get("inputs", {}).get("require-test-pass", {})
+    check(gate.get("type") == "boolean" and gate.get("default") is False,
+          "调用方可以启用严格模式 | Callers can opt into strict tests")
+    steps = [step for job, items in job_steps(doc) if job == "code-quality"
+             for step in items if (step.get("run") or "").startswith("gotestsum ")]
+    check(len(steps) == 1 and steps[0].get("continue-on-error") == "${{ !inputs.require-test-pass }}",
+          "单测失败按调用方设置处理 | Unit-test failures follow the caller setting")
+
+
 def check_private_module_preflight(_yaml_mod):
     """私有依赖可达性预检：脚本得在、得跑在 go mod download 之前、资产得先拉下来
 
@@ -1911,6 +1924,7 @@ def main():
     check_mermaid(yaml)
     check_templates(yaml)
     check_workdir_env(yaml)
+    check_code_quality_test_gate()
     check_private_module_preflight(yaml)
     check_config_source_precedence(yaml)
 
