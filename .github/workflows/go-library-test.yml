@@ -69,6 +69,11 @@ on:
         required: false
         type: string
         default: ''
+      coverage-upload:
+        description: 'Whether to upload coverage to external Codecov; false keeps coverage.txt local and skips the upload action'
+        required: false
+        type: boolean
+        default: true
       coverage-go-version:
         description: '由哪个 Go 版本的 job 上传覆盖率'
         required: false
@@ -113,7 +118,7 @@ on:
       APP_PRIVATE_KEY:
         required: false
       CODECOV_TOKEN:
-        description: '没配也不影响流水线，上传步骤自己跳过'
+        description: 'Optional Codecov token; use coverage-upload=false to explicitly disable uploads'
         required: false
 
 jobs:
@@ -449,6 +454,7 @@ jobs:
       - name: 📤 Upload Coverage to Codecov
         if: >-
           always()
+          && inputs.coverage-upload
           && matrix.go-version == needs.config.outputs.coverage-go-version
           && matrix.platform == needs.config.outputs.coverage-platform
           && hashFiles('coverage.txt') != ''
