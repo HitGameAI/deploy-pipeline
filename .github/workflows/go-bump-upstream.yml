@@ -623,17 +623,17 @@ jobs:
             existing="$(printf '%s' "$prs" | jq -r '.[0].number // empty')"
             if [ -z "$existing" ]; then
               {
-                printf 'Opt-in PR-only dependency update. **Draft review required; main and tags were not written by this workflow.**\n\n'
-                printf -- '- Module: %s\n- Old version: %s\n- New version: %s\n- Validated main: %s\n- Lock tree: %s\n\n' "$MODULE" "${OLD_VERSION:-none}" "$VERSION" "$base_sha" "$tree"
-                printf '| Gate | Actual outcome |\n|---|---|\n| build | %s |\n| vet | %s |\n| test | %s |\n\n' "$BUILD" "$VET" "$TEST"
-                printf 'Candidate configured gates passed: %s. Tests enabled: %s. Lock pair unchanged through gates: true.\n\n' "$CANDIDATE_PASSED" "$RUN_TESTS"
-                printf 'Baseline outcome: %s; already-red: %s; baseline failed gate: %s.\n\n' "$BASELINE_OUTCOME" "${ALREADY_RED:-not-established}" "${BASELINE_FAILED:-none}"
-                printf 'An already-red baseline does not establish the same cause and does not waive any candidate failure.\n\n'
-                printf 'This topic is immutable. Later attempts only read this PR; they do not change its head, body, or review state.\n\n'
-                printf 'Run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+                printf '显式启用 pr-only 的依赖更新。**本 PR 为草稿，等待人工审核。自动写入范围仅限主题分支和草稿 PR。**\n\n'
+                printf -- '- 模块：%s\n- 原版本：%s\n- 新版本：%s\n- 已验证的 main：%s\n- 锁文件树：%s\n\n' "$MODULE" "${OLD_VERSION:-none}" "$VERSION" "$base_sha" "$tree"
+                printf '| 检查 | 实际结果 |\n|---|---|\n| build | %s |\n| vet | %s |\n| test | %s |\n\n' "$BUILD" "$VET" "$TEST"
+                printf '候选已配置检查均通过：%s。已启用测试：%s。检查前后锁文件保持不变：true。\n\n' "$CANDIDATE_PASSED" "$RUN_TESTS"
+                printf '基线检查结果：%s。原基线已失败：%s。基线失败检查：%s。\n\n' "$BASELINE_OUTCOME" "${ALREADY_RED:-not-established}" "${BASELINE_FAILED:-none}"
+                printf '候选与原基线的失败分别记录。候选出现任一失败，本次更新判为失败。\n\n'
+                printf '本主题分支不可变。后续执行仅回读此 PR 的 head、正文和审核状态。\n\n'
+                printf '执行记录：%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
               } > "$RUNNER_TEMP/pr_body.md"
               if url="$(gh pr create --draft --base main --head "$branch" \
-                --title "deps: ${MODULE} ${VERSION} (review only)" --body-file "$RUNNER_TEMP/pr_body.md")"; then
+                --title "📦 依赖更新：${MODULE} ${VERSION}（仅供审核）" --body-file "$RUNNER_TEMP/pr_body.md")"; then
                 existing="${url##*/}"
                 [[ "$existing" =~ ^[0-9]+$ ]] || fail "PR creation did not return a number"
                 [ "$url" = "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$existing" ] || fail "unexpected PR URL"
