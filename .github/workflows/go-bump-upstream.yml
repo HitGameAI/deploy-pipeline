@@ -13,6 +13,9 @@ name: 📦 Go Bump Upstream
 # 这里加的闸门：升完先 build + vet + test，过了才允许碰默认分支；没过就开分支提 PR 并判红，
 # 坏版本既进不了主干，也不会悄悄丢掉
 #
+# 迁移库可以显式启用 pr-only：全绿也只生成面向 main 的 Draft，已有红基线不豁免失败。
+# 不启用时保持现有联动行为；启用须有现成可验证的 App/PAT，不改变权限或普通 PR CI 配置。
+#
 # [EN] The downstream half of the release chain. The hand-written copies ran go get, go mod
 # tidy, commit and push with no build in between, which is how one repository's default branch
 # stopped compiling: the bump raised a direct dependency, minimal version selection pulled a
@@ -23,6 +26,11 @@ name: 📦 Go Bump Upstream
 on:
   workflow_call:
     inputs:
+      pr-only:
+        description: '迁移库 opt-in：只向 main 创建不可变 Draft PR；候选失败仍判红，绝不直推默认分支或自动打 tag'
+        required: false
+        type: boolean
+        default: false
       run-tests:
         description: '推送前是否跑测试。build 与 vet 两道闸门关不掉'
         required: false
@@ -112,6 +120,8 @@ jobs:
           app-id: ${{ env.APP_ID }}
           private-key: ${{ env.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          permission-contents: ${{ inputs.pr-only && 'write' || '' }}
+          permission-pull-requests: ${{ inputs.pr-only && 'write' || '' }}
 
       - name: 🧾 Report Credential In Use
         env:
@@ -129,6 +139,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.pr-only && 'refs/heads/main' || '' }}
           token: ${{ steps.app_token.outputs.token || env.GH_GPA_TOKEN || github.token }}
 
       - name: 🛠️ Set up Go
@@ -175,6 +186,58 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: 🔎 Verify Existing PR-only Writer
+        id: pr_writer
+        if: inputs.pr-only && steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token || env.GH_GPA_TOKEN || github.token }}
+          APP_TOKEN_SET: ${{ steps.app_token.outputs.token != '' }}
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          PAT_TOKEN_SET: ${{ env.GH_GPA_TOKEN != '' }}
+        run: |
+          fail() { echo "::error::PR-only writer preflight: $*"; exit 1; }
+          # Fail before a topic exists when Actions PR creation might be disabled.
+          if [ "$APP_TOKEN_SET" != "true" ] && [ "$PAT_TOKEN_SET" != "true" ]; then
+            fail "existing verifiable App or PAT required; GITHUB_TOKEN fallback disabled for opt-in"
+          fi
+          repo="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '{full_name, archived, private, push: .permissions.push}')"
+          printf '%s' "$repo" | jq -e --arg repo "$GITHUB_REPOSITORY" \
+            '.full_name == $repo and .archived == false' >/dev/null || fail "repository is not writable"
+          if [ "$APP_TOKEN_SET" = "true" ]; then
+            [ -n "$APP_SLUG" ] || fail "missing App identity"
+            # Token mint requests existing contents:write and pull_requests:write.
+            # An absent grant makes that action fail, before this preflight/topic.
+            visible="$(gh api --paginate 'installation/repositories?per_page=100' --jq '.repositories[].full_name')"
+            printf '%s\n' "$visible" | grep -Fx "$GITHUB_REPOSITORY" >/dev/null || fail "App installation excludes this repository"
+            author="${APP_SLUG}[bot]"
+          else
+            printf '%s' "$repo" | jq -e '.push == true' >/dev/null || fail "PAT identity lacks repository write access"
+            headers="$(gh api --include --silent "repos/${GITHUB_REPOSITORY}")"
+            scopes="$(printf '%s\n' "$headers" | awk 'tolower($1)=="x-oauth-scopes:" {sub(/^[^:]*:[[:space:]]*/, ""); gsub(/[[:space:]\r]/, ""); print}')"
+            case ",${scopes}," in
+              *,repo,*) ;;
+              *,public_repo,*) printf '%s' "$repo" | jq -e '.private == false' >/dev/null || fail "public_repo scope cannot write a private repository" ;;
+              *) fail "PAT write scope is not verifiable; no topic created" ;;
+            esac
+            author="$(gh api user --jq '.login')"
+          fi
+          [ -n "$author" ] && [ "$author" != "null" ] || fail "missing writer identity"
+          echo "login=${author}" >> "$GITHUB_OUTPUT"
+
+      - name: 📸 Snapshot PR-only Candidate
+        if: inputs.pr-only && steps.bump.outputs.changed == 'true'
+        run: |
+          saved="$RUNNER_TEMP/bump-pr-only"
+          mkdir "$saved"
+          git rev-parse HEAD > "$saved/base"
+          cp go.mod "$saved/go.mod"
+          if [ -f go.sum ]; then
+            cp go.sum "$saved/go.sum"
+            printf 'true\n' > "$saved/had-sum"
+          else
+            printf 'false\n' > "$saved/had-sum"
+          fi
+
       # ===== 闸门 =====
       # 三步都挂 continue-on-error，是为了把结论收到 Collect Gate Verdict 一处判，
       # 好让失败时走「开分支提 PR」而不是直接中断 —— 不是为了掩盖失败
@@ -184,7 +247,12 @@ jobs:
         id: gate_build
         if: steps.bump.outputs.changed == 'true'
         continue-on-error: true
+        env:
+          PR_ONLY: ${{ inputs.pr-only }}
         run: |
+          if [ "$PR_ONLY" = "true" ]; then
+            export GOFLAGS="${GOFLAGS:+$GOFLAGS }-mod=readonly"
+          fi
           if [ -n "${GOLIB_BUILD_TAGS}" ]; then
             go build -tags="${GOLIB_BUILD_TAGS}" ./...
           else
@@ -195,7 +263,12 @@ jobs:
         id: gate_vet
         if: steps.bump.outputs.changed == 'true' && steps.gate_build.outcome == 'success'
         continue-on-error: true
+        env:
+          PR_ONLY: ${{ inputs.pr-only }}
         run: |
+          if [ "$PR_ONLY" = "true" ]; then
+            export GOFLAGS="${GOFLAGS:+$GOFLAGS }-mod=readonly"
+          fi
           if [ -n "${GOLIB_BUILD_TAGS}" ]; then
             go vet -tags="${GOLIB_BUILD_TAGS}" ./...
           else
@@ -216,7 +289,12 @@ jobs:
           && steps.gate_vet.outcome == 'success'
           && env.GOLIB_BUMP_RUN_TESTS == 'true'
         continue-on-error: true
+        env:
+          PR_ONLY: ${{ inputs.pr-only }}
         run: |
+          if [ "$PR_ONLY" = "true" ]; then
+            export GOFLAGS="${GOFLAGS:+$GOFLAGS }-mod=readonly"
+          fi
           tags_flag=""
           if [ -n "${GOLIB_BUILD_TAGS}" ]; then
             tags_flag="-tags=${GOLIB_BUILD_TAGS}"
@@ -227,6 +305,28 @@ jobs:
           # [EN] Both must stay unquoted: tags_flag has to vanish entirely when empty, and the
           # test flags are several arguments that quoting would collapse into one
           gotestsum -f testname -- $tags_flag ./... ${GOLIB_TEST_FLAGS} -timeout="${GOLIB_TEST_TIMEOUT}"
+
+      - name: 🔒 Verify PR-only Candidate Locks
+        id: candidate_locks
+        if: inputs.pr-only && steps.bump.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          saved="$RUNNER_TEMP/bump-pr-only"
+          [ "$(git rev-parse HEAD)" = "$(cat "$saved/base")" ]
+          cmp -s "$saved/go.mod" go.mod
+          case "$(cat "$saved/had-sum")" in
+            true) cmp -s "$saved/go.sum" go.sum ;;
+            false) [ ! -e go.sum ] ;;
+            *) exit 1 ;;
+          esac
+          git diff --cached --quiet
+          changed_paths="$(git diff --name-only HEAD)"
+          while IFS= read -r changed_path; do
+            case "$changed_path" in
+              ''|go.mod|go.sum) ;;
+              *) echo "::error::Tracked source changed during candidate gates"; exit 1 ;;
+            esac
+          done <<< "$changed_paths"
 
       - name: 🧮 Collect Gate Verdict
         id: verdict
@@ -347,7 +447,28 @@ jobs:
           FAILED_GATES: ${{ steps.verdict.outputs.failed-gates }}
           ALREADY_RED: ${{ steps.baseline.outputs.already-red }}
           BASELINE_FAILED: ${{ steps.baseline.outputs.baseline-failed }}
+          PR_ONLY: ${{ inputs.pr-only }}
+          BUILD: ${{ steps.gate_build.outcome }}
+          VET: ${{ steps.gate_vet.outcome }}
+          TEST: ${{ steps.gate_test.outcome }}
+          RUN_TESTS: ${{ env.GOLIB_BUMP_RUN_TESTS }}
+          LOCKS_UNCHANGED: ${{ steps.candidate_locks.outcome == 'success' }}
         run: |
+          if [ "$PR_ONLY" = "true" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            candidate_passed="false"
+            if [ "$LOCKS_UNCHANGED" = "true" ] && [ "$PASSED" = "true" ] && [ "$BUILD" = "success" ] && [ "$VET" = "success" ]; then
+              if [ "$RUN_TESTS" != "true" ] || [ "$TEST" = "success" ]; then
+                candidate_passed="true"
+              fi
+            fi
+            echo "pr-candidate-passed=${candidate_passed}" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR-only: candidate=${candidate_passed}; baseline-already-red=${ALREADY_RED:-not-established}; only a Draft may be written"
+            if [ "$ALREADY_RED" = "true" ]; then
+              echo "::warning::Baseline is also red (${BASELINE_FAILED}); this does not waive or establish the cause of candidate failures"
+            fi
+            exit 0
+          fi
           if [ "$PASSED" = "true" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
             echo "::notice title=闸门全过 | All gates green::build / vet / test 都通过，照常推默认分支"
@@ -384,12 +505,17 @@ jobs:
       # [EN] All gates green: push to the default branch exactly as before
       - name: ✅ Commit and Push
         id: push
-        if: steps.bump.outputs.changed == 'true' && steps.final.outputs.proceed == 'true'
+        if: steps.bump.outputs.changed == 'true' && steps.final.outputs.proceed == 'true' && !inputs.pr-only
         env:
+          PR_ONLY: ${{ inputs.pr-only }}
           COMMIT_MESSAGE: ${{ github.event.client_payload.commit_message }}
           MODULE: ${{ github.event.client_payload.module }}
           VERSION: ${{ github.event.client_payload.version }}
         run: |
+          if [ "$PR_ONLY" = "true" ]; then
+            echo "::error::PR-only cannot push the default branch"
+            exit 1
+          fi
           git add go.mod
           [ -f go.sum ] && git add go.sum
           if [ -n "$COMMIT_MESSAGE" ]; then
@@ -413,7 +539,124 @@ jobs:
           VERSION: ${{ github.event.client_payload.version }}
           FAILED: ${{ steps.verdict.outputs.failed-gates }}
           OLD_VERSION: ${{ steps.bump.outputs.old-version }}
+          PR_ONLY: ${{ inputs.pr-only }}
+          CANDIDATE_PASSED: ${{ steps.final.outputs.pr-candidate-passed }}
+          BUILD: ${{ steps.gate_build.outcome }}
+          VET: ${{ steps.gate_vet.outcome }}
+          TEST: ${{ steps.gate_test.outcome }}
+          RUN_TESTS: ${{ env.GOLIB_BUMP_RUN_TESTS }}
+          ALREADY_RED: ${{ steps.baseline.outputs.already-red }}
+          BASELINE_FAILED: ${{ steps.baseline.outputs.baseline-failed }}
+          BASELINE_OUTCOME: ${{ steps.baseline.outcome }}
+          WRITER_LOGIN: ${{ steps.pr_writer.outputs.login }}
+          LOCKS_UNCHANGED: ${{ steps.candidate_locks.outcome == 'success' }}
         run: |
+          if [ "$PR_ONLY" = "true" ]; then
+            fail() { echo "::error::PR-only: $*"; exit 1; }
+            [ "$LOCKS_UNCHANGED" = "true" ] || fail "candidate locks changed during gates; do not publish"
+            [ -n "$WRITER_LOGIN" ] && [ "$WRITER_LOGIN" != "null" ] || fail "writer was not verified before topic creation"
+            saved="$RUNNER_TEMP/bump-pr-only"
+            base_sha="$(cat "$saved/base")"
+            [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || fail "invalid saved main commit"
+            [ "$(git rev-parse HEAD)" = "$base_sha" ] || fail "checkout changed after validation"
+            # Restore only the independently preserved, gate-checked candidate,
+            # even if an interrupted baseline probe left its locks checked out.
+            cp "$saved/go.mod" go.mod
+            case "$(cat "$saved/had-sum")" in
+              true) cp "$saved/go.sum" go.sum ;;
+              false) rm -f -- go.sum ;;
+              *) fail "invalid lock snapshot" ;;
+            esac
+            git diff --cached --quiet || fail "unexpected staged changes"
+            changed_paths="$(git diff --name-only HEAD)"
+            while IFS= read -r changed_path; do
+              case "$changed_path" in
+                ''|go.mod|go.sum) ;;
+                *) fail "tracked files outside the lock pair changed" ;;
+              esac
+            done <<< "$changed_paths"
+            live_main="$(git ls-remote --heads origin refs/heads/main | awk '{print $1}')"
+            [ "$live_main" = "$base_sha" ] || fail "main moved; a new validated attempt is required"
+            git add -A -- go.mod
+            if [ -f go.sum ] || git ls-files --error-unmatch go.sum >/dev/null 2>&1; then git add -A -- go.sum; fi
+            tree="$(git write-tree)"
+            [ "$tree" != "$(git rev-parse "$base_sha^{tree}")" ] || fail "saved bump no longer changes the locks"
+            # Immutable name; empty lease creates only. Never update an existing head.
+            branch="chore/bump-pr-only-${base_sha}-${tree}"
+            git check-ref-format "refs/heads/${branch}" || fail "invalid dependency branch"
+            list_prs() {
+              gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
+                -f state=all -f "head=${GITHUB_REPOSITORY_OWNER}:${branch}" -f per_page=100
+            }
+            prior_prs="$(list_prs)"
+            prior_count="$(printf '%s' "$prior_prs" | jq 'length')"
+            [ "$prior_count" = "0" ] || [ "$prior_count" = "1" ] || fail "ambiguous prior pull requests"
+            remote_head="$(git ls-remote --heads origin "refs/heads/${branch}" | awk '{print $1}')"
+            if [ "$prior_count" = "1" ] && [ -z "$remote_head" ]; then
+              fail "prior PR topic was deleted; do not recreate a retired branch"
+            fi
+            if [ -z "$remote_head" ]; then
+              new_head="$(printf 'deps: review %s %s\n\nGo-Bump-PR-Only: v1\nGo-Bump-Base: %s\nGo-Bump-Tree: %s\n' "$MODULE" "$VERSION" "$base_sha" "$tree" | git commit-tree "$tree" -p "$base_sha")"
+              if ! git push --force-with-lease="refs/heads/${branch}:" origin "${new_head}:refs/heads/${branch}"; then
+                echo "::notice::Create-only topic raced or failed; reconciling exact existing object once"
+              fi
+            fi
+            git fetch --no-tags origin "refs/heads/${branch}"
+            remote_head="$(git rev-parse FETCH_HEAD)"
+            [ "$(git show -s --format=%P "$remote_head")" = "$base_sha" ] || fail "existing topic is not the exact single-parent baseline"
+            [ "$(git rev-parse "$remote_head^{tree}")" = "$tree" ] || fail "existing topic tree differs"
+            [ "$(git show -s --format=%ae "$remote_head")" = 'github-actions[bot]@users.noreply.github.com' ] || fail "existing topic author differs"
+            for marker in 'Go-Bump-PR-Only: v1' "Go-Bump-Base: ${base_sha}" "Go-Bump-Tree: ${tree}"; do
+              git show -s --format=%B "$remote_head" | grep -Fx "$marker" >/dev/null || fail "existing topic lacks exact marker"
+            done
+            check_pr() {
+              gh api "repos/${GITHUB_REPOSITORY}/pulls/$1" | jq -e \
+                --arg repo "$GITHUB_REPOSITORY" --arg branch "$branch" \
+                --arg author "$WRITER_LOGIN" --arg head "$remote_head" \
+                '(.state == "open" or .state == "closed") and .base.ref == "main" and
+                 .base.repo.full_name == $repo and .head.repo.full_name == $repo and
+                 .head.ref == $branch and .head.sha == $head and .user.login == $author' >/dev/null
+            }
+            prs="$(list_prs)"
+            count="$(printf '%s' "$prs" | jq 'length')"
+            [ "$count" = "0" ] || [ "$count" = "1" ] || fail "ambiguous pull requests"
+            existing="$(printf '%s' "$prs" | jq -r '.[0].number // empty')"
+            if [ -z "$existing" ]; then
+              {
+                printf '显式启用 pr-only 的依赖更新。**本 PR 为草稿，等待人工审核。自动写入范围仅限主题分支和草稿 PR。**\n\n'
+                printf -- '- 模块：%s\n- 原版本：%s\n- 新版本：%s\n- 已验证的 main：%s\n- 锁文件树：%s\n\n' "$MODULE" "${OLD_VERSION:-none}" "$VERSION" "$base_sha" "$tree"
+                printf '| 检查 | 实际结果 |\n|---|---|\n| build | %s |\n| vet | %s |\n| test | %s |\n\n' "$BUILD" "$VET" "$TEST"
+                printf '候选已配置检查均通过：%s。已启用测试：%s。检查前后锁文件保持不变：true。\n\n' "$CANDIDATE_PASSED" "$RUN_TESTS"
+                printf '基线检查结果：%s。原基线已失败：%s。基线失败检查：%s。\n\n' "$BASELINE_OUTCOME" "${ALREADY_RED:-not-established}" "${BASELINE_FAILED:-none}"
+                printf '候选与原基线的失败分别记录。候选出现任一失败，本次更新判为失败。\n\n'
+                printf '本主题分支不可变。后续执行仅回读此 PR 的 head、正文和审核状态。\n\n'
+                printf '执行记录：%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+              } > "$RUNNER_TEMP/pr_body.md"
+              if url="$(gh pr create --draft --base main --head "$branch" \
+                --title "📦 依赖更新：${MODULE} ${VERSION}（仅供审核）" --body-file "$RUNNER_TEMP/pr_body.md")"; then
+                existing="${url##*/}"
+                [[ "$existing" =~ ^[0-9]+$ ]] || fail "PR creation did not return a number"
+                [ "$url" = "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$existing" ] || fail "unexpected PR URL"
+              else
+                # Reconcile a concurrent creator/response failure once; never retry POST.
+                prs="$(list_prs)"
+                [ "$(printf '%s' "$prs" | jq 'length')" = "1" ] || fail "PR creation failed; exact topic retained for verified reentry"
+                existing="$(printf '%s' "$prs" | jq -r '.[0].number')"
+              fi
+            fi
+            check_pr "$existing" || fail "PR readback differs from the owned exact topic"
+            [ "$(git ls-remote --heads origin "refs/heads/${branch}" | awk '{print $1}')" = "$remote_head" ] || fail "topic moved during readback"
+            echo "::notice::PR-only exact topic #${existing}; existing PR head/body/review state are never updated"
+            {
+              printf 'PR-only immutable topic: %s/%s/pull/%s\n\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$existing"
+              printf -- '- Tested main: %s\n- Lock tree: %s\n- This attempt configured gates passed: %s\n- Baseline already red: %s\n' "$base_sha" "$tree" "$CANDIDATE_PASSED" "${ALREADY_RED:-not-established}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "$CANDIDATE_PASSED" != "true" ]; then
+              echo "::error::Candidate gates failed; Draft preservation does not waive the failure"
+              exit 1
+            fi
+            exit 0
+          fi
           slug="$(printf '%s' "$MODULE" | tr '/.' '--')"
           branch="chore/bump-${slug}-${VERSION}"
           git checkout -b "$branch"
@@ -456,13 +699,19 @@ jobs:
       - name: 🏷️ Create Downstream Tag
         if: >-
           steps.push.outputs.pushed == 'true'
+          && !inputs.pr-only
           && inputs.allow-create-tag
           && github.event.client_payload.create_tag == true
         env:
           MODULE: ${{ github.event.client_payload.module }}
           VERSION: ${{ github.event.client_payload.version }}
           LEVEL: ${{ steps.bump.outputs.bump-level }}
+          PR_ONLY: ${{ inputs.pr-only }}
         run: |
+          if [ "$PR_ONLY" = "true" ]; then
+            echo "::error::PR-only cannot create a tag"
+            exit 1
+          fi
           git fetch --tags
           latest="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
           if [ -z "$latest" ]; then
