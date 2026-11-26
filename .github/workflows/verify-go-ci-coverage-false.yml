@@ -1,0 +1,26 @@
+name: Verify Go CI Coverage Opt-out
+
+on:
+  push:
+    branches: [codex/verify-go-ci-coverage-false-20261126]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: HitGameAI/deploy-pipeline/.github/workflows/go-library-test.yml@fe59068c93c25b65ce4b9db6e8e5d801533e7d27
+    with:
+      go-versions: '["1.25.0"]'
+      platforms: '["ubuntu-latest"]'
+      gotestsum-version: v1.13.0
+      test-flags: '-race -count=1'
+      coverage-go-version: '1.25.0'
+      coverage-platform: ubuntu-latest
+      coverage-upload: false
+      post-test-script: |
+        test -s coverage.txt
+        grep -Eq '^example[.]invalid/coverage-fixture/fixture[.]go:[0-9]+[.][0-9]+,[0-9]+[.][0-9]+ [0-9]+ [1-9][0-9]*$' coverage.txt
+        git diff --exit-code -- go.mod go.sum
+        test ! -e go.sum
+        printf '::notice::Fixture generated coverage; module locks match the checkout.\n'
